@@ -140,7 +140,7 @@
     <string name="albums_inArtist">Albümler</string>
     <string name="singles_inArtist">Single'lar</string>
     <string name="fans_might_also_like_inArtist">Benzer sanatçılar</string>
-    <string name="crash_log">SimpMusic çöktü. Bu sorun için özür dileriz.\nÇökme günlüğünü geliştiriciye gönderin</string>
+    <string name="crash_log">Naudio çöktü. Bu sorun için özür dileriz.\nÇökme günlüğünü geliştiriciye gönderin</string>
     <string name="crash">Çökme</string>
     <string name="send">Gönder</string>
     <string name="mail_subject">Çökmeyi Raporla</string>
@@ -198,7 +198,7 @@
     <string name="what_segments_will_be_skipped">Hangi kısımlar atlanacak</string>
     <string name="save">Kaydet</string>
     <string name="saved">Kaydedildi</string>
-    <string name="sponsor_block_intro">SponsorBlock, YouTube videolarının rahatsız edici bölümlerini atlamak için kitle kaynaklı bir sistemdir.\nDaha fazla bilgi: https://sponsor.ajay.app/\nSimpMusic'te SponsorBlock yalnızca cihaz çevrimiçi olduğunda kullanılabilir</string>
+    <string name="sponsor_block_intro">SponsorBlock, YouTube videolarının rahatsız edici bölümlerini atlamak için kitle kaynaklı bir sistemdir.\nDaha fazla bilgi: https://sponsor.ajay.app/\nNaudio'te SponsorBlock yalnızca cihaz çevrimiçi olduğunda kullanılabilir</string>
     <string name="skip_sponsor_part_of_video">Videonun tanıtım bölümünü atla</string>
     <string name="customactivityoncrash_error_activity_error_occurred_explanation">Beklenmedik bir hata oluştu. Verdiğimiz rahatsızlıktan dolayı özür dileriz.</string>
     <string name="customactivityoncrash_error_activity_restart_app">Uygulamayı yeniden başlat</string>
@@ -239,7 +239,7 @@
     <string name="saved_to_local_playlist">Yerel oynatma listesine kaydedildi</string>
     <string name="if_you_want_to_unsync_this_playlist_please_go_to_local_playlist">bu çalma listesinin senkronizasyonunu kaldırmak istiyorsanız, lütfen yerel çalma listesine gidin</string>
     <string name="log_in_to_get_YouTube_playlist">YouTube Oynatma Listesini almak için giriş yapın</string>
-    <string name="sync_playlist_warning">SimpMusic otomatik olarak bir YouTube Müzik Çalma Listesi oluşturacaktır. Emin misin?</string>
+    <string name="sync_playlist_warning">Naudio otomatik olarak bir YouTube Müzik Çalma Listesi oluşturacaktır. Emin misin?</string>
     <string name="syncing">Eşitleniyor</string>
     <string name="unsync_playlist_warning">"Bu oynatma listesinin senkronizasyonu kaldırılsın mı? Oynatma listesi YouTube Music'ten kaldırılmayacak "</string>
     <string name="unsyncing">Eşitlemesiz</string>
@@ -256,14 +256,13 @@
     <string name="email">E-Posta</string>
     <string name="password">Şifre</string>
     <string name="please_enter_your_email_and_password">Lütfen e-posta ve şifrenizi girin</string>
-    <string name="translation_language_message">Dil kodunu yazın (Örn: en) (2 harf). SimpMusic'in dili ile aynı şekilde ayarlamak istiyorsanız, lütfen düzenleme kutusunu boş bırakın.</string>
+    <string name="translation_language_message">Dil kodunu yazın (Örn: en) (2 harf). Naudio'in dili ile aynı şekilde ayarlamak istiyorsanız, lütfen düzenleme kutusunu boş bırakın.</string>
     <string name="invalid_language_code">Geçersiz dil kodu</string>
     <string name="lyrics_provider_youtube">Şarkı sözleri YouTube tarafından sağlanmıştır</string>
     <string name="limit_player_cache">Oynatıcı Önbelleğini Sınırla</string>
     <string name="unlimited">Sınırsız</string>
     <string name="third_party_libraries">Üçüncü taraf kütüphaneleri</string>
     <string name="description_and_licenses">Açıklama ve lisanslar</string>
-    <string name="author">Yazar</string>
     <string name="other_app">Diğer uygulamalar</string>
     <string name="database">Uygulama veritabanı</string>
     <string name="free_space">Boş alan</string>
@@ -274,7 +273,7 @@
     <string name="older_first">Eskiden Yeniye</string>
     <string name="newer_first">Yeniden Eskiye</string>
     <string name="added_date">Tarih eklendi</string>
-    <string name="credit_app">Arka uç olarak YouTube Music'i kullanan basit bir müzik uygulaması \n\nSimpMusic, reklamlar ve izleme olmadan YouTube ve YouTube Music'ten müzik akışı sağlayan açık kaynaklı bir projedir. SimpMusic birçok özellik sunar:\n\n - Müzik akışı \n - Senkronize şarkı sözleri\n - Verileri kişiselleştirin\n - vb… \n\nSimpMusic her zaman ücretsizdir ve reklam içermez\n\nTuan Minh Nguyen Duc'tan ❤️ ile oluşturun (maxrave-dev)</string>
+    <string name="credit_app">Arka uç olarak YouTube Music'i kullanan basit bir müzik uygulaması \n\nNaudio, reklamlar ve izleme olmadan YouTube ve YouTube Music'ten müzik akışı sağlayan açık kaynaklı bir projedir. Naudio birçok özellik sunar:\n\n - Müzik akışı \n - Senkronize şarkı sözleri\n - Verileri kişiselleştirin\n - vb… \n\nNaudio her zaman ücretsizdir ve reklam içermez\n\nTuan Minh Nguyen Duc'tan ❤️ ile oluşturun (maxrave-dev)</string>
     <string name="issue_tracker">Sorun Takibi</string>
     <string name="featured_playlists">Öne Çıkan Oynatma Listeleri</string>
     <string name="featured_inArtist">Bulunduğu listeler</string>
@@ -330,7 +329,7 @@
     <string name="enable_spotify_lyrics">Spotify Şarkı Sözlerini Etkinleştir</string>
     <string name="spotify_lyrícs_info">Çeviri olmadan daha fazla şarkı sözü</string>
     <string name="enable_canvas">Canvas Etkinleştir</string>
-    <string name="canvas_info">SimpMusic'te Spotify Canvas'ı Göster</string>
+    <string name="canvas_info">Naudio'te Spotify Canvas'ı Göster</string>
     <string name="spotify_lyrics_provider">Şarkı sözleri Spotify tarafından sağlanmıştır</string>
     <string name="offline_mode">Çevrimdışı mod</string>
     <string name="added_to_youtube_liked">YouTube Beğenilenler'e eklendi</string>
@@ -369,7 +368,6 @@
     <string name="theme_color_wallpaper">Duvar Kağıdı</string>
     <string name="theme_color_custom">Özel</string>
     <string name="custom_color">Özel renk</string>
-    <string name="donation">Eğer işimi seviyorsanız bana bir kahve verin</string>
     <string name="relax">Rahatlama</string>
     <string name="sleep">Uyku</string>
     <string name="energize">Enerjik</string>
@@ -387,7 +385,7 @@
     <string name="loading">Yükleniyor</string>
     <string name="updating">Güncelleniyor</string>
     <string name="go_to_log_in_page">Giriş sayfasına git</string>
-    <string name="log_in_warning">YouTube Music artık müzik akışı için oturum açmanızı gerektiriyor, Piped Instance bazen de çalışmıyor. SimpMusic ile daha iyi bir deneyim elde etmek için YouTube'da oturum açmalısınız.</string>
+    <string name="log_in_warning">YouTube Music artık müzik akışı için oturum açmanızı gerektiriyor, Piped Instance bazen de çalışmıyor. Naudio ile daha iyi bir deneyim elde etmek için YouTube'da oturum açmalısınız.</string>
     <string name="spotify_canvas_cache">Spotify Canvas Önbelleği</string>
     <string name="clear_canvas_cache">Canvas önbelleğini temizle</string>
     <string name="listening_history">Dinleme Geçmişi</string>
@@ -430,11 +428,6 @@
     <string name="shuffle">Karıştır</string>
     <string name="other_version">Başka versiyon</string>
     <string name="later">Daha sonra</string>
-    <string name="give_a_star">Yıldız bırak</string>
-    <string name="enjoying_simpmusic">SimpMusic'in keyfini çıkarın</string>
-    <string name="if_you_enjoy_using_simpmusic_star_simpmusic_on_github_or_leave_a_review_on">SimpMusic'i kullanmaktan hoşlanıyorsanız, GitHub'da SimpMusic'i yıldızlayın veya</string>
-    <string name="if_you_love_my_work_consider">"Eğer çalışmalarımı seviyorsanız"</string>
-    <string name="buying_me_a_coffee">bana bir kavhe ısmarla.</string>
     <string name="fade_audio_effect">Ses efektini soldur</string>
     <string name="disabled">Kapalı</string>
     <string name="fade_audio_effect_duration">Solma ses efekti süresi (ms) (Devre dışı bırakmak için 0 olarak ayarlayın)</string>
@@ -531,7 +524,7 @@
     <string name="analytics_axis_discovery">Keşfet</string>
     <string name="analytics_axis_replay">Tekrarla</string>
     <string name="vote_submitted">Sözleri oynadığın için teşekkür ederiz!</string>
-    <string name="open_app">SimpMusic ile Aç</string>
+    <string name="open_app">Naudio ile Aç</string>
     <string name="close_miniplayer">Mini Oynatıcıyı Kapat</string>
     <string name="local_tracking_title">Yerel izleme dinleme geçmişi</string>
     <string name="local_tracking_description">Dinleme geçmişinizi yerel veritabanına kaydedin</string>
@@ -611,7 +604,7 @@
     <string name="wrapped_share">Paylaş</string>
     <string name="wrapped_save">Kaydet</string>
     <string name="wrapped_opening_title">Müzik yılın</string>
-    <string name="wrapped_opening_lead">SimpMusic'te açıldı</string>
+    <string name="wrapped_opening_lead">Naudio'te açıldı</string>
     <string name="month_full_jan">Ocak</string>
     <string name="month_full_feb">Şubat</string>
     <string name="month_full_mar">Mart</string>

@@ -125,8 +125,6 @@
     <string name="buy_me_a_coffee">Kup mi kawę</string>
     <string name="developer_blog">Blog dewelopera</string>
     <string name="developer_blog_tagline">Czytaj notatki deweloperów &amp; poradniki i materiały zza kulis</string>
-    <string name="blog_promo_title">Nowości od dewelopera</string>
-    <string name="visit_blog">Odwiedź blog</string>
     <string name="paypal">PayPal</string>
     <string name="title">Tytuł</string>
     <string name="custom_order">Kolejność niestandardowa</string>
@@ -144,7 +142,7 @@
     <string name="albums_inArtist">Albumy</string>
     <string name="singles_inArtist">Single</string>
     <string name="fans_might_also_like_inArtist">Fanom może się również podobać</string>
-    <string name="crash_log">SimpMusic uległ awarii. Przepraszamy za ten problem.\nWyślij dziennik awarii do dewelopera</string>
+    <string name="crash_log">Naudio uległ awarii. Przepraszamy za ten problem.\nWyślij dziennik awarii do dewelopera</string>
     <string name="crash">Awaria</string>
     <string name="send">Wyślij</string>
     <string name="mail_subject">Zgłoś awarię</string>
@@ -200,7 +198,7 @@
     <string name="what_segments_will_be_skipped">Jakie segmenty zostaną pominięte</string>
     <string name="save">Zapisz</string>
     <string name="saved">Zapisano</string>
-    <string name="sponsor_block_intro">SponsorBlock to społecznie rozwijany system pomijania irytujących fragmentów filmów w serwisie YouTube.\nWięcej informacji: https://sponsor.ajay.app/\nW SimpMusic funkcja SponsorBlock jest dostępna tylko wtedy, gdy urządzenie jest w trybie online</string>
+    <string name="sponsor_block_intro">SponsorBlock to społecznie rozwijany system pomijania irytujących fragmentów filmów w serwisie YouTube.\nWięcej informacji: https://sponsor.ajay.app/\nW Naudio funkcja SponsorBlock jest dostępna tylko wtedy, gdy urządzenie jest w trybie online</string>
     <string name="skip_sponsor_part_of_video">Pomiń część filmu sponsora</string>
     <string name="customactivityoncrash_error_activity_error_occurred_explanation">Wystąpił nieoczekiwany błąd. Przepraszamy za niedogodności.</string>
     <string name="customactivityoncrash_error_activity_restart_app">Zrestartuj aplikację</string>
@@ -240,7 +238,7 @@
     <string name="saved_to_local_playlist">Zapisz do lokalnej playlisty</string>
     <string name="if_you_want_to_unsync_this_playlist_please_go_to_local_playlist">jeśli chcesz odsynchronizować tę playlistę, przejdź do lokalnej playlisty</string>
     <string name="log_in_to_get_YouTube_playlist">Zaloguj się, aby pobrać playlistę YouTube</string>
-    <string name="sync_playlist_warning">SimpMusic automatycznie utworzy listę odtwarzania muzyki YouTube. Jesteś pewny?</string>
+    <string name="sync_playlist_warning">Naudio automatycznie utworzy listę odtwarzania muzyki YouTube. Jesteś pewny?</string>
     <string name="syncing">Synchronizuję</string>
     <string name="unsync_playlist_warning">"Odsynchronizować tą playlistę? Ta playlista nie zostanie usunięta z YouTube Music "</string>
     <string name="unsyncing">Odsynchronizowanie</string>
@@ -257,7 +255,7 @@
     <string name="email">E-mail</string>
     <string name="password">Hasło</string>
     <string name="please_enter_your_email_and_password">Wprowadź swój e-mail i hasło</string>
-    <string name="translation_language_message">Wpisz kod języka (Eg: en) (2 litery). Jeśli chcesz ustawić ten sam język SimpMusic, proszę ustawić pole edycji puste.</string>
+    <string name="translation_language_message">Wpisz kod języka (Eg: en) (2 litery). Jeśli chcesz ustawić ten sam język Naudio, proszę ustawić pole edycji puste.</string>
     <string name="invalid_language_code">Niepoprawny kod języka</string>
     <string name="lyrics_provider_youtube">Teksty piosenek dostarczone przez YouTube</string>
     <string name="lyrics_provider_betterlyrics">Tekst dostarczony przez BetterLyrics</string>
@@ -265,7 +263,6 @@
     <string name="unlimited">Nieograniczone</string>
     <string name="third_party_libraries">Biblioteki zewnętrzne</string>
     <string name="description_and_licenses">Opis i licencje</string>
-    <string name="author">Autor</string>
     <string name="other_app">Inne aplikacje</string>
     <string name="database">Baza aplikacji</string>
     <string name="free_space">Wolne miejsce</string>
@@ -276,7 +273,7 @@
     <string name="older_first">Najpierw starsze</string>
     <string name="newer_first">Najpierw nowsze</string>
     <string name="added_date">Dodana data</string>
-    <string name="credit_app">Prosta aplikacja muzyczna wykorzystująca YouTube Music jako backend\n\nSimpMusic to projekt open source służący do strumieniowego przesyłania muzyki z serwisów YouTube i YouTube Music bez reklam i śledzenia. SimpMusic oferuje wiele funkcji:\n\n - Strumieniowe przesyłanie muzyki \n - Zsynchronizowane teksty piosenek\n - Personalizację danych\n - itp. \n\nSimpMusic jest zawsze bezpłatny i nie zawiera reklam\n\nStworzony z ❤️ przez Tuan Minh Nguyen Duc (maxrave-dev)</string>
+    <string name="credit_app">Prosta aplikacja muzyczna wykorzystująca YouTube Music jako backend\n\nNaudio to projekt open source służący do strumieniowego przesyłania muzyki z serwisów YouTube i YouTube Music bez reklam i śledzenia. Naudio oferuje wiele funkcji:\n\n - Strumieniowe przesyłanie muzyki \n - Zsynchronizowane teksty piosenek\n - Personalizację danych\n - itp. \n\nNaudio jest zawsze bezpłatny i nie zawiera reklam\n\nStworzony z ❤️ przez Tuan Minh Nguyen Duc (maxrave-dev)</string>
     <string name="issue_tracker">Lista problemow</string>
     <string name="featured_playlists">Polecane playlisty</string>
     <string name="featured_inArtist">Polecane</string>
@@ -318,7 +315,7 @@
     <string name="enable_spotify_lyrics">Włącz teksty piosenek Spotify</string>
     <string name="spotify_lyrícs_info">Więcej tekstu bez tłumaczenia</string>
     <string name="enable_canvas">Włącz Canvas</string>
-    <string name="canvas_info">Pokaż Spotify Canvas w SimpMusic</string>
+    <string name="canvas_info">Pokaż Spotify Canvas w Naudio</string>
     <string name="spotify_lyrics_provider">Tekst piosenki dostarczony przez Spotify</string>
     <string name="offline_mode">Tryb offline</string>
     <string name="added_to_youtube_liked">Dodano do polubień YouTube</string>
@@ -355,7 +352,6 @@
     <string name="theme_color_wallpaper">Tapeta</string>
     <string name="theme_color_custom">Niestandardowy</string>
     <string name="custom_color">Kolor niestandardowy</string>
-    <string name="donation">Jeśli lubisz moją pracę, kup mi kawę</string>
     <string name="relax">Relaks</string>
     <string name="sleep">Sen</string>
     <string name="energize">Pobudzenie</string>
@@ -373,7 +369,7 @@
     <string name="loading">Ładowanie</string>
     <string name="updating">Aktualizowanie</string>
     <string name="go_to_log_in_page">Przejdź do strony logowania</string>
-    <string name="log_in_warning">YouTube Music wymaga teraz zalogowania się do strumieniowania muzyki. Instancja Piped może również przestać działać. Należy zalogować się do YouTube, aby uzyskać lepsze doświadczenia z SimpMusic.</string>
+    <string name="log_in_warning">YouTube Music wymaga teraz zalogowania się do strumieniowania muzyki. Instancja Piped może również przestać działać. Należy zalogować się do YouTube, aby uzyskać lepsze doświadczenia z Naudio.</string>
     <string name="spotify_canvas_cache">Pamięć podręczna Spotify Canvas</string>
     <string name="clear_canvas_cache">Wyczyść pamięć podręczną Canvas</string>
     <string name="proxy">Proxy</string>
@@ -411,11 +407,6 @@
     <string name="shuffle">Losuj</string>
     <string name="other_version">Inne wersje</string>
     <string name="later">Później</string>
-    <string name="give_a_star">Daj gwiazdkę</string>
-    <string name="enjoying_simpmusic">Ciesz się SimpMusic</string>
-    <string name="if_you_enjoy_using_simpmusic_star_simpmusic_on_github_or_leave_a_review_on">Jeśli lubisz używać SimpMusic, zostaw gwiazdkę na GitHub lub zostaw recenzję na</string>
-    <string name="if_you_love_my_work_consider">"Jeśli kochasz moją pracę, rozważ "</string>
-    <string name="buying_me_a_coffee">postawienie mi kawy.</string>
     <string name="fade_audio_effect">Efekt zanikania dźwięku</string>
     <string name="disabled">Wyłącz</string>
     <string name="fade_audio_effect_duration">Czas trwania efektu audio (ms) (Ustaw na 0 aby wyłączyć)</string>
@@ -523,7 +514,7 @@
     <string name="downvote">Głos przeciw</string>
     <string name="vote_submitted">Dziękujemy za głosowanie nad tym tekstem!</string>
     <string name="vote_error">Przesyłanie nie powiodło się</string>
-    <string name="open_app">Otwórz SimpMusic</string>
+    <string name="open_app">Otwórz Naudio</string>
     <string name="close_miniplayer">Zamknij mini odtwarzacz</string>
     <string name="open_miniplayer">Otwórz mini odtwarzacz</string>
     <string name="quit_app">Zamknij aplikację</string>
