@@ -132,7 +132,7 @@
     <string name="about_us">Về tôi</string>
     <string name="version">Phiên bản</string>
     <string name="github">Github</string>
-    <string name="maxrave_dev">maxrave-dev</string>
+    <string name="maxrave_dev">Nanda Kumar</string>
     <string name="buy_me_a_coffee">Hỗ trợ tôi</string>
     <string name="developer_blog">Blog của nhà phát triển</string>
     <string name="developer_blog_tagline">Đọc các ghi chép của nhà phát triển, hướng dẫn &amp; đằng sau các tính năng</string>
@@ -290,7 +290,7 @@
     <string name="older_first">Cũ trước</string>
     <string name="newer_first">Mới trước</string>
     <string name="added_date">Ngày thêm vào</string>
-    <string name="credit_app">Một ứng dụng âm nhạc đơn giản sử dụng dữ liệu từ YouTube Music \n\nNaudio là một dự án nguồn mở để phát nhạc từ YouTube và YouTube Music mà không bị quảng cáo và theo dõi. Naudio cung cấp nhiều tính năng:\n\n - Phát nhạc \n - Lời bài hát được đồng bộ hóa\n - Cá nhân hóa dữ liệu\n - v.v… \n\nNaudio luôn miễn phí và không có quảng cáo\n\nXây dựng với ❤️ bởi Nguyên Đức Tuấn Minh (maxrave-dev)</string>
+    <string name="credit_app">Một ứng dụng âm nhạc đơn giản sử dụng dữ liệu từ YouTube Music \n\nNaudio là một dự án nguồn mở để phát nhạc từ YouTube và YouTube Music mà không bị quảng cáo và theo dõi. Naudio cung cấp nhiều tính năng:\n\n - Phát nhạc \n - Lời bài hát được đồng bộ hóa\n - Cá nhân hóa dữ liệu\n - v.v… \n\nNaudio luôn miễn phí và không có quảng cáo</string>
     <string name="issue_tracker">Theo dõi lỗi</string>
     <string name="featured_playlists">Danh sách phát nổi bật</string>
     <string name="featured_inArtist">Nổi bật</string>
@@ -562,7 +562,7 @@
     <string name="backup_downloaded">Sao lưu dữ liệu đã tải xuống</string>
     <string name="backup_downloaded_description">Sao lưu tất cả các bài hát đã tải xuống</string>
     <string name="auto_backup">Tự động sao lưu</string>
-    <string name="auto_backup_description">Tự động sao lưu dữ liệu vào thư mục Downloads/SimpMusic</string>
+    <string name="auto_backup_description">Tự động sao lưu dữ liệu vào thư mục Downloads/Naudio</string>
     <string name="backup_frequency">Tần suất sao lưu</string>
     <string name="daily">Hàng ngày</string>
     <string name="weekly">Hàng tuần</string>
@@ -883,7 +883,7 @@
     <string name="login_sync_code_expired">Mã trên máy tính của bạn đã hết hạn. Hãy tạo mã mới rồi quét lại.</string>
     <string name="login_sync_failed">Đã xảy ra lỗi. Vui lòng thử lại.</string>
     <string name="modified_build_title">Ứng dụng không chính thức</string>
-    <string name="modified_build_message">Bạn đang dùng một bản Naudio không chính thức do người khác chỉnh sửa hoặc đóng gói lại. Bản này không thể sử dụng. Hãy tải bản chính thức tại simpmusic.org.</string>
+    <string name="modified_build_message">Bạn đang dùng một bản Naudio không chính thức do người khác chỉnh sửa hoặc đóng gói lại. Bản này không thể sử dụng. Hãy tải bản chính thức tại github.com/crazynanda/Naudio_2/releases.</string>
     <string name="taste_title">Gu nhạc của bạn là gì?</string>
     <string name="taste_invite">Để AI đọc 12 tháng nghe nhạc gần nhất của bạn và nói cho bạn biết.</string>
     <string name="taste_loading_title">Đang đọc gu nhạc của bạn…</string>

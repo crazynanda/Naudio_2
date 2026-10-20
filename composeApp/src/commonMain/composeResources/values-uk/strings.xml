@@ -130,7 +130,7 @@
     <string name="about_us">Про нас</string>
     <string name="version">Версія</string>
     <string name="github">Github</string>
-    <string name="maxrave_dev">maxrave-dev</string>
+    <string name="maxrave_dev">Nanda Kumar</string>
     <string name="buy_me_a_coffee">Купіть мені каву</string>
     <string name="developer_blog">Блог розробника</string>
     <string name="developer_blog_tagline">Читайте нотатки розробника, навчальні посібники та закулісся</string>
@@ -288,7 +288,7 @@
     <string name="older_first">Спочатку старіші</string>
     <string name="newer_first">Спочатку новіші</string>
     <string name="added_date">Дата додавання</string>
-    <string name="credit_app">Простий музичний застосунок з використанням YouTube Music для бекенду \n\nNaudio - це проєкт з відкритим вихідним кодом для потокової передачі музики з YouTube та YouTube Music без реклами та відстеження. Naudio надає багато можливостей:\n\n - Потокова музика\n - Синхронізовані тексти\n - Персоналізація даних\n - тощо... \n\nNaudio завжди безкоштовний і без реклами\n\nСтворено з ❤️ від Tuan Minh Nguyen Duc (maxrave-dev)</string>
+    <string name="credit_app">Простий музичний застосунок з використанням YouTube Music для бекенду \n\nNaudio - це проєкт з відкритим вихідним кодом для потокової передачі музики з YouTube та YouTube Music без реклами та відстеження. Naudio надає багато можливостей:\n\n - Потокова музика\n - Синхронізовані тексти\n - Персоналізація даних\n - тощо... \n\nNaudio завжди безкоштовний і без реклами</string>
     <string name="issue_tracker">Відстежувач випусків</string>
     <string name="featured_playlists">Рекомендовані плейлисти</string>
     <string name="featured_inArtist">Рекомендовано</string>
@@ -561,7 +561,7 @@
     <string name="backup_downloaded">Резервне копіювання завантажених даних</string>
     <string name="backup_downloaded_description">Резервне копіювання всіх завантажених даних композицій</string>
     <string name="auto_backup">Автоматичне резервне копіювання</string>
-    <string name="auto_backup_description">Автоматичне резервне копіювання даних у папку Downloads/SimpMusic</string>
+    <string name="auto_backup_description">Автоматичне резервне копіювання даних у папку Downloads/Naudio</string>
     <string name="backup_frequency">Частота резервного копіювання</string>
     <string name="daily">Щодня</string>
     <string name="weekly">Щотижня</string>
@@ -882,7 +882,7 @@
     <string name="login_sync_code_expired">Код на вашому комп'ютері закінчився. Показати новий код і сканувати знову.</string>
     <string name="login_sync_failed">Щось пішло не так. Спробуйте ще раз.</string>
     <string name="modified_build_title">Неофіційний додаток</string>
-    <string name="modified_build_message">Ви використовуєте неофіційну копію Naudio яка була модифікована або перепакована кимось іншим. Неможливо використовувати. Завантажте офіційну версію з simpmusic.org.</string>
+    <string name="modified_build_message">Ви використовуєте неофіційну копію Naudio яка була модифікована або перепакована кимось іншим. Неможливо використовувати. Завантажте офіційну версію з github.com/crazynanda/Naudio_2/releases.</string>
     <string name="taste_title">Які у Вас музичні вподобання?</string>
     <string name="taste_invite">Нехай ШІ проаналізує ваші музичні вподобання за останні 12 місяців і скаже вам.</string>
     <string name="taste_loading_title">Читання Ваших музичних смаків…</string>

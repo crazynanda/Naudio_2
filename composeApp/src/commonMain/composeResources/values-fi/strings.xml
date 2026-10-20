@@ -116,7 +116,7 @@
     <string name="about_us">Tietoa meistä</string>
     <string name="version">Versio</string>
     <string name="github">GitHub</string>
-    <string name="maxrave_dev">maxrave-dev</string>
+    <string name="maxrave_dev">Nanda Kumar</string>
     <string name="buy_me_a_coffee">Osta minulle kahvi</string>
     <string name="paypal">PayPal</string>
     <string name="title">Otsikko</string>
@@ -253,7 +253,7 @@
     <string name="reload">Lataa uudelleen</string>
     <string name="newer_first">Uusimmat ensin</string>
     <string name="added_date">Lisäyspäivämäärä</string>
-    <string name="credit_app">Yksinkertainen musiikkisovellus, joka käyttää YouTube Musicin taustajärjestelmää \n\nNaudio on avoimen lähdekoodin projekti musiikin suoratoistoon YouTubesta ja YouTube Musicista ilman mainoksia ja seurantaa. Naudio tarjoaa monia ominaisuuksia:\n\n - Musiikin suoratoisto \n - Synkronoidut sanoitukset\n - Tietojen mukauttaminen\n - jne… \n\nNaudio on aina ilmainen ja vailla mainoksia\n\nTehty ❤️:llä, Tuan Minh Nguyen Duc (maxrave-dev)</string>
+    <string name="credit_app">Yksinkertainen musiikkisovellus, joka käyttää YouTube Musicin taustajärjestelmää \n\nNaudio on avoimen lähdekoodin projekti musiikin suoratoistoon YouTubesta ja YouTube Musicista ilman mainoksia ja seurantaa. Naudio tarjoaa monia ominaisuuksia:\n\n - Musiikin suoratoisto \n - Synkronoidut sanoitukset\n - Tietojen mukauttaminen\n - jne… \n\nNaudio on aina ilmainen ja vailla mainoksia</string>
     <string name="issue_tracker">Tikettijärjestelmä</string>
     <string name="featured_playlists">Suositellut soittolistat</string>
     <string name="featured_inArtist">Mukana näissä</string>

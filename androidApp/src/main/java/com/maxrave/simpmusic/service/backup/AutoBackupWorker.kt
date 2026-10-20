@@ -151,14 +151,14 @@ class AutoBackupWorker(
 
     private fun saveToDownloads(backupFile: File): Boolean {
         val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(Date())
-        val fileName = "simpmusic_backup_$timestamp.zip"
+        val fileName = "naudio_backup_$timestamp.zip"
 
         return try {
             val contentValues = ContentValues().apply {
                 put(MediaStore.Downloads.DISPLAY_NAME, fileName)
                 put(MediaStore.Downloads.MIME_TYPE, "application/zip")
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                    put(MediaStore.Downloads.RELATIVE_PATH, "Download/SimpMusic")
+                    put(MediaStore.Downloads.RELATIVE_PATH, "Download/Naudio")
                 }
             }
 
@@ -173,7 +173,7 @@ class AutoBackupWorker(
                         input.copyTo(output)
                     }
                 }
-                Logger.i(TAG, "Backup saved to Downloads/SimpMusic/$fileName")
+                Logger.i(TAG, "Backup saved to Downloads/Naudio/$fileName")
                 true
             } ?: false
         } catch (e: Exception) {
@@ -197,9 +197,9 @@ class AutoBackupWorker(
             }
 
             val selectionArgs = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                arrayOf("Download/SimpMusic/", "simpmusic_backup_%.zip")
+                arrayOf("Download/Naudio/", "naudio_backup_%.zip")
             } else {
-                arrayOf("simpmusic_backup_%.zip")
+                arrayOf("naudio_backup_%.zip")
             }
 
             val sortOrder = "${MediaStore.Downloads.DATE_ADDED} DESC"
@@ -219,7 +219,7 @@ class AutoBackupWorker(
                 while (cursor.moveToNext()) {
                     val id = cursor.getLong(idColumn)
                     val name = cursor.getString(nameColumn)
-                    if (name.startsWith("simpmusic_backup_") && name.endsWith(".zip")) {
+                    if (name.startsWith("naudio_backup_") && name.endsWith(".zip")) {
                         backupFiles.add(id to name)
                     }
                 }

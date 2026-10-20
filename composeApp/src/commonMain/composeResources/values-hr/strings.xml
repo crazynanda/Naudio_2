@@ -121,7 +121,7 @@
     <string name="about_us">O aplikaciji us</string>
     <string name="version">Version</string>
     <string name="github">Github</string>
-    <string name="maxrave_dev">maxrave-dev</string>
+    <string name="maxrave_dev">Nanda Kumar</string>
     <string name="buy_me_a_coffee">Buy me a coffee</string>
     <string name="developer_blog">Developer Blog</string>
     <string name="developer_blog_tagline">Read dev notes, tutorials &amp; behind-the-scenes</string>
@@ -279,7 +279,7 @@
     <string name="older_first">Older First</string>
     <string name="newer_first">Nevoer First</string>
     <string name="added_date">Dodajed date</string>
-    <string name="credit_app">A simple music app using YouTube Music for backend \n\nNaudio is an open source project to stream music from YouTube and YouTube Music without ads and tracking. Naudio provides many features:\n\n - Streaming music \n - Synced lyrics\n - Personalize data\n - etc… \n\nNaudio is always free and no ads\n\nBuild with ❤️ from Tuan Minh Nguyen Duc (maxrave-dev)</string>
+    <string name="credit_app">A simple music app using YouTube Music for backend \n\nNaudio is an open source project to stream music from YouTube and YouTube Music without ads and tracking. Naudio provides many features:\n\n - Streaming music \n - Synced lyrics\n - Personalize data\n - etc… \n\nNaudio is always free and no ads</string>
     <string name="issue_tracker">Issue Tracker</string>
     <string name="featured_playlists">Featured Popisi za reprodukciju</string>
     <string name="featured_inArtist">Featured on</string>
@@ -546,7 +546,7 @@
     <string name="backup_downloaded">Natragup downloaded data</string>
     <string name="backup_downloaded_description">Natragup all downloaded songs's data</string>
     <string name="auto_backup">Automatski backup</string>
-    <string name="auto_backup_description">Automatskimatically backup your data to Preuzmis/SimpMusic folder</string>
+    <string name="auto_backup_description">Automatskimatically backup your data to Preuzmis/Naudio folder</string>
     <string name="backup_frequency">Natragup frequency</string>
     <string name="daily">Dnevno</string>
     <string name="weekly">Tjedno</string>

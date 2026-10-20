@@ -121,7 +121,7 @@
     <string name="about_us">O nas</string>
     <string name="version">Wersja</string>
     <string name="github">Github</string>
-    <string name="maxrave_dev">maxrave-dev</string>
+    <string name="maxrave_dev">Nanda Kumar</string>
     <string name="buy_me_a_coffee">Kup mi kawę</string>
     <string name="developer_blog">Blog dewelopera</string>
     <string name="developer_blog_tagline">Czytaj notatki deweloperów &amp; poradniki i materiały zza kulis</string>
@@ -273,7 +273,7 @@
     <string name="older_first">Najpierw starsze</string>
     <string name="newer_first">Najpierw nowsze</string>
     <string name="added_date">Dodana data</string>
-    <string name="credit_app">Prosta aplikacja muzyczna wykorzystująca YouTube Music jako backend\n\nNaudio to projekt open source służący do strumieniowego przesyłania muzyki z serwisów YouTube i YouTube Music bez reklam i śledzenia. Naudio oferuje wiele funkcji:\n\n - Strumieniowe przesyłanie muzyki \n - Zsynchronizowane teksty piosenek\n - Personalizację danych\n - itp. \n\nNaudio jest zawsze bezpłatny i nie zawiera reklam\n\nStworzony z ❤️ przez Tuan Minh Nguyen Duc (maxrave-dev)</string>
+    <string name="credit_app">Prosta aplikacja muzyczna wykorzystująca YouTube Music jako backend\n\nNaudio to projekt open source służący do strumieniowego przesyłania muzyki z serwisów YouTube i YouTube Music bez reklam i śledzenia. Naudio oferuje wiele funkcji:\n\n - Strumieniowe przesyłanie muzyki \n - Zsynchronizowane teksty piosenek\n - Personalizację danych\n - itp. \n\nNaudio jest zawsze bezpłatny i nie zawiera reklam</string>
     <string name="issue_tracker">Lista problemow</string>
     <string name="featured_playlists">Polecane playlisty</string>
     <string name="featured_inArtist">Polecane</string>
@@ -456,7 +456,7 @@
     <string name="backup_downloaded">Utwórz kopię zapasową pobranych danych</string>
     <string name="backup_downloaded_description">Utwórz kopię zapasową wszystkich pobranych utworów</string>
     <string name="auto_backup">Automatyczna kopia zapasowa</string>
-    <string name="auto_backup_description">Automatycznie wykonaj kopię zapasową swoich danych do folderu Pobrane/SimpMusic</string>
+    <string name="auto_backup_description">Automatycznie wykonaj kopię zapasową swoich danych do folderu Pobrane/Naudio</string>
     <string name="backup_frequency">Częstotliwość kopii zapasowych</string>
     <string name="daily">Codziennie</string>
     <string name="weekly">Tygodniowo</string>

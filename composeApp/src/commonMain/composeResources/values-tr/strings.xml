@@ -121,7 +121,7 @@
     <string name="about_us">Hakkımızda</string>
     <string name="version">Sürüm</string>
     <string name="github">GitHub</string>
-    <string name="maxrave_dev">maxrave-dev</string>
+    <string name="maxrave_dev">Nanda Kumar</string>
     <string name="buy_me_a_coffee">Bana bir kahve ısmarla</string>
     <string name="paypal">PayPal</string>
     <string name="title">Başlık</string>
@@ -273,7 +273,7 @@
     <string name="older_first">Eskiden Yeniye</string>
     <string name="newer_first">Yeniden Eskiye</string>
     <string name="added_date">Tarih eklendi</string>
-    <string name="credit_app">Arka uç olarak YouTube Music'i kullanan basit bir müzik uygulaması \n\nNaudio, reklamlar ve izleme olmadan YouTube ve YouTube Music'ten müzik akışı sağlayan açık kaynaklı bir projedir. Naudio birçok özellik sunar:\n\n - Müzik akışı \n - Senkronize şarkı sözleri\n - Verileri kişiselleştirin\n - vb… \n\nNaudio her zaman ücretsizdir ve reklam içermez\n\nTuan Minh Nguyen Duc'tan ❤️ ile oluşturun (maxrave-dev)</string>
+    <string name="credit_app">Arka uç olarak YouTube Music'i kullanan basit bir müzik uygulaması \n\nNaudio, reklamlar ve izleme olmadan YouTube ve YouTube Music'ten müzik akışı sağlayan açık kaynaklı bir projedir. Naudio birçok özellik sunar:\n\n - Müzik akışı \n - Senkronize şarkı sözleri\n - Verileri kişiselleştirin\n - vb… \n\nNaudio her zaman ücretsizdir ve reklam içermez</string>
     <string name="issue_tracker">Sorun Takibi</string>
     <string name="featured_playlists">Öne Çıkan Oynatma Listeleri</string>
     <string name="featured_inArtist">Bulunduğu listeler</string>
@@ -485,7 +485,7 @@
     <string name="backup_downloaded">İndirilen verileri yedekleyin</string>
     <string name="backup_downloaded_description">İndirilen tüm şarkıların verilerini yedekleyin</string>
     <string name="auto_backup">Otomatik yedekleme</string>
-    <string name="auto_backup_description">Verilerinizi otomatik olarak Downloads/SimpMusic klasörüne yedekleyin</string>
+    <string name="auto_backup_description">Verilerinizi otomatik olarak Downloads/Naudio klasörüne yedekleyin</string>
     <string name="daily">Günlük</string>
     <string name="weekly">Haftalık</string>
     <string name="monthly">Aylık</string>

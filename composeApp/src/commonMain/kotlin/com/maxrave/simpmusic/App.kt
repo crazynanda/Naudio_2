@@ -849,7 +849,7 @@ fun App(
                                 onClick = {
                                     shouldShowUpdateDialog = false
                                     viewModel.showedUpdateDialog = false
-                                    openUrl("https://simpmusic.org/download")
+                                    openUrl("https://github.com/crazynanda/Naudio_2/releases")
                                 },
                             ) {
                                 Text(

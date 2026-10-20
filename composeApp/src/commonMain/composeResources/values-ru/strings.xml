@@ -138,7 +138,7 @@
     <string name="about_us">О нас</string>
     <string name="version">Версия</string>
     <string name="github">Github</string>
-    <string name="maxrave_dev">maxrave-dev</string>
+    <string name="maxrave_dev">Nanda Kumar</string>
     <string name="buy_me_a_coffee">Купите мне кофе</string>
     <string name="developer_blog">Блог разработчика</string>
     <string name="developer_blog_tagline">Читайте заметки разработчика, руководства и информацию о процессе разработки</string>
@@ -296,7 +296,7 @@
     <string name="older_first">Сначала старые</string>
     <string name="newer_first">Сначала новые</string>
     <string name="added_date">Дата добавления</string>
-    <string name="credit_app">Простое музыкальное приложение, использующее YouTube Music в качестве серверной части. \n\nNaudio — это проект с открытым исходным кодом для потоковой передачи музыки с YouTube и YouTube Music без рекламы и отслеживания. Naudio предоставляет множество функций:\n\n - Потоковое воспроизведение музыки \n - Синхронизированные тексты песен\n - Персонализация данных\n - и т. д. \n\nNaudio бесплатен и без рекламы\n\nСоздал с ❤️ Туан Минь Нгуен Дык (maxrave-dev)</string>
+    <string name="credit_app">Простое музыкальное приложение, использующее YouTube Music в качестве серверной части. \n\nNaudio — это проект с открытым исходным кодом для потоковой передачи музыки с YouTube и YouTube Music без рекламы и отслеживания. Naudio предоставляет множество функций:\n\n - Потоковое воспроизведение музыки \n - Синхронизированные тексты песен\n - Персонализация данных\n - и т. д. \n\nNaudio бесплатен и без рекламы</string>
     <string name="issue_tracker">Трекер проблем</string>
     <string name="featured_playlists">Избранные плейлисты</string>
     <string name="featured_inArtist">Где встречается</string>
@@ -569,7 +569,7 @@
     <string name="backup_downloaded">Резервное копирование загруженных данных</string>
     <string name="backup_downloaded_description">Резервное копирование всех загруженных данных песен</string>
     <string name="auto_backup">Авторезервирование</string>
-    <string name="auto_backup_description">Автоматически сохранять резервные копии данных в папку Downloads/SimpMusic</string>
+    <string name="auto_backup_description">Автоматически сохранять резервные копии данных в папку Downloads/Naudio</string>
     <string name="backup_frequency">Частота резервного копирования</string>
     <string name="daily">Ежедневно</string>
     <string name="weekly">Еженедельно</string>
@@ -891,7 +891,7 @@
     <string name="login_sync_code_expired">Срок действия кода на вашем компьютере истек. Покажите новый и просканируйте снова.</string>
     <string name="login_sync_failed">Произошла ошибка. Повторите попытку.</string>
     <string name="modified_build_title">Неофициальное приложение</string>
-    <string name="modified_build_message">Вы используете неофициальную версию Naudio, которая была модифицирована или пересобрана посторонними людьми. Оно не может быть использовано. Загрузите официальную версию с simpmusic.org.</string>
+    <string name="modified_build_message">Вы используете неофициальную версию Naudio, которая была модифицирована или пересобрана посторонними людьми. Оно не может быть использовано. Загрузите официальную версию с github.com/crazynanda/Naudio_2/releases.</string>
     <string name="taste_title">Какой Ваш музыкальный вкус?</string>
     <string name="taste_invite">Позвольте ИИ посмотреть Вашу историю прослушивания за 12 месяцев и рассказать Вам.</string>
     <string name="taste_loading_title">Читаем историю прослушивания...</string>

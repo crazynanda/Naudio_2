@@ -238,6 +238,10 @@ internal class CrossfadeExoPlayerAdapter(
 
     private val audioFocusListener =
         AudioManager.OnAudioFocusChangeListener { focusChange ->
+            // Info, not debug: this is one of the few external events that can stop playback on
+            // its own, so it has to survive in the on-device log for a "it stopped by itself"
+            // report to be diagnosable at all.
+            Logger.i(TAG, "Audio focus change: $focusChange (state=$internalState, playWhenReady=$internalPlayWhenReady)")
             when (focusChange) {
                 AudioManager.AUDIOFOCUS_GAIN -> {
                     // Don't fight the crossfade ramp; while crossfading it owns the volume.
@@ -257,7 +261,9 @@ internal class CrossfadeExoPlayerAdapter(
 
                 AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> {
                     // Temporary loss (e.g. an incoming call): pause and remember to resume.
-                    resumeOnFocusGain = internalState == InternalState.PLAYING
+                    // Includes a track still loading: its play intent is already set, and pausing
+                    // mid-buffer must not turn the interruption into a permanent stop.
+                    resumeOnFocusGain = internalState == InternalState.PLAYING || internalPlayWhenReady
                     pause()
                 }
 
@@ -393,6 +399,13 @@ internal class CrossfadeExoPlayerAdapter(
     private var retryCount = 0
     private var retryVideoId: String? = null
     private val maxRetryCount = 2
+
+    /**
+     * The error that pushed us into [InternalState.ERROR]. Handing it to the transition means the
+     * handler hears about a failure exactly once; without it `propagatePlayerError` reported the
+     * real code and the transition then reported a fabricated 403 as well.
+     */
+    private var pendingPlayerError: PlayerError? = null
 
     // ========== AutoMix Metadata Cache ==========
     // videoId -> audio analysis data from Tidal (populated externally when 320kbps stream is fetched)
@@ -648,6 +661,14 @@ internal class CrossfadeExoPlayerAdapter(
                 InternalState.READY, InternalState.ENDED, InternalState.PAUSED -> {
                     currentPlayer?.let { player ->
                         requestAudioFocusInternal()
+                        // A settled ERROR (pause() below) keeps the delegate's error, and
+                        // ExoPlayer.play() does nothing until prepare() is called again.
+                        if (player.playerError != null) {
+                            Logger.i(TAG, "Play: player still holds an error, reloading the track")
+                            internalPlayWhenReady = true
+                            recoverFromErrorInternal()
+                            return@let
+                        }
                         // At the end of the queue `play()` only sets playWhenReady, which does
                         // nothing while the player sits in STATE_ENDED — the press would look
                         // ignored. Rewind first so the last track replays.
@@ -669,6 +690,12 @@ internal class CrossfadeExoPlayerAdapter(
                 InternalState.PLAYING -> {
                     internalPlayWhenReady = true
                     cachedIsLoading = false
+                }
+
+                InternalState.ERROR -> {
+                    Logger.i(TAG, "Play: recovering from error at ${cachedPosition}ms")
+                    internalPlayWhenReady = true
+                    recoverFromErrorInternal()
                 }
 
                 else -> {
@@ -713,6 +740,14 @@ internal class CrossfadeExoPlayerAdapter(
 
                     InternalState.PREPARING -> {
                         internalPlayWhenReady = false
+                    }
+
+                    InternalState.ERROR -> {
+                        // Settle the failed state: the UI shows paused and a pending automatic
+                        // recovery sees playWhenReady = false instead of resurrecting playback
+                        // behind the user's back.
+                        internalPlayWhenReady = false
+                        transitionToState(InternalState.PAUSED)
                     }
 
                     else -> {
@@ -1543,8 +1578,35 @@ internal class CrossfadeExoPlayerAdapter(
                 message = error.message,
             )
         Logger.e(TAG, "Playback error: ${error.message}")
-        listeners.forEach { it.onPlayerError(genericError) }
+        pendingPlayerError = genericError
         transitionToState(InternalState.ERROR)
+    }
+
+    /**
+     * Reloads the current track where it stopped, with a freshly resolved stream URL.
+     *
+     * Every recovery from an error goes through here: the immediate retries above, and a play
+     * press after the adapter has settled in [InternalState.ERROR] (notification, lock screen or
+     * the app's own play button). ERROR is terminal otherwise: the delegate keeps the error, so
+     * `player.play()` is a no-op and the only way back was picking a track again.
+     */
+    private fun recoverFromErrorInternal() {
+        val index = localCurrentMediaItemIndex
+        val videoId = playlist.getOrNull(index)?.mediaId ?: return
+        val resumePositionMs = cachedPosition.coerceAtLeast(0L)
+        coroutineScope.launch {
+            try {
+                requestAudioFocusInternal()
+                streamRepository.invalidateFormat(videoId)
+                streamRepository.invalidateFormat("${com.maxrave.common.MERGING_DATA_TYPE.VIDEO}$videoId")
+                precachedPlayers.remove(videoId)?.player?.release()
+                loadAndPlayTrackInternal(index, resumePositionMs, shouldPlay = true)
+            } catch (e: Exception) {
+                if (e is CancellationException) throw e
+                Logger.e(TAG, "Recovery failed: ${e.message}", e)
+                transitionToState(InternalState.ERROR)
+            }
+        }
     }
 
     private fun transitionToState(newState: InternalState) {
@@ -1605,15 +1667,14 @@ internal class CrossfadeExoPlayerAdapter(
             InternalState.ERROR -> {
                 listeners.forEach { it.onPlaybackStateChanged(PlayerConstants.STATE_IDLE) }
                 listeners.forEach { it.onIsPlayingChanged(false) }
-                listeners.forEach {
-                    it.onPlayerError(
-                        PlayerError(
-                            errorCode = 403,
-                            errorCodeName = "ERROR_UNKNOWN",
-                            message = "Can not extract playable URL or playback error",
-                        ),
+                val error =
+                    pendingPlayerError ?: PlayerError(
+                        errorCode = 403,
+                        errorCodeName = "ERROR_UNKNOWN",
+                        message = "Can not extract playable URL or playback error",
                     )
-                }
+                pendingPlayerError = null
+                listeners.forEach { it.onPlayerError(error) }
             }
         }
     }
@@ -1857,7 +1918,8 @@ internal class CrossfadeExoPlayerAdapter(
                     // Retry for source errors (expired/invalid stream URL)
                     // ERROR_CODE_PARSING_CONTAINER_MALFORMED (3001) = server returned non-media response (e.g. HTML error page)
                     // ERROR_CODE_IO_BAD_HTTP_STATUS (2004) = HTTP 403/410 from expired URL
-                    // ERROR_CODE_IO_NETWORK_CONNECTION_FAILED (2001) = connection refused
+                    // ERROR_CODE_IO_NETWORK_CONNECTION_FAILED (2001) = connection refused / no network
+                    // ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT (2002) = network stalled
                     // ERROR_CODE_IO_FILE_NOT_FOUND (2005) = the resolver served a cache hit as a bare
                     //   media id and the cached spans were evicted (or cleared) mid-read, so
                     //   DefaultDataSource fell through to FileDataSource on a scheme-less URI. Media3
@@ -1867,6 +1929,8 @@ internal class CrossfadeExoPlayerAdapter(
                     val isRetryableSourceError =
                         error.errorCode == PlaybackException.ERROR_CODE_PARSING_CONTAINER_MALFORMED ||
                             error.errorCode == PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS ||
+                            error.errorCode == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED ||
+                            error.errorCode == PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT ||
                             error.errorCode == PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND
 
                     val currentVideoId = playlist.getOrNull(localCurrentMediaItemIndex)?.mediaId
@@ -1899,24 +1963,8 @@ internal class CrossfadeExoPlayerAdapter(
                         if (retryCount < maxRetryCount) {
                             retryCount++
                             Logger.w(TAG, "Retryable source error (attempt $retryCount/$maxRetryCount) for $currentVideoId: ${error.errorCodeName}")
-                            // Snapshot the current position so the retry resumes where playback
-                            // failed instead of restarting the track from the beginning.
-                            val resumePositionMs = cachedPosition.coerceAtLeast(0L)
-                            coroutineScope.launch {
-                                try {
-                                    // Invalidate cached format so ResolvingDataSource fetches a fresh URL
-                                    streamRepository.invalidateFormat(currentVideoId)
-                                    streamRepository.invalidateFormat("${com.maxrave.common.MERGING_DATA_TYPE.VIDEO}$currentVideoId")
-                                    // Evict from precache (it may hold a stale player)
-                                    precachedPlayers.remove(currentVideoId)?.player?.release()
-                                    // Reload the track at the saved position
-                                    loadAndPlayTrackInternal(localCurrentMediaItemIndex, resumePositionMs, shouldPlay = true)
-                                } catch (e: Exception) {
-                                    if (e is CancellationException) throw e
-                                    Logger.e(TAG, "Retry failed: ${e.message}", e)
-                                    propagatePlayerError(error)
-                                }
-                            }
+                            // Reload at the saved position with a freshly resolved URL.
+                            recoverFromErrorInternal()
                             return
                         }
                         Logger.e(TAG, "Max retries ($maxRetryCount) exhausted for $currentVideoId")

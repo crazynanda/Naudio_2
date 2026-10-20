@@ -127,7 +127,7 @@
     <string name="about_us">Om oss</string>
     <string name="version">Version</string>
     <string name="github">GitHub</string>
-    <string name="maxrave_dev">maxrave-dev</string>
+    <string name="maxrave_dev">Nanda Kumar</string>
     <string name="buy_me_a_coffee">Bjud mig på en kaffe</string>
     <string name="developer_blog">Utvecklarblogg</string>
     <string name="developer_blog_tagline">Läs utvecklaranteckningar, guider &amp; material bakom kulisserna</string>
@@ -285,7 +285,7 @@
     <string name="older_first">Äldre först</string>
     <string name="newer_first">Nyare först</string>
     <string name="added_date">Datum då den lades till</string>
-    <string name="credit_app">En enkel musikapp som använder YouTube Music som datakälla \n\nNaudio är ett projekt med öppen källkod för att strömma musik från YouTube och YouTube Music utan annonser och spårning. Naudio har många funktioner:\n\n - Strömma musik \n - Synkroniserade låttexter\n - Personanpassade data\n - med mera … \n\nNaudio är alltid gratis och utan annonser\n\nSkapad med ❤️ av Tuan Minh Nguyen Duc (maxrave-dev)</string>
+    <string name="credit_app">En enkel musikapp som använder YouTube Music som datakälla \n\nNaudio är ett projekt med öppen källkod för att strömma musik från YouTube och YouTube Music utan annonser och spårning. Naudio har många funktioner:\n\n - Strömma musik \n - Synkroniserade låttexter\n - Personanpassade data\n - med mera … \n\nNaudio är alltid gratis och utan annonser</string>
     <string name="issue_tracker">Ärendehantering</string>
     <string name="featured_playlists">Utvalda spellistor</string>
     <string name="featured_inArtist">Medverkar på</string>
@@ -556,7 +556,7 @@
     <string name="backup_downloaded">Säkerhetskopiera hämtade data</string>
     <string name="backup_downloaded_description">Säkerhetskopiera data för alla hämtade låtar</string>
     <string name="auto_backup">Automatisk säkerhetskopiering</string>
-    <string name="auto_backup_description">Säkerhetskopiera dina data automatiskt till mappen Downloads/SimpMusic</string>
+    <string name="auto_backup_description">Säkerhetskopiera dina data automatiskt till mappen Downloads/Naudio</string>
     <string name="backup_frequency">Intervall för säkerhetskopiering</string>
     <string name="daily">Dagligen</string>
     <string name="weekly">Varje vecka</string>
@@ -869,5 +869,5 @@
     <string name="login_sync_code_expired">Koden på datorn har gått ut. Visa en ny kod och skanna igen.</string>
     <string name="login_sync_failed">Något gick fel. Försök igen.</string>
     <string name="modified_build_title">Inofficiell app</string>
-    <string name="modified_build_message">Du använder en inofficiell kopia av Naudio som har ändrats eller paketerats om av någon annan. Den kan inte användas. Hämta den officiella versionen från simpmusic.org.</string>
+    <string name="modified_build_message">Du använder en inofficiell kopia av Naudio som har ändrats eller paketerats om av någon annan. Den kan inte användas. Hämta den officiella versionen från github.com/crazynanda/Naudio_2/releases.</string>
 </resources>

@@ -57,3 +57,6 @@ sentry.properties
 
 # Local backup artifacts
 *.bak
+
+# Diagnostic logs exported from the app
+/error-logs/

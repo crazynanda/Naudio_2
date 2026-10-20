@@ -121,7 +121,7 @@
     <string name="about_us">Sobre nosaltres</string>
     <string name="version">Versió</string>
     <string name="github">Github</string>
-    <string name="maxrave_dev">maxrave-dev</string>
+    <string name="maxrave_dev">Nanda Kumar</string>
     <string name="buy_me_a_coffee">Compra'm un cafè</string>
     <string name="developer_blog">Blog del desenvolupador</string>
     <string name="developer_blog_tagline">Llegir notes de desenvolupament, tutorials &amp; continguts entre bastidors</string>
@@ -274,7 +274,7 @@
     <string name="older_first">Més antics primer</string>
     <string name="newer_first">Més nous primer</string>
     <string name="added_date">Data afegida</string>
-    <string name="credit_app">Una aplicació de música senzilla que utilitza YouTube Music per al backend \n\nNaudio és un projecte de codi obert per reproduir música de YouTube i YouTube Music sense anuncis ni seguiment. Naudio ofereix moltes funcions:\n\n - Reproducció de música en temps real \n - Lletres sincronitzades\n - Personalització de dades\n - etc... \n\nNaudio sempre és gratuït i sense anuncis\n\nCrea amb ❤️ de Tuan Minh Nguyen Duc (maxrave -dev)</string>
+    <string name="credit_app">Una aplicació de música senzilla que utilitza YouTube Music per al backend \n\nNaudio és un projecte de codi obert per reproduir música de YouTube i YouTube Music sense anuncis ni seguiment. Naudio ofereix moltes funcions:\n\n - Reproducció de música en temps real \n - Lletres sincronitzades\n - Personalització de dades\n - etc... \n\nNaudio sempre és gratuït i sense anuncis</string>
     <string name="issue_tracker">Detector de problemes</string>
     <string name="featured_playlists">Llistes de reproducció destacades</string>
     <string name="featured_inArtist">Destacat a</string>
@@ -456,7 +456,7 @@
     <string name="backup_downloaded">Fer una còpia de seguretat de les dades descarregades</string>
     <string name="backup_downloaded_description">Fer una còpia de seguretat de les dades de les cançons descarregades</string>
     <string name="auto_backup">Còpia de seguretat automàtica</string>
-    <string name="auto_backup_description">Fer una còpia de seguretat de les dades automàticament a la carpeta Downloads/SimpMusic</string>
+    <string name="auto_backup_description">Fer una còpia de seguretat de les dades automàticament a la carpeta Downloads/Naudio</string>
     <string name="backup_frequency">Freqüència de la còpia de seguretat</string>
     <string name="daily">Diàriament</string>
     <string name="weekly">Setmanalment</string>

@@ -9,7 +9,7 @@ import com.maxrave.logger.Logger
  * Registry structure:
  * ```
  * HKCU\Software\Classes\simpmusic
- *     (Default) = "URL:SimpMusic Protocol"
+ *     (Default) = "URL:Naudio Protocol"
  *     URL Protocol = ""
  *     \DefaultIcon
  *         (Default) = "\"<exe_path>\",0"
@@ -37,8 +37,8 @@ object WindowsProtocolRegistrar {
             return
         }
 
-        register(SCHEME, "URL:SimpMusic Protocol", exePath)
-        register(LASTFM_SCHEME, "URL:SimpMusic Last.fm Callback", exePath)
+        register(SCHEME, "URL:Naudio Protocol", exePath)
+        register(LASTFM_SCHEME, "URL:Naudio Last.fm Callback", exePath)
     }
 
     private fun register(
@@ -105,8 +105,12 @@ object WindowsProtocolRegistrar {
         }
 
         if (appDir != null) {
-            val exeFile = java.io.File(appDir, "SimpMusic.exe")
-            if (exeFile.exists()) {
+            // The packaged launcher's name follows the Conveyor fsname/display-name; accept both.
+            val exeFile =
+                listOf("SimpMusic.exe", "Naudio.exe")
+                    .map { java.io.File(appDir, it) }
+                    .firstOrNull { it.exists() }
+            if (exeFile != null) {
                 return exeFile.absolutePath
             }
         }

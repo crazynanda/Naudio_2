@@ -146,8 +146,6 @@ class SettingsViewModel(
     val proxyPassword: StateFlow<String> = _proxyPassword
     private var _autoCheckUpdate = MutableStateFlow(false)
     val autoCheckUpdate: StateFlow<Boolean> = _autoCheckUpdate
-    private var _updateChannel: MutableStateFlow<String> = MutableStateFlow(DataStoreManager.GITHUB)
-    val updateChannel: StateFlow<String> = _updateChannel
     private val _aiProvider = MutableStateFlow<String>(DataStoreManager.AI_PROVIDER_OPENAI)
     val aiProvider: StateFlow<String> = _aiProvider
     private val _isHasApiKey = MutableStateFlow<Boolean>(false)
@@ -325,7 +323,6 @@ class SettingsViewModel(
         getSmartDownloads()
         getContributorNameAndEmail()
         getBackupDownloaded()
-        getUpdateChannel()
         getEnableLiquidGlass()
         getExplicitContentEnabled()
         getDiscordLoggedIn()
@@ -658,21 +655,6 @@ class SettingsViewModel(
         viewModelScope.launch {
             dataStoreManager.setEnableLiquidGlass(enableLiquidGlass)
             getEnableLiquidGlass()
-        }
-    }
-
-    private fun getUpdateChannel() {
-        viewModelScope.launch {
-            dataStoreManager.updateChannel.collect { channel ->
-                _updateChannel.value = channel
-            }
-        }
-    }
-
-    fun setUpdateChannel(channel: String) {
-        viewModelScope.launch {
-            dataStoreManager.setUpdateChannel(channel)
-            getUpdateChannel()
         }
     }
 

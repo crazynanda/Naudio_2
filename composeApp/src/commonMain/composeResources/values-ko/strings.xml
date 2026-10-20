@@ -121,7 +121,7 @@
     <string name="about_us">정보</string>
     <string name="version">버전</string>
     <string name="github">Github</string>
-    <string name="maxrave_dev">maxrave-dev</string>
+    <string name="maxrave_dev">Nanda Kumar</string>
     <string name="buy_me_a_coffee">Buy me a coffee</string>
     <string name="developer_blog">개발자 블로그</string>
     <string name="developer_blog_tagline">개발 노트, 튜토리얼 &amp; 비하인드 스토리를 읽어보세요</string>
@@ -274,7 +274,7 @@
     <string name="older_first">날짜순</string>
     <string name="newer_first">최신순</string>
     <string name="added_date">추가한 날짜</string>
-    <string name="credit_app">YouTube Music을 백엔드로 사용하는 간단한 음악 앱 \n\nNaudio은 광고나 추적 없이 YouTube나 YouTube Music에서 음악을 스트리밍하는 오픈 소스 프로젝트입니다. Naudio에서는 다양한 기능들을 이용할 수 있습니다.\n\n - 음악 스트리밍 \n - 가사 싱크\n - 데이터 개인화\n - 기타… \n\nNaudio은 항상 무료이며 광고도 없습니다\n\nTuan Minh Nguyen Duc (maxrave-dev)가 ❤️을 담아 만듦</string>
+    <string name="credit_app">YouTube Music을 백엔드로 사용하는 간단한 음악 앱 \n\nNaudio은 광고나 추적 없이 YouTube나 YouTube Music에서 음악을 스트리밍하는 오픈 소스 프로젝트입니다. Naudio에서는 다양한 기능들을 이용할 수 있습니다.\n\n - 음악 스트리밍 \n - 가사 싱크\n - 데이터 개인화\n - 기타… \n\nNaudio은 항상 무료이며 광고도 없습니다</string>
     <string name="issue_tracker">이슈 트래커</string>
     <string name="featured_playlists">추천 재생목록</string>
     <string name="featured_inArtist">추천</string>
@@ -474,7 +474,7 @@
     <string name="backup_downloaded">다운로드한 데이터 백업</string>
     <string name="backup_downloaded_description">모든 다운로드한 음악 데이터를 백업</string>
     <string name="auto_backup">자동 백업</string>
-    <string name="auto_backup_description">데이터를 Downloads/SimpMusic 폴더로 자동 백업합니다</string>
+    <string name="auto_backup_description">데이터를 Downloads/Naudio 폴더로 자동 백업합니다</string>
     <string name="backup_frequency">백업 주기</string>
     <string name="daily">매일</string>
     <string name="weekly">매주</string>

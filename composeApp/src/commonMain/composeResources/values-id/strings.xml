@@ -121,7 +121,7 @@
     <string name="about_us">Tentang kami</string>
     <string name="version">Versi</string>
     <string name="github">Github</string>
-    <string name="maxrave_dev">maxrave-dev</string>
+    <string name="maxrave_dev">Nanda Kumar</string>
     <string name="buy_me_a_coffee">Belikan Aku secangkir kopi</string>
     <string name="developer_blog">Blog Pengembang</string>
     <string name="developer_blog_tagline">Baca catatan pengembang, tutorial &amp; cerita di balik layar</string>
@@ -276,7 +276,7 @@
     <string name="older_first">Terlama dulu</string>
     <string name="newer_first">Terbaru dulu</string>
     <string name="added_date">Tanggal ditambahkan</string>
-    <string name="credit_app">Aplikasi musik sederhana yang menggunakan YouTube Music untuk backend \n\nNaudio adalah proyek sumber terbuka untuk streaming musik dari YouTube dan YouTube Music tanpa iklan dan pelacakan. Naudio menyediakan banyak fitur:\n\n - Streaming musik\n - Lirik yang disinkronkan\n - Personalisasi data\n - dll... \n\nNaudio selalu gratis dan tidak ada iklan\n\nDibangun dengan ❤️ oleh Tuan Minh Nguyen Duc (maxrave-dev)</string>
+    <string name="credit_app">Aplikasi musik sederhana yang menggunakan YouTube Music untuk backend \n\nNaudio adalah proyek sumber terbuka untuk streaming musik dari YouTube dan YouTube Music tanpa iklan dan pelacakan. Naudio menyediakan banyak fitur:\n\n - Streaming musik\n - Lirik yang disinkronkan\n - Personalisasi data\n - dll... \n\nNaudio selalu gratis dan tidak ada iklan</string>
     <string name="issue_tracker">Pelacakan Masalah</string>
     <string name="featured_playlists">Daftar Putar Unggulan</string>
     <string name="featured_inArtist">Termasuk di</string>
@@ -469,7 +469,7 @@
     <string name="backup_downloaded">Cadangkan data yang diunduh</string>
     <string name="backup_downloaded_description">Cadangkan semua data lagu yang diunduh</string>
     <string name="auto_backup">Pencadangan otomatis</string>
-    <string name="auto_backup_description">Cadangkan data Anda secara otomatis ke folder Unduhan/SimpMusic</string>
+    <string name="auto_backup_description">Cadangkan data Anda secara otomatis ke folder Unduhan/Naudio</string>
     <string name="backup_frequency">Frekuensi pencadangan</string>
     <string name="daily">Harian</string>
     <string name="weekly">Mingguan</string>

@@ -127,7 +127,7 @@
     <string name="about_us">Sobre nosotros</string>
     <string name="version">Versión</string>
     <string name="github">GitHub</string>
-    <string name="maxrave_dev">maxrave-dev</string>
+    <string name="maxrave_dev">Nanda Kumar</string>
     <string name="buy_me_a_coffee">Cómprame un café</string>
     <string name="developer_blog"></string>
     <string name="developer_blog_tagline">Leer notas de desarrollo, tutoriales &amp; detrás de la escena</string>
@@ -285,7 +285,7 @@
     <string name="older_first">Primero antiguo</string>
     <string name="newer_first">Primero nuevo</string>
     <string name="added_date">Fecha añadida</string>
-    <string name="credit_app">Una aplicación de música sencilla que utiliza YouTube Music como backend \n\nNaudio es un proyecto de código abierto para transmitir música desde YouTube y YouTube Music sin anuncios ni seguimiento. Naudio ofrece muchas funciones:\n\n - Transmisión de música \n - Letras sincronizadas\n - Personalizar datos\n - etc... \n\nNaudio es siempre gratuito y sin anuncios\n\nCompilado con ❤️ de Tuan Minh Nguyen Duc (maxrave-dev)</string>
+    <string name="credit_app">Una aplicación de música sencilla que utiliza YouTube Music como backend \n\nNaudio es un proyecto de código abierto para transmitir música desde YouTube y YouTube Music sin anuncios ni seguimiento. Naudio ofrece muchas funciones:\n\n - Transmisión de música \n - Letras sincronizadas\n - Personalizar datos\n - etc... \n\nNaudio es siempre gratuito y sin anuncios</string>
     <string name="issue_tracker">Rastreador de errores</string>
     <string name="featured_playlists">Listas de reproducción destacadas</string>
     <string name="featured_inArtist">Destacado en</string>
@@ -552,7 +552,7 @@
     <string name="backup_downloaded">Respaldar datos descargados</string>
     <string name="backup_downloaded_description">Respaldar todos los datos de canciones descargadas</string>
     <string name="auto_backup">Copia de seguridad automática</string>
-    <string name="auto_backup_description">Realiza una copia de seguridad automática de tus datos en la carpeta Descargas/SimpMusic</string>
+    <string name="auto_backup_description">Realiza una copia de seguridad automática de tus datos en la carpeta Descargas/Naudio</string>
     <string name="backup_frequency">Frecuencia de copias de seguridad</string>
     <string name="daily">Diariamente</string>
     <string name="weekly">Semanalmente</string>

@@ -129,7 +129,7 @@
     <string name="about_us">Über uns</string>
     <string name="version">Version</string>
     <string name="github">Github</string>
-    <string name="maxrave_dev">maxrave-dev</string>
+    <string name="maxrave_dev">Nanda Kumar</string>
     <string name="buy_me_a_coffee">Spendiere mir einen Kaffee</string>
     <string name="developer_blog">Entwickler-Blog</string>
     <string name="developer_blog_tagline">Lesen Sie Entwicklernotizen, Tutorials &amp; hinter den Kulissen</string>
@@ -286,7 +286,7 @@
     <string name="older_first">Ältere zuerst</string>
     <string name="newer_first">Neue zuerst</string>
     <string name="added_date">Datum hinzugefügt</string>
-    <string name="credit_app">Eine einfache Musik-App mit YouTube Music als Backend \n\nNaudio ist ein Open-Source-Projekt zum Streamen von Musik von YouTube und YouTube Music ohne Werbung und Tracking. Naudio bietet viele Funktionen:\n\n - Musik streamen \n - Synchronisierte Liedtexte\n - Daten personalisieren\n - etc… \n\nNaudio ist immer kostenlos und ohne Werbung\n\nErstellen Sie mit ❤️ von Tuan Minh Nguyen Duc (maxrave-dev)</string>
+    <string name="credit_app">Eine einfache Musik-App mit YouTube Music als Backend \n\nNaudio ist ein Open-Source-Projekt zum Streamen von Musik von YouTube und YouTube Music ohne Werbung und Tracking. Naudio bietet viele Funktionen:\n\n - Musik streamen \n - Synchronisierte Liedtexte\n - Daten personalisieren\n - etc… \n\nNaudio ist immer kostenlos und ohne Werbung</string>
     <string name="issue_tracker">Issue-Tracker</string>
     <string name="featured_playlists">Empfohlene Playlists</string>
     <string name="featured_inArtist">Zu hören in</string>
@@ -557,7 +557,7 @@
     <string name="backup_downloaded">Backup der heruntergeladenen Daten</string>
     <string name="backup_downloaded_description">Backup aller heruntergeladenen Songs</string>
     <string name="auto_backup">Automatisches Backup</string>
-    <string name="auto_backup_description">Sichere deine Daten automatisch in den Downloads/SimpMusic Ordner</string>
+    <string name="auto_backup_description">Sichere deine Daten automatisch in den Downloads/Naudio Ordner</string>
     <string name="backup_frequency">Backup-Häufigkeit</string>
     <string name="daily">Täglich</string>
     <string name="weekly">Wöchentlich</string>
@@ -877,7 +877,7 @@ In Naudio können nur Playlist-Dateien in unserem eigenen Format importiert werd
     <string name="login_sync_code_expired">Der Code auf Ihrem Computer ist abgelaufen. Zeige einen neuen und scanne erneut.</string>
     <string name="login_sync_failed">Etwas ist schiefgelaufen. Bitte versuche es erneut.</string>
     <string name="modified_build_title">Inoffizielle App</string>
-    <string name="modified_build_message">Du verwendest eine inoffizielle Kopie von Naudio die von jemand anderem modifiziert oder neu verpackt wurde. Es kann nicht benutzt werden. Laden Sie die offizielle Version von simpmusic.org herunter.</string>
+    <string name="modified_build_message">Du verwendest eine inoffizielle Kopie von Naudio die von jemand anderem modifiziert oder neu verpackt wurde. Es kann nicht benutzt werden. Laden Sie die offizielle Version von github.com/crazynanda/Naudio_2/releases herunter.</string>
     <string name="taste_title">Was ist dein Musikgeschmack?</string>
     <string name="taste_invite">Lass die KI deine Hörgewohnheiten der letzten 12 Monate analysieren und dir das Ergebnis mitteilen.</string>
     <string name="taste_loading_title">Deinen Musikgeschmack analysieren…</string>

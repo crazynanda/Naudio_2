@@ -121,7 +121,7 @@
     <string name="about_us">Sobre nós</string>
     <string name="version">Versão</string>
     <string name="github">GitHub</string>
-    <string name="maxrave_dev">maxrave-dev</string>
+    <string name="maxrave_dev">Nanda Kumar</string>
     <string name="buy_me_a_coffee">Compre-me um café</string>
     <string name="developer_blog">Blog do Desenvolvedor</string>
     <string name="developer_blog_tagline">Leia notas de desenvolvimento, tutoriais &amp; nos bastidores</string>
@@ -274,7 +274,7 @@
     <string name="older_first">Mais Antigas Primeiro</string>
     <string name="newer_first">Mais Recentes Primeiro</string>
     <string name="added_date">Data adicionada</string>
-    <string name="credit_app">A simple music app using YouTube Music for backend \n\nNaudio is an open source project to stream music from YouTube and YouTube Music without ads and tracking. Naudio provides many features:\n\n - Streaming music \n - Synced lyrics\n - Personalize data\n - etc… \n\nNaudio is always free and no ads\n\nBuild with ❤️ from Tuan Minh Nguyen Duc (maxrave-dev)</string>
+    <string name="credit_app">A simple music app using YouTube Music for backend \n\nNaudio is an open source project to stream music from YouTube and YouTube Music without ads and tracking. Naudio provides many features:\n\n - Streaming music \n - Synced lyrics\n - Personalize data\n - etc… \n\nNaudio is always free and no ads</string>
     <string name="issue_tracker">Rastreador de problemas</string>
     <string name="featured_playlists">Listas de reprodução em destaque</string>
     <string name="featured_inArtist">Destacado</string>
@@ -466,7 +466,7 @@
     <string name="backup_downloaded">Recuperação dos dados baixados</string>
     <string name="backup_downloaded_description">Faça backup de todos os dados das músicas baixadas</string>
     <string name="auto_backup">Backup automático</string>
-    <string name="auto_backup_description">Backup automático dos seus dados para a pasta Downloads/SimpMusic</string>
+    <string name="auto_backup_description">Backup automático dos seus dados para a pasta Downloads/Naudio</string>
     <string name="backup_frequency">Frequência de backup</string>
     <string name="daily">Diariamente</string>
     <string name="weekly">Semanalmente</string>

@@ -13,6 +13,7 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.session.DefaultMediaNotificationProvider
 import androidx.media3.session.MediaLibraryService
 import androidx.media3.session.MediaSession
+import androidx.media3.session.MediaSessionService
 import com.maxrave.common.MEDIA_NOTIFICATION
 import com.maxrave.domain.mediaservice.handler.MediaPlayerHandler
 import com.maxrave.logger.Logger
@@ -71,6 +72,20 @@ internal class SimpleMediaService :
         super.onCreate()
         Logger.w("Service", "Simple Media Service Created")
 
+        // The only signal that Android refused to put the service in the foreground (SDK 31+).
+        // Media3 swallows the exception otherwise, and the service then dies as "app idle" about a
+        // minute after the screen goes off.
+        setListener(
+            object : MediaSessionService.Listener {
+                override fun onForegroundServiceStartNotAllowedException() {
+                    Logger.w(
+                        "Service",
+                        "Foreground-service start refused by the system (app in background)",
+                    )
+                }
+            },
+        )
+
         setMediaNotificationProvider(
             DefaultMediaNotificationProvider(
                 this,
@@ -91,6 +106,12 @@ internal class SimpleMediaService :
                 )
         }
 
+        // Nothing in the app ever connects a MediaController, and media3 only learns about a
+        // session when one does (or via addSession). Without this the notification manager never
+        // creates its controller, onUpdateNotification never runs, and the service is never put in
+        // the foreground - it then dies as "app idle" about a minute after the screen goes off.
+        mediaSession?.let { addSession(it) }
+
         simpleMediaServiceHandler.onUpdateNotification = { list ->
             val commandButtonList = list.map { it.toCommandButton(this) }
             mediaSession?.setMediaButtonPreferences(
@@ -109,13 +130,29 @@ internal class SimpleMediaService :
         return super.onStartCommand(intent, flags, startId)
     }
 
-    override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaLibrarySession? = mediaSession
+    override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaLibrarySession? {
+        Logger.i(
+            "Service",
+            "Session requested by ${controllerInfo.packageName} " +
+                "notification=${mediaSession?.isMediaNotificationController(controllerInfo)}",
+        )
+        return mediaSession
+    }
 
     @UnstableApi
     override fun onUpdateNotification(
         session: MediaSession,
         startInForegroundRequired: Boolean,
     ) {
+        Logger.i(
+            "Service",
+            "Notification update: required=$startInForegroundRequired " +
+                "foreground=${isPlaybackOngoing()} " +
+                "playWhenReady=${session.player.playWhenReady} " +
+                "state=${session.player.playbackState} " +
+                "items=${session.player.mediaItemCount} " +
+                "playing=${session.player.isPlaying}",
+        )
         super.onUpdateNotification(session, startInForegroundRequired)
     }
 
@@ -156,8 +193,12 @@ internal class SimpleMediaService :
 
     @UnstableApi
     override fun onDestroy() {
+        Logger.w(
+            "Service",
+            "Simple Media Service Destroyed (foreground=${isPlaybackOngoing()}, " +
+                "playWhenReady=${simpleMediaServiceHandler.player.playWhenReady})",
+        )
         super.onDestroy()
-        Logger.w("Service", "Simple Media Service Destroyed")
         simpleMediaServiceHandler.onUpdateNotification = {}
         releaseSession()
     }
@@ -169,14 +210,20 @@ internal class SimpleMediaService :
 
     @UnstableApi
     override fun onTaskRemoved(rootIntent: Intent?) {
-        Logger.w("Service", "Simple Media Service Task Removed")
+        Logger.i(
+            "Service",
+            "Simple Media Service Task Removed (playWhenReady=${simpleMediaServiceHandler.player.playWhenReady})",
+        )
         if (simpleMediaServiceHandler.shouldReleaseOnTaskRemoved()) {
             release()
             super.onTaskRemoved(rootIntent)
             exitProcess(0)
-        } else {
+        } else if (!simpleMediaServiceHandler.player.playWhenReady) {
             // Media3's default stops the service when it is not playing, which is what makes
-            // onDestroy (and therefore releaseSession) run on a normal swipe-away.
+            // onDestroy (and therefore releaseSession) run on a normal swipe-away. It asks the
+            // player's instantaneous isPlaying, which is false during every buffer/track gap, so a
+            // swipe landing in one of those stopped the service and the music with it even though
+            // playback was intended. Only stop when the listener actually paused.
             super.onTaskRemoved(rootIntent)
         }
     }

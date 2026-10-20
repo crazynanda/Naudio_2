@@ -117,6 +117,13 @@ import kotlin.math.pow
 
 private val TAG = "Media3ServiceHandlerImpl"
 
+/**
+ * Delays between automatic recovery attempts after a transient playback error: 3 s, 10 s, 30 s,
+ * 60 s, 120 s. Long enough to ride out a tunnel, a Wi-Fi/cellular handover or a screen-off network
+ * hiccup, short enough that a listener who has actually lost connectivity is not left waiting.
+ */
+private val PLAYBACK_RECOVERY_DELAYS_MS = longArrayOf(3_000L, 10_000L, 30_000L, 60_000L, 120_000L)
+
 internal class MediaServiceHandlerImpl(
     private val dataStoreManager: DataStoreManager,
     private val songRepository: SongRepository,
@@ -139,6 +146,10 @@ internal class MediaServiceHandlerImpl(
      * and all three actuals for one dependency.
      */
     private val lastfmScrobbler = LastfmScrobbler(dataStoreManager)
+
+    /** Attempts already spent on the current outage; reset as soon as audio actually plays. */
+    private var playbackRecoveryAttempt = 0
+    private var playbackRecoveryJob: Job? = null
     override var onUpdateNotification: (List<GenericCommandButton>) -> Unit = {}
     override var showToast: (ToastType) -> Unit = {}
     override var pushPlayerError: (PlayerError) -> Unit = {}
@@ -1037,9 +1048,14 @@ internal class MediaServiceHandlerImpl(
 
             PlayerEvent.PlayPause -> {
                 if (player.isPlaying) {
+                    playbackRecoveryJob?.cancel()
                     player.pause()
                     stopProgressUpdate()
                 } else {
+                    // An explicit press gets a fresh budget: the automatic attempts may have been
+                    // spent on an outage that has since ended.
+                    playbackRecoveryJob?.cancel()
+                    playbackRecoveryAttempt = 0
                     player.play()
                     startProgressUpdate()
                 }
@@ -2743,6 +2759,10 @@ internal class MediaServiceHandlerImpl(
     override fun onIsPlayingChanged(isPlaying: Boolean) {
         _controlState.value = _controlState.value.copy(isPlaying = isPlaying)
         if (isPlaying) {
+            // Audio is actually coming out: the outage is over, so the next one is entitled to a
+            // full set of attempts.
+            playbackRecoveryAttempt = 0
+            playbackRecoveryJob?.cancel()
             startProgressUpdate()
             nowPlayingState.value.songEntity?.let { updateDiscordRpc(it) }
         } else {
@@ -2879,29 +2899,69 @@ internal class MediaServiceHandlerImpl(
     }
 
     override fun onPlayerError(error: PlayerError) {
-        when (error.errorCode) {
-            PlayerConstants.ERROR_CODE_TIMEOUT -> {
-                Logger.e("Player Error", "onPlayerError (${error.errorCode}): ${error.message}")
-                if (isAppInForeground()) {
-                    showToast(ToastType.PlayerError(error.errorCodeName))
-                } else {
-                    Logger.w("Player Error", "App is not in foreground, skipping toast")
-                }
-                player.pause()
-            }
-
-            else -> {
-                Logger.e("Player Error", "onPlayerError (${error.errorCode}): ${error.message}")
-                pushPlayerError(error)
-                if (isAppInForeground()) {
-                    showToast(ToastType.PlayerError(error.errorCodeName))
-                } else {
-                    Logger.w("Player Error", "App is not in foreground, skipping toast")
-                }
-                player.pause()
-            }
+        Logger.e("Player Error", "onPlayerError (${error.errorCode}): ${error.message}")
+        if (error.errorCode != PlayerConstants.ERROR_CODE_TIMEOUT) {
+            pushPlayerError(error)
         }
+        if (isAppInForeground()) {
+            showToast(ToastType.PlayerError(error.errorCodeName))
+        } else {
+            Logger.w("Player Error", "App is not in foreground, skipping toast")
+        }
+        schedulePlaybackRecovery(error)
     }
+
+    /**
+     * Retries the current track after a transient failure, on a widening interval, while the
+     * listener still wants sound.
+     *
+     * This is the background case: ExoPlayer and the adapter have already retried within seconds,
+     * but a network drop that outlives them used to leave the adapter in ERROR, which neither the
+     * notification's play button nor the app's could leave. Retrying here means a lock-screen
+     * handover, a tunnel or a screen-off hiccup resumes on its own instead of waiting for someone
+     * to notice and pick a track again.
+     */
+    private fun schedulePlaybackRecovery(error: PlayerError) {
+        if (!isTransientPlaybackError(error.errorCode) || !player.playWhenReady) {
+            // Not transient, or the listener has paused: settle the failed state and stop.
+            player.pause()
+            return
+        }
+        if (playbackRecoveryAttempt >= PLAYBACK_RECOVERY_DELAYS_MS.size) {
+            Logger.i(TAG, "Playback error recovery gave up after $playbackRecoveryAttempt attempts")
+            player.pause()
+            return
+        }
+
+        val delayMs = PLAYBACK_RECOVERY_DELAYS_MS[playbackRecoveryAttempt]
+        playbackRecoveryAttempt++
+        playbackRecoveryJob?.cancel()
+        // Info, not debug, so a stop that was actually an outage shows its whole story in the
+        // on-device log screen, which is where a "it stopped by itself" report is investigated.
+        Logger.i(
+            TAG,
+            "Playback error recovery $playbackRecoveryAttempt/${PLAYBACK_RECOVERY_DELAYS_MS.size} " +
+                "in ${delayMs}ms (${error.errorCodeName})",
+        )
+        playbackRecoveryJob =
+            coroutineScope.launch {
+                delay(delayMs)
+                if (!player.playWhenReady) return@launch
+                Logger.i(TAG, "Playback error recovery: reloading the current track")
+                // The adapter reloads the track with a freshly resolved URL when play() is called
+                // from its ERROR state, so this also covers an expired stream URL.
+                player.play()
+            }
+    }
+
+    private fun isTransientPlaybackError(errorCode: Int): Boolean =
+        errorCode == PlayerConstants.ERROR_CODE_TIMEOUT ||
+            // 2000..2008 is Media3's IO family (network failed/timed out, bad HTTP status, file
+            // read). 3001 is a malformed container, which the adapter also retries: it is what a
+            // captive portal or proxy answering with an HTML page looks like while a network
+            // settles.
+            errorCode in 2000..2008 ||
+            errorCode == 3001
 
     override fun shouldOpenOrCloseEqualizerIntent(shouldOpen: Boolean) {
         // Built-in selected: the session is never handed to a system equalizer, so the two cannot run together.

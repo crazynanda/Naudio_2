@@ -121,7 +121,7 @@
     <string name="about_us">เกี่ยวกับเรา</string>
     <string name="version">เวอร์ชัน</string>
     <string name="github">Github</string>
-    <string name="maxrave_dev">maxrave-dev</string>
+    <string name="maxrave_dev">Nanda Kumar</string>
     <string name="buy_me_a_coffee">เลี้ยงกาแฟให้ฉัน</string>
     <string name="developer_blog">บล็อกนักพัฒนา</string>
     <string name="developer_blog_tagline">อ่านบันทึกจากผู้พัฒนา บทแนะนำ &amp; เบื้องหลังการทำงาน</string>
@@ -274,7 +274,7 @@
     <string name="older_first">เรียงจากเก่าไปใหม่</string>
     <string name="newer_first">เรียงจากใหม่ไปเก่า</string>
     <string name="added_date">เพิ่มวันที่</string>
-    <string name="credit_app">แอปเพลงง่ายๆ ที่ใช้ YouTube Music สำหรับแบ็กเอนด์ \n\nNaudio เป็นโครงการโอเพ่นซอร์สสำหรับสตรีมเพลงจาก YouTube และ YouTube Music โดยไม่มีโฆษณาและการติดตาม Naudio มีคุณสมบัติมากมาย:\n\n - สตรีมเพลง \n - เนื้อเพลงที่ซิงค์กัน\n - ปรับแต่งข้อมูล\n - ฯลฯ…\n\nNaudio ฟรีเสมอและไม่มีโฆษณา\n\nสร้างด้วย ❤️ จาก Tuan Minh Nguyen Duc (maxrave-dev)</string>
+    <string name="credit_app">แอปเพลงง่ายๆ ที่ใช้ YouTube Music สำหรับแบ็กเอนด์ \n\nNaudio เป็นโครงการโอเพ่นซอร์สสำหรับสตรีมเพลงจาก YouTube และ YouTube Music โดยไม่มีโฆษณาและการติดตาม Naudio มีคุณสมบัติมากมาย:\n\n - สตรีมเพลง \n - เนื้อเพลงที่ซิงค์กัน\n - ปรับแต่งข้อมูล\n - ฯลฯ…\n\nNaudio ฟรีเสมอและไม่มีโฆษณา</string>
     <string name="issue_tracker">ติดตามปัญหา</string>
     <string name="featured_playlists">เพลย์ลิสต์ที่โดดเด่น</string>
     <string name="featured_inArtist">โดดเด่นบน</string>
@@ -482,7 +482,7 @@
     <string name="backup_downloaded">สำรองข้อมูลที่ดาวน์โหลด</string>
     <string name="backup_downloaded_description">สำรองข้อมูลเพลงที่ดาวน์โหลดทั้งหมด</string>
     <string name="auto_backup">สำรองข้อมูลอัตโนมัติ</string>
-    <string name="auto_backup_description">สำรองข้อมูลของคุณไปยังโฟลเดอร์ Downloads/SimpMusic โดยอัตโนมัติ</string>
+    <string name="auto_backup_description">สำรองข้อมูลของคุณไปยังโฟลเดอร์ Downloads/Naudio โดยอัตโนมัติ</string>
     <string name="backup_frequency">ความถี่ในการสำรองข้อมูล</string>
     <string name="daily">รายวัน</string>
     <string name="weekly">รายสัปดาห์</string>

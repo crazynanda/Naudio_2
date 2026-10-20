@@ -137,7 +137,7 @@
     <string name="about_us">אודות</string>
     <string name="version">גרסה</string>
     <string name="github">Github</string>
-    <string name="maxrave_dev">maxrave-dev</string>
+    <string name="maxrave_dev">Nanda Kumar</string>
     <string name="buy_me_a_coffee">קנה לי קפה</string>
     <string name="developer_blog">בלוג המפתח</string>
     <string name="developer_blog_tagline">קרא הערות מפתח, מדריכים &amp; ומאחורי-הקלעים</string>
@@ -296,7 +296,7 @@
     <string name="newer_first">החדש ביותר תחילה</string>
     <string name="added_date">תאריך הוספה</string>
     <string name="credit_app">אפליקציית מוזיקה פשוטה המשתמשת ב-YouTube Music כבסיס. \n\nNaudio הוא פרויקט קוד פתוח להזרמת מוזיקה מ-YouTube ו-YouTube Music ללא פרסומות ומעקבים. Naudio מספקת תכונות רבות:\n\n - הזרמת מוזיקה \n - מילים מסונכרנות\n - התאמה אישית של נתונים\n - ועוד… \n\n
-Naudio תמיד בחינם וללא פרסומות \n\nנבנה ב-❤️ מאת Tuan Minh Nguyen Duc (maxrave-dev)</string>
+Naudio תמיד בחינם וללא פרסומות </string>
     <string name="issue_tracker">מעקב אחר בעיות</string>
     <string name="featured_playlists">פלייליסטים נבחרים</string>
     <string name="featured_inArtist">נבחר ב</string>
@@ -570,7 +570,7 @@ Naudio תמיד בחינם וללא פרסומות \n\nנבנה ב-❤️ מאת
     <string name="backup_downloaded">גבה מידע שהורד</string>
     <string name="backup_downloaded_description">גבה מידע על כל השירים שהורדו</string>
     <string name="auto_backup">גיבוי אוטומטי</string>
-    <string name="auto_backup_description">גבה אוטומטית את הנתונים שלך לתיקיית הורדות/SimpMusic</string>
+    <string name="auto_backup_description">גבה אוטומטית את הנתונים שלך לתיקיית הורדות/Naudio</string>
     <string name="backup_frequency">תדירות גיבוי</string>
     <string name="daily">יומי</string>
     <string name="weekly">שבועי</string>
@@ -891,7 +891,7 @@ Naudio תמיד בחינם וללא פרסומות \n\nנבנה ב-❤️ מאת
     <string name="login_sync_code_expired">הקוד במחשב שלך פג. הצג אחד חדש וסרוק אותו שוב.</string>
     <string name="login_sync_failed">משהו השתבש. אנא נסה שוב.</string>
     <string name="modified_build_title">אפליקציה לא רשמית</string>
-    <string name="modified_build_message">אתה משתמש בעותק לא רשמי של Naudio ששונה או נארז מחדש על ידי מישהו אחר. לא ניתן להשתמש בו. הורד את הגרסה הרשמית מהאתר simpmusic.org.</string>
+    <string name="modified_build_message">אתה משתמש בעותק לא רשמי של Naudio ששונה או נארז מחדש על ידי מישהו אחר. לא ניתן להשתמש בו. הורד את הגרסה הרשמית מהאתר github.com/crazynanda/Naudio_2/releases.</string>
     <string name="taste_title">מהו טעם המוזיקה שלך?</string>
     <string name="taste_invite">תן לבינה מלאכותית לקרוא את 12 החודשים האחרונים של ההאזנות שלך ולספר לך.</string>
     <string name="taste_loading_title">קורא את טעם המוזיקה שלך…</string>

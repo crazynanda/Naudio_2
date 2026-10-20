@@ -76,7 +76,6 @@ import com.maxrave.simpmusic.expect.isOnUnmeteredNetwork
 import com.maxrave.simpmusic.expect.ui.toByteArray
 import com.maxrave.simpmusic.getPlatform
 import com.maxrave.simpmusic.utils.VersionManager
-import com.maxrave.simpmusic.utils.decodePromos
 import com.maxrave.simpmusic.utils.shownPromoIds
 import com.maxrave.simpmusic.utils.withShownPromo
 import com.maxrave.simpmusic.viewModel.base.BaseViewModel
@@ -728,7 +727,10 @@ class SharedViewModel(
         dataStoreManager
             .getString(Promo.cacheKey(appIdentity.isDevBuild))
             .distinctUntilChanged()
-            .map(::decodePromos)
+            // ponytail: upstream promo banners are SimpMusic-branded artwork we cannot rebrand
+            // locally, so none are offered. Drop this emptyList() to re-enable once the config
+            // carries Naudio art.
+            .map { emptyList() }
 
     /** The ids of the launch banners this app version has already shown. */
     suspend fun shownPromos(): Set<String> =
@@ -1188,45 +1190,27 @@ class SharedViewModel(
         // startup, can never miss a check that is already under way but not yet marked.
         _isCheckingUpdate.value = true
         viewModelScope.launch {
-            val updateChannel = dataStoreManager.updateChannel.first()
             dataStoreManager.putString(
                 "CheckForUpdateAt",
                 System.currentTimeMillis().toString(),
             )
-            if (updateChannel == DataStoreManager.GITHUB) {
-                updateRepository.checkForGithubReleaseUpdate().collectLatest { response ->
-                    val data = response.data
-                    when (response) {
-                        is Resource.Success if (data != null) -> {
-                            _updateResponse.value = data
-                            showedUpdateDialog = true
-                        }
-
-                        else -> {
-                            log("Check for update error: ${response.message}", LogLevel.WARN)
-                        }
+            updateRepository.checkForGithubReleaseUpdate().collectLatest { response ->
+                val data = response.data
+                when (response) {
+                    is Resource.Success if (data != null) -> {
+                        _updateResponse.value = data
+                        showedUpdateDialog = true
                     }
-                    _isCheckingUpdate.value = false
-                }
-            } else if (updateChannel == DataStoreManager.FDROID) {
-                updateRepository.checkForFdroidUpdate().collectLatest { response ->
-                    val data = response.data
-                    when (response) {
-                        is Resource.Success if (data != null) -> {
-                            _updateResponse.value = data
-                            showedUpdateDialog = true
-                        }
 
-                        else -> {
-                            log("Check for update error: ${response.message}", LogLevel.WARN)
-                        }
+                    else -> {
+                        log("Check for update error: ${response.message}", LogLevel.WARN)
                     }
-                    _isCheckingUpdate.value = false
                 }
+                _isCheckingUpdate.value = false
             }
         }.invokeOnCompletion {
-            // Also for a channel neither branch handles, and for a check that throws: the launch
-            // banner waits for this flag, so it must never stay raised.
+            // Also for a check that throws: the launch banner waits for this flag, so it must
+            // never stay raised.
             _isCheckingUpdate.value = false
         }
     }
