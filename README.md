@@ -9,7 +9,7 @@
   <p><strong><a href="https://github.com/crazynanda/Naudio_2/releases/latest">Download the latest Naudio release (2.3.0)</a></strong></p>
 </div>
 
-Naudio is a personal fork of [SimpMusic](https://github.com/maxrave-dev/SimpMusic), maintained independently.
+Naudio is an independently developed project based on [SimpMusic](https://github.com/maxrave-dev/SimpMusic), with its own branding, features, and ongoing development.
 
 ## Features
 
