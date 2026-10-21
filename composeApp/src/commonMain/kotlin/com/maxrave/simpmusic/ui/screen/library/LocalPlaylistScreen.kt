@@ -1526,6 +1526,7 @@ fun LocalPlaylistScreen(
             onAddToQueue = {
                 viewModel.addAllToQueue()
             },
+            onAddAllToFavorites = viewModel::addAllToFavorites,
             onSync = {
                 if (uiState.syncState == LocalPlaylistEntity.YouTubeSyncState.Synced) {
                     showUnsyncAlertDialog = true

@@ -157,6 +157,7 @@ import com.maxrave.simpmusic.ui.icon.DownloadForOffline
 import com.maxrave.simpmusic.ui.icon.DownloadForOfflineOutlined
 import com.maxrave.simpmusic.ui.icon.Downloading
 import com.maxrave.simpmusic.ui.icon.Edit
+import com.maxrave.simpmusic.ui.icon.Favorite
 import com.maxrave.simpmusic.ui.icon.FavoriteBorder
 import com.maxrave.simpmusic.ui.icon.KeyboardArrowDown
 import com.maxrave.simpmusic.ui.icon.KeyboardDoubleArrowDown
@@ -199,6 +200,7 @@ import org.jetbrains.compose.resources.stringResource
 import org.koin.compose.koinInject
 import org.koin.compose.viewmodel.koinViewModel
 import simpmusic.composeapp.generated.resources.Res
+import simpmusic.composeapp.generated.resources.add_all_to_favorites
 import simpmusic.composeapp.generated.resources.add_to_a_playlist
 import simpmusic.composeapp.generated.resources.add_to_queue
 import simpmusic.composeapp.generated.resources.add_to_queue_disabled_endless
@@ -2879,6 +2881,7 @@ fun PlaylistBottomSheet(
     onEditTitle: (newTitle: String) -> Unit = {},
     onSaveToLocal: () -> Unit,
     onAddToQueue: (() -> Unit)? = null,
+    onAddAllToFavorites: (() -> Unit)? = null,
     localPlaylistRepository: LocalPlaylistRepository = koinInject(),
 ) {
     val coroutineScope = rememberCoroutineScope()
@@ -2993,6 +2996,12 @@ fun PlaylistBottomSheet(
                         hideModalBottomSheet()
                     }
                 }
+                if (onAddAllToFavorites != null) {
+                    ActionButton(icon = SimpIcons.Favorite, text = Res.string.add_all_to_favorites) {
+                        onAddAllToFavorites()
+                        hideModalBottomSheet()
+                    }
+                }
                 if (isYourYouTubePlaylist) {
                     ActionButton(icon = SimpIcons.Edit, text = Res.string.edit_title) {
                         showEditTitle = true
@@ -3037,6 +3046,7 @@ fun LocalPlaylistBottomSheet(
     onEditTitle: (newTitle: String) -> Unit,
     onEditThumbnail: (newThumbnailUri: String) -> Unit,
     onAddToQueue: () -> Unit,
+    onAddAllToFavorites: () -> Unit,
     onSync: () -> Unit,
     onUpdatePlaylist: () -> Unit,
     onDelete: () -> Unit,
@@ -3181,6 +3191,10 @@ fun LocalPlaylistBottomSheet(
                         enable = addToQueueBlock == null,
                     ) {
                         onAddToQueue()
+                    }
+                    ActionButton(icon = SimpIcons.Favorite, text = Res.string.add_all_to_favorites) {
+                        onAddAllToFavorites()
+                        hideModalBottomSheet()
                     }
                     ActionButton(
                         icon =

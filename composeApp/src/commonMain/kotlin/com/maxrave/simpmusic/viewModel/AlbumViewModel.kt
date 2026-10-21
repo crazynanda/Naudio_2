@@ -243,6 +243,22 @@ class AlbumViewModel(
         loadMediaItem(shuffleList[randomIndex], Config.ALBUM_CLICK, randomIndex)
     }
 
+    fun addAllToFavorites() {
+        addAllSongsToFavorites(
+            songRepository = songRepository,
+            emptyMessage = getString(Res.string.playlist_is_empty),
+            loadVideoIds = {
+                val tracks = uiState.value.listTrack
+                // The album's own row can predate its songs (clearing history, a partial sync), so
+                // recreate any missing ones before favoriting. insertSong keeps existing metadata.
+                tracks.forEach { track ->
+                    songRepository.insertSong(track.toSongEntity()).singleOrNull()
+                }
+                tracks.map { it.videoId }
+            },
+        )
+    }
+
     fun downloadFullAlbum() {
         viewModelScope.launch {
             // Insert all song to database

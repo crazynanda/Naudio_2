@@ -20,6 +20,11 @@
         <item quantity="other">%1$d artists</item>
     </plurals>
     <string name="library_favorite_empty_hint">Tap the heart on any song to keep it here.</string>
+    <string name="add_all_to_favorites">Add all songs to Favorites</string>
+    <string name="add_all_to_favorites_done">Added %1$d to Favorites</string>
+    <string name="add_all_to_favorites_done_skipped">Added %1$d · %2$d already in Favorites</string>
+    <string name="add_all_to_favorites_result">Added %1$d · Skipped %2$d · Failed %3$d</string>
+    <string name="add_all_to_favorites_already">All songs are already in Favorites</string>
     <string name="like">Like</string>
     <string name="hello_blank_fragment">Hello blank fragment</string>
     <string name="download">Download</string>

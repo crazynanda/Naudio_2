@@ -1319,6 +1319,7 @@ fun PlaylistScreen(
                             viewModel.updatePlaylistTitle(newTitle, data.id)
                         },
                         onAddToQueue = if (data.isRadio) null else addToQueue,
+                        onAddAllToFavorites = if (data.isRadio) null else viewModel::addAllToFavorites,
                     )
                 }
                 AnimatedVisibility(

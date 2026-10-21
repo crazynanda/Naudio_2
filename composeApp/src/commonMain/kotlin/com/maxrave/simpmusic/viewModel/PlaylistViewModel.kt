@@ -31,6 +31,7 @@ import com.maxrave.simpmusic.viewModel.PlaylistUIState.Error
 import com.maxrave.simpmusic.viewModel.PlaylistUIState.Loading
 import com.maxrave.simpmusic.viewModel.PlaylistUIState.Success
 import com.maxrave.simpmusic.viewModel.base.BaseViewModel
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -44,6 +45,7 @@ import kotlinx.coroutines.flow.singleOrNull
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import org.koin.core.component.inject
 import simpmusic.composeapp.generated.resources.Res
 import simpmusic.composeapp.generated.resources.auto_created_by_youtube_music
@@ -638,6 +640,29 @@ class PlaylistViewModel(
         }
     }
 
+    /**
+     * Adds every song of the playlist to Favorites, skipping the ones already there and reporting
+     * songs whose stored row is missing as failed.
+     */
+    fun addAllToFavorites() {
+        addAllSongsToFavorites(
+            songRepository = songRepository,
+            emptyMessage = getString(Res.string.playlist_is_empty),
+            loadVideoIds = {
+                withTimeoutOrNull(TRACKS_LOAD_TIMEOUT_MS) { awaitFullTracks() }?.toListVideoId()
+            },
+        )
+    }
+
+    /**
+     * [getFullTracks] reports through a callback, and it can run for as long as pagination takes.
+     */
+    private suspend fun awaitFullTracks(): List<Track> {
+        val deferred = CompletableDeferred<List<Track>>()
+        getFullTracks { deferred.complete(it) }
+        return deferred.await()
+    }
+
     fun downloadFullPlaylist() {
         viewModelScope.launch {
             val id = playlistEntity.value?.id ?: return@launch
@@ -681,6 +706,10 @@ class PlaylistViewModel(
         super.onCleared()
         collectDownloadedJob?.cancel()
         playlistEntityJob?.cancel()
+    }
+
+    private companion object {
+        const val TRACKS_LOAD_TIMEOUT_MS = 3 * 60 * 1000L
     }
 }
 

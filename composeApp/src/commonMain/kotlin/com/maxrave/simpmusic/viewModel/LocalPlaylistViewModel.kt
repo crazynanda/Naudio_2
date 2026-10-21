@@ -1014,6 +1014,16 @@ class LocalPlaylistViewModel(
         }
     }
 
+    fun addAllToFavorites() {
+        addAllSongsToFavorites(
+            songRepository = songRepository,
+            emptyMessage = getString(Res.string.playlist_is_empty),
+            loadVideoIds = {
+                localPlaylistRepository.getFullPlaylistTracks(id = uiState.value.id).map { it.videoId }
+            },
+        )
+    }
+
     suspend fun changeLocalPlaylistItemPosition(
         from: Int,
         to: Int,
