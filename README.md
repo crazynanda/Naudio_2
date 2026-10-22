@@ -6,7 +6,7 @@
     <a href="https://github.com/crazynanda/Naudio_2/releases"><img src="https://img.shields.io/github/downloads/crazynanda/Naudio_2/total" alt="Total downloads"></a>
     <a href="LICENSE"><img src="https://img.shields.io/github/license/crazynanda/Naudio_2" alt="License: GPL-3.0"></a>
   </p>
-  <p><strong><a href="https://github.com/crazynanda/Naudio_2/releases/latest">Download the latest Naudio release (2.3.0)</a></strong></p>
+  <p><strong><a href="https://github.com/crazynanda/Naudio_2/releases/latest">Download the latest Naudio release (2.3.1)</a></strong></p>
 </div>
 
 Naudio is an independently developed project based on [SimpMusic](https://github.com/maxrave-dev/SimpMusic), with its own branding, features, and ongoing development.
@@ -58,7 +58,7 @@ Naudio is an independently developed project based on [SimpMusic](https://github
 ### Android
 
 1. Open the [latest release](https://github.com/crazynanda/Naudio_2/releases/latest).
-2. Download `Naudio-2.3.0-verified-universal.apk`.
+2. Download `Naudio-2.3.1.apk`.
 3. Open the APK and allow installation from your browser or file manager when prompted.
 
 Naudio requires Android 8.0 (API 26) or newer. The universal APK includes `arm64-v8a`, `armeabi-v7a`, and `x86_64` libraries. The current release does not include a separate vivo/Origin Island APK.
