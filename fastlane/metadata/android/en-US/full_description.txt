@@ -1,4 +1,4 @@
-Not a simple music player, it's SimpMusic
+Not a simple music player, it's Naudio
 
 <br><b>Features:</b>
 
