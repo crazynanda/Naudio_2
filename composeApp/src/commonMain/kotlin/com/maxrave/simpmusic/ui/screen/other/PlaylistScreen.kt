@@ -1056,7 +1056,7 @@ fun PlaylistScreen(
                     }) { index ->
                         val item = filteredTrack.getOrNull(index)
                         if (item != null) {
-                            Column(modifier = Modifier.animateItem()) {
+                            Column(modifier = Modifier.fillMaxWidth().animateItem()) {
                                 if (playingTrack?.videoId == item.videoId && isPlaying) {
                                     SongFullWidthItems(
                                         forceDark = true,
@@ -1076,7 +1076,7 @@ fun PlaylistScreen(
                                         isSelected = selectionState.isSelected(item.videoId),
                                         onLongClick = { selectionState.start(it) },
                                         onSelectToggle = { selectionState.toggle(it) },
-                                        modifier = Modifier,
+                                        modifier = Modifier.fillMaxWidth(),
                                     )
                                 } else {
                                     SongFullWidthItems(
@@ -1097,7 +1097,7 @@ fun PlaylistScreen(
                                         isSelected = selectionState.isSelected(item.videoId),
                                         onLongClick = { selectionState.start(it) },
                                         onSelectToggle = { selectionState.toggle(it) },
-                                        modifier = Modifier,
+                                        modifier = Modifier.fillMaxWidth(),
                                     )
                                 }
                                 if (index < filteredTrack.size - 1) {

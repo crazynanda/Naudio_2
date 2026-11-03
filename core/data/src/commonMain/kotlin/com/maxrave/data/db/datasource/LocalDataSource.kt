@@ -19,6 +19,7 @@ import com.maxrave.domain.data.entities.PairSongLocalPlaylist
 import com.maxrave.domain.data.entities.PlaylistEntity
 import com.maxrave.domain.data.entities.PodcastsEntity
 import com.maxrave.domain.data.entities.QueueEntity
+import com.maxrave.domain.data.entities.RecentSongEntity
 import com.maxrave.domain.data.entities.SearchHistory
 import com.maxrave.domain.data.entities.SetVideoIdEntity
 import com.maxrave.domain.data.entities.SongEntity
@@ -29,6 +30,7 @@ import com.maxrave.domain.data.player.LiveStreamRegistry
 import com.maxrave.domain.extension.now
 import com.maxrave.domain.utils.FilterState
 import com.maxrave.domain.utils.isLive
+import com.maxrave.logger.Logger
 import kotlinx.datetime.LocalDateTime
 
 /** SQLite caps bind parameters per statement; stay well under it when deleting in bulk. */
@@ -64,6 +66,16 @@ internal class LocalDataSource(
     suspend fun deleteSearchHistory() = databaseDao.deleteSearchHistory()
 
     suspend fun insertSearchHistory(searchHistory: SearchHistory) = databaseDao.insertSearchHistory(searchHistory)
+
+    fun getRecentSongs() = databaseDao.getRecentSongs()
+
+    suspend fun saveRecentSong(song: RecentSongEntity) {
+        Logger.i("RecentSongsLocal", "save start ${song.videoId}")
+        databaseDao.saveRecentSong(song)
+        Logger.i("RecentSongsLocal", "save ok ${song.videoId}")
+    }
+
+    suspend fun clearRecentSongs() = databaseDao.clearRecentSongs()
 
     suspend fun getAllSongs(limit: Int) = databaseDao.getAllSongs(limit)
 
@@ -212,6 +224,13 @@ internal class LocalDataSource(
                     artistId = song.artistId,
                 )
             }
+            if (song.durationSeconds > 0 || (song.duration.isNotBlank() && song.duration != "null")) {
+                databaseDao.refreshDurationIfMissing(
+                    videoId = song.videoId,
+                    duration = song.duration,
+                    durationSeconds = song.durationSeconds,
+                )
+            }
         }
         // A row stored before its LIVE chip was seen learns it here, and so does one inserted just
         // after its stream resolved — resolution (a precache, say) cannot mark a row that does not
@@ -228,6 +247,12 @@ internal class LocalDataSource(
         videoId: String,
         isLive: Boolean,
     ) = if (isLive) databaseDao.markSongLive(videoId) else databaseDao.unmarkSongLive(videoId)
+
+    suspend fun refreshDurationIfMissing(
+        videoId: String,
+        duration: String,
+        durationSeconds: Int,
+    ) = databaseDao.refreshDurationIfMissing(videoId, duration, durationSeconds)
 
     /**
      * Batch counterpart of [insertSong], used by the importer.

@@ -25,6 +25,7 @@ import com.maxrave.domain.data.entities.PlaylistEntity
 import com.maxrave.domain.data.entities.PodcastWithEpisodes
 import com.maxrave.domain.data.entities.PodcastsEntity
 import com.maxrave.domain.data.entities.QueueEntity
+import com.maxrave.domain.data.entities.RecentSongEntity
 import com.maxrave.domain.data.entities.SearchHistory
 import com.maxrave.domain.data.entities.SetVideoIdEntity
 import com.maxrave.domain.data.entities.SongEntity
@@ -44,6 +45,7 @@ import com.maxrave.domain.data.type.PlaylistType
 import com.maxrave.domain.data.type.RecentlyType
 import com.maxrave.domain.extension.now
 import com.maxrave.domain.utils.LIVE_RESULT_TYPE
+import com.maxrave.logger.Logger
 import kotlinx.coroutines.flow.Flow
 import kotlinx.datetime.LocalDateTime
 
@@ -54,6 +56,8 @@ import kotlinx.datetime.LocalDateTime
  * literal baked into [DatabaseDao.refreshAlbumIfPlaceholder]'s WHERE clause.
  */
 private const val PLACEHOLDER_ALBUM_NAME = "Album"
+
+private const val RECENT_SONG_LIMIT = 20
 
 @Dao
 interface DatabaseDao {
@@ -219,6 +223,38 @@ interface DatabaseDao {
     @Insert(onConflict = OnConflictStrategy.Companion.REPLACE)
     suspend fun insertSearchHistory(searchHistory: SearchHistory): Long
 
+    // Recent songs
+    @Query("SELECT * FROM recent_song ORDER BY selectedAt DESC LIMIT $RECENT_SONG_LIMIT")
+    fun getRecentSongs(): Flow<List<RecentSongEntity>>
+
+    @Insert(onConflict = OnConflictStrategy.Companion.REPLACE)
+    suspend fun insertRecentSong(song: RecentSongEntity)
+
+    @Query(
+        "DELETE FROM recent_song WHERE videoId NOT IN " +
+            "(SELECT videoId FROM recent_song ORDER BY selectedAt DESC LIMIT $RECENT_SONG_LIMIT)",
+    )
+    suspend fun trimRecentSongs()
+
+    @Query("SELECT COUNT(*) FROM recent_song")
+    suspend fun getRecentSongCount(): Int
+
+    @Query("DELETE FROM recent_song")
+    suspend fun clearRecentSongs()
+
+    @Transaction
+    suspend fun saveRecentSong(song: RecentSongEntity) {
+        Logger.i("RecentSongsDao", "insert start ${song.videoId}")
+        try {
+            insertRecentSong(song)
+            trimRecentSongs()
+            Logger.i("RecentSongsDao", "insert ok ${song.videoId} count=${getRecentSongCount()}")
+        } catch (e: Exception) {
+            Logger.e("RecentSongsDao", "insert failed ${song.videoId}", e)
+            throw e
+        }
+    }
+
     // Song
     @Query("SELECT * FROM song ORDER BY inLibrary DESC LIMIT :limit OFFSET 0")
     suspend fun getAllSongs(limit: Int): List<SongEntity>
@@ -307,9 +343,26 @@ interface DatabaseDao {
                         artistId = song.artistId,
                     )
                 }
+                if (song.durationSeconds > 0 || (song.duration.isNotBlank() && song.duration != "null")) {
+                    refreshDurationIfMissing(
+                        videoId = song.videoId,
+                        duration = song.duration,
+                        durationSeconds = song.durationSeconds,
+                    )
+                }
             }
         }
     }
+
+    @Query(
+        "UPDATE song SET duration = :duration, durationSeconds = :durationSeconds " +
+            "WHERE videoId = :videoId AND (durationSeconds IS NULL OR durationSeconds <= 0 OR duration IS NULL OR duration = '' OR duration = 'null')",
+    )
+    suspend fun refreshDurationIfMissing(
+        videoId: String,
+        duration: String,
+        durationSeconds: Int,
+    )
 
     /**
      * Fills in an album name that an older parse never had.

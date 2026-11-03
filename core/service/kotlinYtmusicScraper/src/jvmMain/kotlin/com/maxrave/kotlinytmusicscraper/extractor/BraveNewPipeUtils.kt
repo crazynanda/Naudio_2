@@ -14,8 +14,7 @@ import java.net.Proxy
 internal fun List<Pair<Int, String>>.hasRequiredItags(): Boolean {
     val itags = this.mapTo(HashSet()) { it.first }
     val hasAudio = ITAG.AUDIO.any { it in itags }
-    val hasVideo = ITAG.VIDEO.any { it in itags }
-    return hasAudio && hasVideo
+    return hasAudio
 }
 
 private val streamHealthCheckClient: OkHttpClient by lazy {
@@ -25,24 +24,25 @@ private val streamHealthCheckClient: OkHttpClient by lazy {
 }
 
 /**
- * Pick one random URL whose itag belongs to [ITAG.AUDIO] or [ITAG.VIDEO] and HEAD it. Returns true
- * only when the response code is in the 200..299 range. We only health-check those URLs because
- * they are the ones the player will actually use; lower-quality extras can stay unverified.
+ * Pick one candidate audio URL (or video if audio is missing) and HEAD it. Returns true
+ * when the response code is 2xx or 405 (Method Not Allowed - some CDNs forbid HEAD but allow GET).
+ * Defaults to true on transient network exceptions so working streams are not needlessly discarded.
  */
 internal fun List<Pair<Int, String>>.headCheckRandomStream(): Boolean {
-    val required = ITAG.AUDIO + ITAG.VIDEO
-    val candidate = this.filter { it.first in required }.randomOrNull() ?: return false
+    val candidates = this.filter { it.first in ITAG.AUDIO }.ifEmpty { this }
+    val candidate = candidates.randomOrNull() ?: return false
     return runCatching {
         val request =
             okhttp3.Request
                 .Builder()
                 .head()
                 .url(candidate.second)
+                .header("User-Agent", YouTubeClient.USER_AGENT_WEB)
                 .build()
         streamHealthCheckClient.newCall(request).execute().use { response ->
-            response.code in 200..299
+            response.code in 200..299 || response.code == 405
         }
-    }.getOrDefault(false)
+    }.getOrDefault(true)
 }
 
 class BraveNewPipeDownloaderImpl(

@@ -310,17 +310,13 @@ private fun provideResolvingDataSourceFactory(
                 streamRepository.getNewFormat(id).lastOrNull()?.let {
                     val videoUrl = it.videoUrl
                     if (videoUrl != null && it.expiredTime > now()) {
-                        Logger.d("Stream", videoUrl)
-                        Logger.d("Stream", "Video from format")
-                        val is403Url = streamRepository.is403Url(videoUrl).firstOrNull() != false
-                        Logger.d("Stream", "is 403 $is403Url")
-                        if (!is403Url) {
-                            dataSpecReturn = dataSpec.withUri(videoUrl.toUri()).subrange(dataSpec.uriPositionOffset, chunkLength)
-                            resolved = true
-                            return@runBlocking
-                        }
+                        Logger.i("NaudioStreaming", "Using cached video format for $id, expires: ${it.expiredTime}")
+                        dataSpecReturn = dataSpec.withUri(videoUrl.toUri()).subrange(dataSpec.uriPositionOffset, chunkLength)
+                        resolved = true
+                        return@runBlocking
                     }
                 }
+                Logger.i("NaudioStreaming", "Resolving fresh video stream for $id")
                 streamRepository
                     .getStream(
                         dataStoreManager,
@@ -329,8 +325,7 @@ private fun provideResolvingDataSourceFactory(
                         isVideo = true,
                     ).lastOrNull()
                     ?.let {
-                        Logger.d("Stream", it)
-                        Logger.d("Stream", "Video")
+                        Logger.i("NaudioStreaming", "Video stream resolved for $id")
                         dataSpecReturn = dataSpec.withUri(it.toUri()).subrange(dataSpec.uriPositionOffset, chunkLength)
                         resolved = true
                     }
@@ -338,17 +333,13 @@ private fun provideResolvingDataSourceFactory(
                 streamRepository.getNewFormat(mediaId).lastOrNull()?.let {
                     val audioUrl = it.audioUrl
                     if (audioUrl != null && it.expiredTime > now()) {
-                        Logger.d("Stream", audioUrl)
-                        Logger.d("Stream", "Audio from format")
-                        val is403Url = streamRepository.is403Url(audioUrl).firstOrNull() != false
-                        Logger.d("Stream", "is 403 $is403Url")
-                        if (!is403Url) {
-                            dataSpecReturn = dataSpec.withUri(audioUrl.toUri()).subrange(dataSpec.uriPositionOffset, chunkLength)
-                            resolved = true
-                            return@runBlocking
-                        }
+                        Logger.i("NaudioStreaming", "Using cached audio format for $mediaId, expires: ${it.expiredTime}")
+                        dataSpecReturn = dataSpec.withUri(audioUrl.toUri()).subrange(dataSpec.uriPositionOffset, chunkLength)
+                        resolved = true
+                        return@runBlocking
                     }
                 }
+                Logger.i("NaudioStreaming", "Resolving fresh audio stream for $mediaId")
                 streamRepository
                     .getStream(
                         dataStoreManager,
@@ -357,8 +348,7 @@ private fun provideResolvingDataSourceFactory(
                         isVideo = false,
                     ).lastOrNull()
                     ?.let {
-                        Logger.d("Stream", it)
-                        Logger.d("Stream", "Audio")
+                        Logger.i("NaudioStreaming", "Audio stream resolved for $mediaId")
                         dataSpecReturn = dataSpec.withUri(it.toUri()).subrange(dataSpec.uriPositionOffset, chunkLength)
                         resolved = true
                     }
@@ -368,7 +358,7 @@ private fun provideResolvingDataSourceFactory(
         // not be read as a file, so this source fails and the track is rebuilt as HLS.
         if (LiveStreamRegistry.isLive(videoId)) throw LiveStreamDetectedException(videoId)
         if (!resolved) {
-            Logger.e("Stream", "Failed to resolve stream URL for $mediaId")
+            Logger.e("NaudioStreaming", "Failed to resolve stream URL for $mediaId")
             throw java.io.IOException("Failed to resolve stream URL for $mediaId")
         }
         return@Factory dataSpecReturn

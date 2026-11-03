@@ -86,8 +86,9 @@ fun SongEntity.toGenericMediaItem(): GenericMediaItem {
 }
 
 fun Track.toGenericMediaItem(): GenericMediaItem {
+    val lastThumb = this.thumbnails?.lastOrNull()
     var thumbUrl =
-        this.thumbnails?.last()?.url
+        lastThumb?.url
             ?: "http://i.ytimg.com/vi/${this.videoId}/maxresdefault.jpg"
     if (thumbUrl.contains("w120")) {
         thumbUrl = Regex("([wh])120").replace(thumbUrl, "$1544")
@@ -95,9 +96,9 @@ fun Track.toGenericMediaItem(): GenericMediaItem {
     val artistName: String = this.artists.toListName().connectArtists()
     val isSong =
         (
-            this.thumbnails?.last()?.height != 0 &&
-                this.thumbnails?.last()?.height == this.thumbnails?.last()?.width &&
-                this.thumbnails?.last()?.height != null
+            lastThumb?.height != null &&
+                lastThumb.height != 0 &&
+                lastThumb.height == lastThumb.width
         ) &&
             (!thumbUrl.contains("hq720") && !thumbUrl.contains("maxresdefault"))
     return GenericMediaItem(

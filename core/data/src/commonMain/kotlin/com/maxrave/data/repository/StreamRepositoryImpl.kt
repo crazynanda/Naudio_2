@@ -199,6 +199,12 @@ internal class StreamRepositoryImpl(
                             ", expires in ${response.streamingData?.expiresInSeconds}s",
                     )
                     val durationSecond = response.videoDetails?.lengthSeconds?.toIntOrNull()
+                    if (durationSecond != null && durationSecond > 0) {
+                        val m = durationSecond / 60
+                        val s = durationSecond % 60
+                        val durStr = "${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}"
+                        localDataSource.refreshDurationIfMissing(videoId, durStr, durationSecond)
+                    }
                     // AutoMix metadata from Tidal official API
                     var tidalBpm: Int? = null
                     var tidalMusicKey: String? = null

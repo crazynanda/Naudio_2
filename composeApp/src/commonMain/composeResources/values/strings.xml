@@ -8,6 +8,8 @@
     <string name="album_length">%1$s tracks  %2$s</string>
     <string name="view_count">%1$s views</string>
     <string name="clear_search_history">Clear search history</string>
+    <string name="recent_songs">Recent songs</string>
+    <string name="clear_recent_songs">Clear</string>
     <string name="liked">Liked</string>
     <string name="liked_songs">Liked songs</string>
     <string name="liked_songs_by">By %1$s</string>

@@ -1391,13 +1391,13 @@ fun LocalPlaylistScreen(
                     DraggableItem(
                         dragDropState,
                         index + 1,
-                        Modifier.animateItem(),
+                        Modifier.fillMaxWidth().animateItem(),
                     ) {
-                        content(Modifier)
+                        content(Modifier.fillMaxWidth())
                     }
                 } else {
-                    Column(modifier = Modifier.animateItem()) {
-                        content(Modifier)
+                    Column(modifier = Modifier.fillMaxWidth().animateItem()) {
+                        content(Modifier.fillMaxWidth())
                         if (index < trackPagingItems.itemCount - 1) {
                             HorizontalDivider(
                                 modifier = Modifier.padding(start = 72.dp, end = 16.dp),
@@ -1689,8 +1689,7 @@ fun LocalPlaylistScreen(
                         isSelected = selectionState.isSelected(song.videoId),
                         onLongClick = { selectionState.start(it) },
                         onSelectToggle = { selectionState.toggle(it) },
-                        // Required, no default — the paged list passes it down through `mod`.
-                        modifier = Modifier,
+                        modifier = Modifier.fillMaxWidth(),
                     )
                     HorizontalDivider(modifier = Modifier.padding(start = 72.dp, end = 16.dp))
                 }

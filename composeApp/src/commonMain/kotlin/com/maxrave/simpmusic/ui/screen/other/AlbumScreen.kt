@@ -865,7 +865,7 @@ fun AlbumScreen(
                     }) { index ->
                         val item = uiState.listTrack.getOrNull(index)
                         if (item != null) {
-                            Column(modifier = Modifier.animateItem()) {
+                            Column(modifier = Modifier.fillMaxWidth().animateItem()) {
                                 SongFullWidthItems(
                                     forceDark = true,
                                     isPlaying = item.videoId == playingVideoId,
@@ -887,7 +887,7 @@ fun AlbumScreen(
                                     isSelected = selectionState.isSelected(item.videoId),
                                     onLongClick = { selectionState.start(it) },
                                     onSelectToggle = { selectionState.toggle(it) },
-                                    modifier = Modifier,
+                                    modifier = Modifier.fillMaxWidth(),
                                 )
                                 if (index < uiState.trackCount - 1) {
                                     HorizontalDivider(

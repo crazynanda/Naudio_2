@@ -151,7 +151,7 @@ fun LibraryItem(
                                         SongFullWidthItems(
                                             songEntity = item as SongEntity,
                                             isPlaying = item.videoId == state.type.playingVideoId,
-                                            modifier = Modifier,
+                                            modifier = Modifier.fillMaxWidth(),
                                             onMoreClickListener = {
                                                 songEntity = item
                                                 showBottomSheet = true

@@ -45,11 +45,24 @@ import org.simpmusic.lyrics.parser.parseSyncedLyrics
 import org.simpmusic.lyrics.parser.parseUnsyncedLyrics
 import kotlin.jvm.JvmName
 
+internal fun formatDurationString(durationSeconds: Int?): String {
+    if (durationSeconds == null || durationSeconds <= 0) return ""
+    val minutes = durationSeconds / 60
+    val seconds = durationSeconds % 60
+    val hours = minutes / 60
+    return if (hours > 0) {
+        val remMinutes = minutes % 60
+        "${hours}:${remMinutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}"
+    } else {
+        "${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}"
+    }
+}
+
 internal fun SongItem.toTrack(): Track =
     Track(
         album = this.album.let { Album(it?.id ?: "", it?.name ?: "") },
         artists = this.artists.map { artist -> Artist(id = artist.id ?: "", name = artist.name) },
-        duration = this.duration.toString(),
+        duration = formatDurationString(this.duration),
         durationSeconds = this.duration,
         isAvailable = false,
         isExplicit = this.explicit,
@@ -68,7 +81,7 @@ internal fun VideoItem.toTrack(): Track =
     Track(
         album = this.album.let { Album(it?.id ?: "", it?.name ?: "") },
         artists = this.artists.map { artist -> Artist(id = artist.id ?: "", name = artist.name) },
-        duration = this.duration.toString(),
+        duration = formatDurationString(this.duration),
         durationSeconds = this.duration,
         isAvailable = false,
         isExplicit = false,
@@ -223,8 +236,8 @@ internal fun YouTubeInitialPage.toTrack(): Track {
                     id = initialPage.videoDetails?.channelId,
                 ),
             ),
-        duration = initialPage.videoDetails?.lengthSeconds,
-        durationSeconds = initialPage.videoDetails?.lengthSeconds?.toInt() ?: 0,
+        duration = formatDurationString(initialPage.videoDetails?.lengthSeconds?.toIntOrNull()),
+        durationSeconds = initialPage.videoDetails?.lengthSeconds?.toIntOrNull() ?: 0,
         isAvailable = false,
         isExplicit = false,
         likeStatus = null,
@@ -329,7 +342,7 @@ internal fun SearchSuggestions.toDomainSearchSuggestions(): com.maxrave.domain.d
                                     )
                                 },
                             category = "",
-                            duration = it.duration.toString(),
+                            duration = formatDurationString(it.duration),
                             durationSeconds = it.duration,
                             feedbackTokens = null,
                             isExplicit = it.explicit,
@@ -418,7 +431,7 @@ internal fun SearchSuggestions.toDomainSearchSuggestions(): com.maxrave.domain.d
                                     )
                                 },
                             category = null,
-                            duration = it.duration?.toString(),
+                            duration = formatDurationString(it.duration),
                             durationSeconds = it.duration,
                             resultType = if (it.isLive) LIVE_RESULT_TYPE else "VIDEO",
                             thumbnails = it.thumbnails?.thumbnails?.toListThumbnail() ?: listOf(),

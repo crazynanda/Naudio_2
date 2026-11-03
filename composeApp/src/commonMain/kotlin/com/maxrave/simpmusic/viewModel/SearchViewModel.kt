@@ -2,7 +2,9 @@ package com.maxrave.simpmusic.viewModel
 
 import androidx.lifecycle.viewModelScope
 import com.maxrave.common.SELECTED_LANGUAGE
+import com.maxrave.domain.data.entities.RecentSongEntity
 import com.maxrave.domain.data.entities.SearchHistory
+import com.maxrave.domain.data.model.browse.album.Track
 import com.maxrave.domain.data.model.searchResult.albums.AlbumsResult
 import com.maxrave.domain.data.model.searchResult.artists.ArtistsResult
 import com.maxrave.domain.data.model.searchResult.playlists.PlaylistsResult
@@ -102,6 +104,9 @@ class SearchViewModel(
     private val _searchHistory: MutableStateFlow<List<String>> = MutableStateFlow(emptyList())
     val searchHistory: StateFlow<List<String>> get() = _searchHistory.asStateFlow()
 
+    private val _recentSongs: MutableStateFlow<List<RecentSongEntity>> = MutableStateFlow(emptyList())
+    val recentSongs: StateFlow<List<RecentSongEntity>> get() = _recentSongs.asStateFlow()
+
     /** Browse categories shown on the empty search screen, the way YouTube Music itself does. */
     private val _moodAndGenres: MutableStateFlow<Mood?> = MutableStateFlow(null)
     val moodAndGenres: StateFlow<Mood?> get() = _moodAndGenres.asStateFlow()
@@ -119,6 +124,7 @@ class SearchViewModel(
         regionCode = runBlocking { dataStoreManager.location.first() }
         language = runBlocking { dataStoreManager.getString(SELECTED_LANGUAGE).first() }
         getSearchHistory()
+        getRecentSongs()
         getMoodAndGenres()
     }
 
@@ -184,6 +190,31 @@ class SearchViewModel(
             searchRepository.deleteSearchHistory()
             delay(1000)
             getSearchHistory()
+        }
+    }
+
+    private fun getRecentSongs() {
+        viewModelScope.launch {
+            searchRepository.getRecentSongs().collect {
+                Logger.i("RecentSongs", "flow count=${it.size} newest=${it.firstOrNull()?.videoId}")
+                _recentSongs.value = it
+            }
+        }
+    }
+
+    fun insertRecentSong(track: Track) {
+        Logger.i("RecentSongs", "insert start ${track.videoId} - ${track.title}")
+        viewModelScope.launch {
+            runCatching { searchRepository.saveRecentSong(track) }
+                .onSuccess { Logger.i("RecentSongs", "insert ok ${track.videoId}") }
+                .onFailure { Logger.e("RecentSongs", "insert failed ${track.videoId}", it) }
+        }
+    }
+
+    fun clearRecentSongs() {
+        viewModelScope.launch {
+            runCatching { searchRepository.clearRecentSongs() }
+                .onFailure { Logger.e(tag, "Could not clear recent songs", it) }
         }
     }
 

@@ -1366,36 +1366,71 @@ class YouTube {
     ): PlayerResponse? {
         val listUrlSig = mutableListOf<String>()
         var decodedSigResponse: PlayerResponse?
-        var sigResponse: PlayerResponse?
+        val sigResponse: PlayerResponse = tempRes
         Logger.d(TAG, "YouTube TempRes ${tempRes.playabilityStatus}")
         if (tempRes.playabilityStatus.status != "OK") {
-            return null
-        } else {
-            sigResponse = tempRes
+            Logger.w("NaudioStreaming", "WEB_REMIX playability was '${tempRes.playabilityStatus.status}' (${tempRes.playabilityStatus.reason}) for $videoId; attempting extractor fallback")
         }
         val streamsList = ytMusic.getNewPipePlayer(videoId).orderByAudioTrack(preferredAudioLanguage)
-        if (streamsList.isEmpty()) return null
+        if (streamsList.isEmpty()) {
+            Logger.w("NaudioStreaming", "No streams extracted by NewPipe for $videoId")
+            return null
+        }
+        Logger.i("NaudioStreaming", "Extracted ${streamsList.size} streams for $videoId: ${streamsList.map { it.first }}")
+
+        val baseStreamingData = sigResponse.streamingData ?: PlayerResponse.StreamingData(
+            hlsManifestUrl = null,
+            formats = emptyList(),
+            adaptiveFormats = emptyList(),
+            expiresInSeconds = 21600,
+        )
+        val baseAdaptive = baseStreamingData.adaptiveFormats
+        val mappedAdaptiveFormats = if (!baseAdaptive.isNullOrEmpty()) {
+            baseAdaptive.map { adaptiveFormats ->
+                val url = streamsList.find { it.first == adaptiveFormats.itag }?.second
+                adaptiveFormats.copy(
+                    url = url,
+                    contentLength = url?.let(::contentLengthOf) ?: adaptiveFormats.contentLength,
+                )
+            }
+        } else {
+            streamsList.map { (itag, url) ->
+                PlayerResponse.StreamingData.Format(
+                    itag = itag,
+                    url = url,
+                    mimeType = if (itag in com.maxrave.common.ITAG.AUDIO) "audio/webm" else "video/mp4",
+                    bitrate = if (itag in com.maxrave.common.ITAG.AUDIO) 128000 else 1000000,
+                    width = null,
+                    height = null,
+                    contentLength = contentLengthOf(url),
+                    quality = "",
+                    fps = null,
+                    qualityLabel = null,
+                    averageBitrate = null,
+                    audioQuality = null,
+                    approxDurationMs = null,
+                    audioSampleRate = null,
+                    audioChannels = null,
+                    loudnessDb = null,
+                    lastModified = 0,
+                    signatureCipher = null,
+                )
+            }
+        }
 
         decodedSigResponse =
             sigResponse.copy(
                 streamingData =
-                    sigResponse.streamingData?.copy(
+                    baseStreamingData.copy(
                         formats =
-                            sigResponse.streamingData.formats?.map { format ->
+                            baseStreamingData.formats?.map { format ->
                                 val url = streamsList.find { it.first == format.itag }?.second
                                 format.copy(
                                     url = url,
                                     contentLength = url?.let(::contentLengthOf) ?: format.contentLength,
                                 )
                             },
-                        adaptiveFormats =
-                            sigResponse.streamingData.adaptiveFormats.map { adaptiveFormats ->
-                                val url = streamsList.find { it.first == adaptiveFormats.itag }?.second
-                                adaptiveFormats.copy(
-                                    url = url,
-                                    contentLength = url?.let(::contentLengthOf) ?: adaptiveFormats.contentLength,
-                                )
-                            },
+                        adaptiveFormats = mappedAdaptiveFormats,
                         hlsManifestUrl = streamsList.firstOrNull { it.first == 96 }?.second,
                     ),
             )
@@ -1456,12 +1491,17 @@ class YouTube {
         listUrlSig.forEach {
             Logger.d(TAG, "YouTube NewPipe URL $it")
         }
-        val randomUrl = listUrlSig.randomOrNull() ?: return null
-        if (listUrlSig.isNotEmpty() && !is403Url(randomUrl)) {
-            Logger.d(TAG, "YouTube NewPipe Found URL $randomUrl")
+        val audioUrls = listUrlSig.filter { url ->
+            val itag = Regex("""[?&]itag=(\d+)""").find(url)?.groupValues?.getOrNull(1)?.toIntOrNull()
+            itag == null || itag in com.maxrave.common.ITAG.AUDIO
+        }
+        val candidates = audioUrls.ifEmpty { listUrlSig }
+        val foundWorkingUrl = candidates.take(3).any { !is403Url(it) }
+        if (listUrlSig.isNotEmpty() && foundWorkingUrl) {
+            Logger.i("NaudioStreaming", "Found playable streams for $videoId (${listUrlSig.size} total formats)")
             return decodedSigResponse
         } else {
-            Logger.d(TAG, "YouTube NewPipe No URL Found")
+            Logger.w("NaudioStreaming", "No playable (non-403) streams found for $videoId")
             return null
         }
     }
@@ -1634,9 +1674,9 @@ class YouTube {
             val response = newPipePlayer(videoId, tempRes, preferredAudioLanguage)
             if (response != null) {
                 decodedSigResponse = response
-                Logger.d(TAG, "YouTube Player found URL")
+                Logger.i("NaudioStreaming", "Player response resolved for $videoId, title='${response.videoDetails?.title}' lengthSeconds=${response.videoDetails?.lengthSeconds}")
             } else {
-                Logger.d(TAG, "YouTube Player no URL found")
+                Logger.e("NaudioStreaming", "Player response extraction failed for $videoId")
             }
             if (decodedSigResponse == null) throw RuntimeException("No URL found")
             val firstThumb =

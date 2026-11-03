@@ -6,8 +6,12 @@ import android.app.ActivityManager.RunningAppProcessInfo
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
+import android.net.wifi.WifiManager
 import android.os.Binder
 import android.os.IBinder
+import android.os.PowerManager
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.session.DefaultMediaNotificationProvider
@@ -16,6 +20,7 @@ import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
 import com.maxrave.common.MEDIA_NOTIFICATION
 import com.maxrave.domain.mediaservice.handler.MediaPlayerHandler
+import com.maxrave.domain.mediaservice.handler.shouldHoldPlaybackLocks
 import com.maxrave.logger.Logger
 import com.maxrave.media3.R
 import com.maxrave.media3.extension.toCommandButton
@@ -40,6 +45,78 @@ internal class SimpleMediaService :
     private val simpleMediaSessionCallback: MediaLibrarySession.Callback by inject<MediaLibrarySession.Callback>()
 
     private val simpleMediaServiceHandler: MediaPlayerHandler by inject<MediaPlayerHandler>()
+
+    private var wakeLock: PowerManager.WakeLock? = null
+    private var wifiLock: WifiManager.WifiLock? = null
+
+    private fun isConnectedToWifi(): Boolean {
+        return try {
+            val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+            val network = cm?.activeNetwork ?: return false
+            val caps = cm.getNetworkCapabilities(network) ?: return false
+            caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    private fun acquirePlaybackLocks() {
+        try {
+            if (wakeLock == null) {
+                val powerManager = getSystemService(Context.POWER_SERVICE) as? PowerManager
+                wakeLock = powerManager?.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "Naudio:PlaybackWakeLock")?.apply {
+                    setReferenceCounted(false)
+                }
+            }
+            if (wakeLock?.isHeld == false) {
+                // Indefinite acquisition tied strictly to playback lifecycle.
+                // An arbitrary timeout (e.g. 30 min) causes system PowerManagerService to drop the lock
+                // during continuous playback, leading to deep sleep and audio stoppage on track transitions.
+                wakeLock?.acquire()
+                Logger.i("NaudioBackground", "WakeLock: Acquired partial WakeLock for playback (held=${wakeLock?.isHeld})")
+            } else {
+                Logger.d("NaudioBackground", "WakeLock: Already held (held=${wakeLock?.isHeld})")
+            }
+
+            // Only hold WifiLock when actively connected to Wi-Fi to avoid unnecessary battery drain on mobile data
+            val onWifi = isConnectedToWifi()
+            if (onWifi) {
+                if (wifiLock == null) {
+                    val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+                    @Suppress("DEPRECATION")
+                    wifiLock = wifiManager?.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "Naudio:PlaybackWifiLock")?.apply {
+                        setReferenceCounted(false)
+                    }
+                }
+                if (wifiLock?.isHeld == false) {
+                    wifiLock?.acquire()
+                    Logger.i("NaudioBackground", "WifiLock: Acquired for Wi-Fi playback (held=${wifiLock?.isHeld})")
+                } else {
+                    Logger.d("NaudioBackground", "WifiLock: Already held on Wi-Fi (held=${wifiLock?.isHeld})")
+                }
+            } else if (wifiLock?.isHeld == true) {
+                wifiLock?.release()
+                Logger.i("NaudioBackground", "WifiLock: Released (device is on mobile data, held=${wifiLock?.isHeld})")
+            }
+        } catch (e: Exception) {
+            Logger.w("NaudioBackground", "Failed to acquire playback locks: ${e.message}")
+        }
+    }
+
+    private fun releasePlaybackLocks() {
+        try {
+            if (wakeLock?.isHeld == true) {
+                wakeLock?.release()
+                Logger.i("NaudioBackground", "WakeLock: Released (held=${wakeLock?.isHeld})")
+            }
+            if (wifiLock?.isHeld == true) {
+                wifiLock?.release()
+                Logger.i("NaudioBackground", "WifiLock: Released (held=${wifiLock?.isHeld})")
+            }
+        } catch (e: Exception) {
+            Logger.w("NaudioBackground", "Failed to release playback locks: ${e.message}")
+        }
+    }
 
     private val binder = MusicBinder()
 
@@ -144,15 +221,33 @@ internal class SimpleMediaService :
         session: MediaSession,
         startInForegroundRequired: Boolean,
     ) {
-        Logger.i(
-            "Service",
-            "Notification update: required=$startInForegroundRequired " +
-                "foreground=${isPlaybackOngoing()} " +
-                "playWhenReady=${session.player.playWhenReady} " +
-                "state=${session.player.playbackState} " +
-                "items=${session.player.mediaItemCount} " +
-                "playing=${session.player.isPlaying}",
+        val ongoing = isPlaybackOngoing()
+        val handlerPlayer = simpleMediaServiceHandler.player
+        val shouldHoldLocks = shouldHoldPlaybackLocks(
+            sessionPlayWhenReady = session.player.playWhenReady,
+            handlerPlayWhenReady = handlerPlayer.playWhenReady,
+            sessionPlaybackState = session.player.playbackState,
+            handlerPlaybackState = handlerPlayer.playbackState,
+            isPlaybackOngoing = ongoing,
         )
+        Logger.i(
+            "NaudioBackground",
+            "Notification update: required=$startInForegroundRequired " +
+                "foreground=$ongoing " +
+                "playWhenReady=${session.player.playWhenReady} (handler=${handlerPlayer.playWhenReady}) " +
+                "state=${session.player.playbackState} (handler=${handlerPlayer.playbackState}) " +
+                "items=${session.player.mediaItemCount} " +
+                "playing=${session.player.isPlaying} " +
+                "shouldHoldLocks=$shouldHoldLocks " +
+                "wakeLockHeld=${wakeLock?.isHeld} " +
+                "wifiLockHeld=${wifiLock?.isHeld} " +
+                "onWifi=${isConnectedToWifi()}",
+        )
+        if (shouldHoldLocks) {
+            acquirePlaybackLocks()
+        } else {
+            releasePlaybackLocks()
+        }
         super.onUpdateNotification(session, startInForegroundRequired)
     }
 
@@ -181,6 +276,7 @@ internal class SimpleMediaService :
     @UnstableApi
     fun release() {
         Logger.w("Service", "Starting release process")
+        releasePlaybackLocks()
         releaseSession()
         try {
             // Release handler (contains coroutines and jobs, which also releases the adapter)
@@ -194,10 +290,11 @@ internal class SimpleMediaService :
     @UnstableApi
     override fun onDestroy() {
         Logger.w(
-            "Service",
+            "NaudioBackground",
             "Simple Media Service Destroyed (foreground=${isPlaybackOngoing()}, " +
                 "playWhenReady=${simpleMediaServiceHandler.player.playWhenReady})",
         )
+        releasePlaybackLocks()
         super.onDestroy()
         simpleMediaServiceHandler.onUpdateNotification = {}
         releaseSession()

@@ -62,6 +62,7 @@ import com.maxrave.domain.mediaservice.handler.RepeatState
 import com.maxrave.domain.mediaservice.handler.SimpleMediaState
 import com.maxrave.domain.mediaservice.handler.SleepTimerState
 import com.maxrave.domain.mediaservice.handler.ToastType
+import com.maxrave.domain.mediaservice.handler.playNextInsertionIndex
 import com.maxrave.domain.mediaservice.player.MediaPlayerInterface
 import com.maxrave.domain.mediaservice.player.MediaPlayerListener
 import com.maxrave.domain.repository.AnalyticsRepository
@@ -2194,6 +2195,12 @@ internal class MediaServiceHandlerImpl(
     }
 
     override suspend fun playNext(track: Track) {
+        val queueSizeBefore = queueData.value.data.listTracks.size
+        Logger.i(
+            "QueueNext",
+            "request ${track.videoId} '${track.title}' current=${player.currentMediaItemIndex} " +
+                "playerSize=${player.mediaItemCount} queue=$queueSizeBefore",
+        )
         _queueData.update {
             it.copy(
                 queueState = QueueData.StateSource.STATE_INITIALIZING,
@@ -2221,7 +2228,9 @@ internal class MediaServiceHandlerImpl(
                             .contains("maxresdefault") &&
                         !thumbUrl.contains("sddefault")
                 )
-        if ((player.currentMediaItemIndex + 1 in 0..queueData.value.data.listTracks.size)) {
+        val queueSize = queueData.value.data.listTracks.size
+        val insertionIndex = playNextInsertionIndex(player.currentMediaItemIndex, queueSize)
+        if (insertionIndex != null) {
             if (track.artists.isNullOrEmpty()) {
                 songRepository.getSongInfo(track.videoId).cancellable().lastOrNull().let { songInfo ->
                     if (songInfo != null) {
@@ -2235,7 +2244,7 @@ internal class MediaServiceHandlerImpl(
                                         ),
                                     ),
                             )
-                        inserted = (player.currentMediaItemIndex + 1) to withArtist
+                        inserted = insertionIndex to withArtist
                         addMediaItemNotSet(
                             GenericMediaItem(
                                 mediaId = track.videoId,
@@ -2250,7 +2259,7 @@ internal class MediaServiceHandlerImpl(
                                     ),
                                 customCacheKey = track.videoId,
                             ),
-                            player.currentMediaItemIndex + 1,
+                            insertionIndex,
                         )
                     } else {
                         val mediaItem =
@@ -2267,9 +2276,9 @@ internal class MediaServiceHandlerImpl(
                                     ),
                                 customCacheKey = track.videoId,
                             )
-                        addMediaItemNotSet(mediaItem, player.currentMediaItemIndex + 1)
+                        addMediaItemNotSet(mediaItem, insertionIndex)
                         val withArtist = track.copy(artists = listOf(Artist("", "Various Artists")))
-                        inserted = (player.currentMediaItemIndex + 1) to withArtist
+                        inserted = insertionIndex to withArtist
                     }
                 }
             } else {
@@ -2287,15 +2296,21 @@ internal class MediaServiceHandlerImpl(
                             ),
                         customCacheKey = track.videoId,
                     ),
-                    player.currentMediaItemIndex + 1,
+                    insertionIndex,
                 )
-                inserted = (player.currentMediaItemIndex + 1) to track
+                inserted = insertionIndex to track
             }
             Logger.d(
                 "MusicSource",
                 "updateCatalog: ${track.title}, at ${inserted?.first}",
             )
             Logger.d("MusicSource", "updateCatalog: ${track.title}")
+        } else {
+            Logger.w(
+                "QueueNext",
+                "refused ${track.videoId} current=${player.currentMediaItemIndex} " +
+                    "playerSize=${player.mediaItemCount} queue=$queueSizeBefore",
+            )
         }
         _queueData.update {
             val tracks = it.data.listTracks
@@ -2312,6 +2327,15 @@ internal class MediaServiceHandlerImpl(
                 )
         }
         reorderShuffledQueue(player.getCurrentMediaTimeLine())
+        val queueAfter = queueData.value.data.listTracks
+        Logger.i(
+            "QueueNext",
+            "done ${track.videoId} at=${inserted?.first} current=${player.currentMediaItemIndex} " +
+                "playerSize=${player.mediaItemCount} timeline=${player.getCurrentMediaTimeLine().size} " +
+                "queue=$queueSizeBefore->${queueAfter.size} " +
+                "next=${inserted?.first?.let { queueAfter.getOrNull(it)?.videoId }} " +
+                "state=${queueData.value.queueState}",
+        )
     }
 
     override suspend fun <T> loadMediaItem(
@@ -2743,7 +2767,7 @@ internal class MediaServiceHandlerImpl(
             }
 
             PlayerConstants.STATE_READY -> {
-                Logger.d(TAG, "onPlaybackStateChanged: Ready")
+                Logger.i("NaudioPlayback", "Player state READY (duration=${player.duration}ms, mediaId=${player.currentMediaItem?.mediaId})")
                 _simpleMediaState.value = SimpleMediaState.Ready(player.duration)
             }
 
@@ -2757,6 +2781,7 @@ internal class MediaServiceHandlerImpl(
     }
 
     override fun onIsPlayingChanged(isPlaying: Boolean) {
+        Logger.i("NaudioPlayback", "onIsPlayingChanged: isPlaying=$isPlaying, playWhenReady=${player.playWhenReady}")
         _controlState.value = _controlState.value.copy(isPlaying = isPlaying)
         if (isPlaying) {
             // Audio is actually coming out: the outage is over, so the next one is entitled to a
@@ -2899,7 +2924,7 @@ internal class MediaServiceHandlerImpl(
     }
 
     override fun onPlayerError(error: PlayerError) {
-        Logger.e("Player Error", "onPlayerError (${error.errorCode}): ${error.message}")
+        Logger.e("NaudioPlayback", "onPlayerError (${error.errorCode} - ${error.errorCodeName}): ${error.message}")
         if (error.errorCode != PlayerConstants.ERROR_CODE_TIMEOUT) {
             pushPlayerError(error)
         }

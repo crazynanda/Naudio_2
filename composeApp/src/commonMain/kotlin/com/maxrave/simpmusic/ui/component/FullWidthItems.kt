@@ -39,10 +39,12 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -78,13 +80,13 @@ import com.maxrave.domain.repository.SongRepository
 import com.maxrave.domain.utils.connectArtists
 import com.maxrave.domain.utils.isLive
 import com.maxrave.domain.utils.toListName
+import com.maxrave.logger.Logger
 import com.maxrave.simpmusic.ui.icon.Add
 import com.maxrave.simpmusic.ui.icon.Check
 import com.maxrave.simpmusic.ui.icon.DownloadForOffline
 import com.maxrave.simpmusic.ui.icon.DragHandle
 import com.maxrave.simpmusic.ui.icon.MoreVert
 import com.maxrave.simpmusic.ui.icon.PushPin
-import com.maxrave.simpmusic.ui.icon.QueueMusic
 import com.maxrave.simpmusic.ui.icon.SimpIcons
 import com.maxrave.simpmusic.ui.icon.SkipNext
 import com.maxrave.simpmusic.ui.theme.LocalForceDarkText
@@ -95,7 +97,6 @@ import org.jetbrains.compose.resources.painterResource
 import org.jetbrains.compose.resources.stringResource
 import org.koin.compose.koinInject
 import simpmusic.composeapp.generated.resources.Res
-import simpmusic.composeapp.generated.resources.add_to_queue
 import simpmusic.composeapp.generated.resources.album
 import simpmusic.composeapp.generated.resources.artists
 import simpmusic.composeapp.generated.resources.play_next
@@ -127,15 +128,16 @@ fun SongFullWidthItems(
     isSelected: Boolean = false,
     onLongClick: ((videoId: String) -> Unit)? = null,
     onSelectToggle: ((videoId: String) -> Unit)? = null,
-    modifier: Modifier,
+    modifier: Modifier = Modifier.fillMaxWidth(),
     rightView: @Composable (() -> Unit)? = null,
     forceDark: Boolean = LocalForceDarkText.current,
 ) {
     val contentColor = if (forceDark) Color.White else MaterialTheme.colorScheme.onSurface
     val subtitleColor = if (forceDark) Color(0xC4FFFFFF) else MaterialTheme.colorScheme.onSurfaceVariant
-    val maxOffset = 360f
-    val coroutineScope = rememberCoroutineScope()
     val density = LocalDensity.current
+    val maxOffset = with(density) { 96.dp.toPx() }
+    val swipeThreshold = with(density) { 48.dp.toPx() }
+    val coroutineScope = rememberCoroutineScope()
     val songRepository: SongRepository = koinInject<SongRepository>()
     val storedSong by songRepository
         .getSongAsFlow(songEntity?.videoId ?: track?.videoId ?: "")
@@ -144,42 +146,44 @@ fun SongFullWidthItems(
     // The list's own model says what its source said; the stored row adds what playback learned
     // since, which is the only way a queue row is marked — the queue response shows no LIVE chip.
     val isLive = track?.isLive == true || songEntity?.isLive == true || storedSong?.isLive == true
+    val itemVideoId = track?.videoId ?: songEntity?.videoId ?: ""
     val offsetX = remember { Animatable(initialValue = 0f) }
     var heightDp by remember { mutableStateOf(0.dp) }
+    // Read in the gesture coroutine, never in composition: keying pointerInput on these (or on
+    // offsetX, which changes every frame) tore the detector down mid-drag and swallowed the swipe.
+    val currentItemVideoId by rememberUpdatedState(itemVideoId)
+    val currentIsPlaying by rememberUpdatedState(isPlaying)
+    val currentOnAddToQueue by rememberUpdatedState(onAddToQueue)
+    val showAddToQueue by remember { derivedStateOf { offsetX.value >= swipeThreshold } }
 
     Box(
-        modifier =
-        modifier,
+        modifier = modifier.fillMaxWidth(),
     ) {
         Crossfade(
-            offsetX.value >= maxOffset / 2,
+            showAddToQueue,
+            modifier = Modifier.align(Alignment.CenterStart),
         ) { shouldShowAddToQueue ->
             if (shouldShowAddToQueue) {
-                // Where Add to queue is blocked the swipe plays the song next instead
-                // (SharedViewModel.addListToQueue), so the icon shows what will happen.
-                val playsNext = rememberAddToQueueBlock() != null
                 Box(
                     modifier =
                         Modifier
                             .height(heightDp)
                             .aspectRatio(1f)
-                            .padding(start = 15.dp)
-                            .align(Alignment.CenterStart),
+                            .padding(start = 15.dp),
                     contentAlignment = Alignment.Center,
                 ) {
                     Icon(
                         tint = contentColor,
-                        imageVector = if (playsNext) SimpIcons.SkipNext else SimpIcons.QueueMusic,
-                        contentDescription =
-                            stringResource(if (playsNext) Res.string.play_next else Res.string.add_to_queue),
+                        imageVector = SimpIcons.SkipNext,
+                        contentDescription = stringResource(Res.string.play_next),
                     )
                 }
             }
         }
-        val itemVideoId = track?.videoId ?: songEntity?.videoId ?: ""
         Box(
             modifier =
-                modifier
+                Modifier
+                    .fillMaxWidth()
                     .offset { IntOffset(offsetX.value.roundToInt(), 0) }
                     .background(
                         if (isSelected) seed.copy(alpha = 0.18f) else Color.Transparent,
@@ -198,33 +202,88 @@ fun SongFullWidthItems(
                                 null
                             },
                     ).animateContentSize()
-                    // Keyed on selectionMode so the swipe detector is torn down when selection
-                    // starts — keyed on Unit it would keep running with the stale flag captured.
+                    // Only selection restarts the detector. The row's playing state and callback are
+                    // read through rememberUpdatedState at gesture time; offsetX is read through a
+                    // derived state, so a drag no longer recomposes the row on every frame.
                     .pointerInput(selectionMode) {
-                        if (!isPlaying && onAddToQueue != null && !selectionMode) {
-                            detectHorizontalDragGestures(
-                                onHorizontalDrag = { change, dragAmount ->
-                                    if (offsetX.value + dragAmount > 0) {
-                                        change.consume()
-                                        coroutineScope.launch {
-                                            offsetX.snapTo(
-                                                (offsetX.value + dragAmount).coerceAtMost(maxOffset),
-                                            )
-                                        }
-                                    }
-                                },
-                                onDragEnd = {
-                                    if (offsetX.value == maxOffset) {
-                                        onAddToQueue(
-                                            track?.videoId ?: songEntity?.videoId ?: "",
+                        // The decision is taken from this accumulation, not from offsetX:
+                        // snapTo is launched per pointer event and may not have run yet when
+                        // the last event arrives, so reading the Animatable can miss a drag
+                        // that clearly passed the threshold.
+                        var active = false
+                        var draggedPx = 0f
+                        var loggedThreshold = false
+                        detectHorizontalDragGestures(
+                            onDragStart = {
+                                active = !selectionMode && !currentIsPlaying && currentOnAddToQueue != null
+                                draggedPx = 0f
+                                loggedThreshold = false
+                                if (active) {
+                                    Logger.i(
+                                        "SwipeGesture",
+                                        "start ${currentItemVideoId} playing=$currentIsPlaying",
+                                    )
+                                }
+                            },
+                            onHorizontalDrag = { change, dragAmount ->
+                                if (active) {
+                                    val previous = draggedPx
+                                    draggedPx = (draggedPx + dragAmount).coerceIn(0f, maxOffset)
+                                    if (!loggedThreshold && previous < swipeThreshold && draggedPx >= swipeThreshold) {
+                                        loggedThreshold = true
+                                        Logger.i(
+                                            "SwipeGesture",
+                                            "threshold ${currentItemVideoId} ${draggedPx.roundToInt()}px",
                                         )
+                                    }
+                                    change.consume()
+                                    coroutineScope.launch {
+                                        offsetX.snapTo(draggedPx)
+                                    }
+                                }
+                            },
+                            onDragEnd = {
+                                Logger.i(
+                                    "SwipeGesture",
+                                    "end ${currentItemVideoId} ${draggedPx.roundToInt()}px active=$active",
+                                )
+                                if (active) {
+                                    val callback = currentOnAddToQueue
+                                    if (draggedPx >= swipeThreshold && callback != null) {
+                                        Logger.i(
+                                            "SongSwipe",
+                                            "play next: ${currentItemVideoId} (${draggedPx.roundToInt()}px)",
+                                        )
+                                        callback(currentItemVideoId)
                                     }
                                     coroutineScope.launch {
                                         offsetX.animateTo(0f)
                                     }
-                                },
-                            )
-                        }
+                                }
+                                active = false
+                            },
+                            onDragCancel = {
+                                Logger.i(
+                                    "SwipeGesture",
+                                    "cancel ${currentItemVideoId} ${draggedPx.roundToInt()}px active=$active",
+                                )
+                                if (active && draggedPx >= swipeThreshold) {
+                                    val callback = currentOnAddToQueue
+                                    if (callback != null) {
+                                        Logger.i(
+                                            "SongSwipe",
+                                            "play next on cancel: ${currentItemVideoId} (${draggedPx.roundToInt()}px)",
+                                        )
+                                        callback(currentItemVideoId)
+                                    }
+                                }
+                                draggedPx = 0f
+                                active = false
+                                coroutineScope.launch {
+                                    offsetX.animateTo(0f)
+                                }
+                            },
+                        )
                     }.onGloballyPositioned { coordinates ->
                         with(density) {
                             heightDp = coordinates.size.height.toDp()
@@ -405,6 +464,149 @@ fun SongFullWidthItems(
                     )
                 }
             }
+        }
+    }
+}
+
+/**
+ * Shared reusable container for horizontal swipe-to-Play-Next interaction.
+ *
+ * Wraps any track or suggestion row to provide the same consistent gesture detection,
+ * threshold, SkipNext icon indicator, and play-next callback across Naudio.
+ */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+fun SwipeToPlayNextContainer(
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    contentColor: Color = MaterialTheme.colorScheme.onSurface,
+    onPlayNext: (() -> Unit)? = null,
+    content: @Composable () -> Unit,
+) {
+    if (!enabled || onPlayNext == null) {
+        Box(modifier = modifier.fillMaxWidth()) {
+            content()
+        }
+        return
+    }
+
+    val density = LocalDensity.current
+    val maxOffset = with(density) { 96.dp.toPx() }
+    val swipeThreshold = with(density) { 48.dp.toPx() }
+    val coroutineScope = rememberCoroutineScope()
+    val offsetX = remember { Animatable(initialValue = 0f) }
+    var heightDp by remember { mutableStateOf(0.dp) }
+    val currentOnPlayNext by rememberUpdatedState(onPlayNext)
+    val showAddToQueue by remember { derivedStateOf { offsetX.value >= swipeThreshold } }
+
+    Box(
+        modifier = modifier.fillMaxWidth(),
+    ) {
+        Crossfade(
+            showAddToQueue,
+            modifier = Modifier.align(Alignment.CenterStart),
+        ) { shouldShowAddToQueue ->
+            if (shouldShowAddToQueue) {
+                Box(
+                    modifier =
+                        Modifier
+                            .height(heightDp)
+                            .aspectRatio(1f)
+                            .padding(start = 15.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        tint = contentColor,
+                        imageVector = SimpIcons.SkipNext,
+                        contentDescription = stringResource(Res.string.play_next),
+                    )
+                }
+            }
+        }
+        Box(
+            modifier =
+                Modifier
+                    .fillMaxWidth()
+                    .offset { IntOffset(offsetX.value.roundToInt(), 0) }
+                    .pointerInput(enabled) {
+                        var active = false
+                        var draggedPx = 0f
+                        var loggedThreshold = false
+                        detectHorizontalDragGestures(
+                            onDragStart = {
+                                active = enabled && currentOnPlayNext != null
+                                draggedPx = 0f
+                                loggedThreshold = false
+                                if (active) {
+                                    Logger.i("SwipeGesture", "SwipeToPlayNextContainer start")
+                                }
+                            },
+                            onHorizontalDrag = { change, dragAmount ->
+                                if (active) {
+                                    val previous = draggedPx
+                                    draggedPx = (draggedPx + dragAmount).coerceIn(0f, maxOffset)
+                                    if (!loggedThreshold && previous < swipeThreshold && draggedPx >= swipeThreshold) {
+                                        loggedThreshold = true
+                                        Logger.i(
+                                            "SwipeGesture",
+                                            "SwipeToPlayNextContainer threshold ${draggedPx.roundToInt()}px",
+                                        )
+                                    }
+                                    change.consume()
+                                    coroutineScope.launch {
+                                        offsetX.snapTo(draggedPx)
+                                    }
+                                }
+                            },
+                            onDragEnd = {
+                                Logger.i(
+                                    "SwipeGesture",
+                                    "SwipeToPlayNextContainer end ${draggedPx.roundToInt()}px active=$active",
+                                )
+                                if (active) {
+                                    val callback = currentOnPlayNext
+                                    if (draggedPx >= swipeThreshold && callback != null) {
+                                        Logger.i(
+                                            "SongSwipe",
+                                            "SwipeToPlayNextContainer play next (${draggedPx.roundToInt()}px)",
+                                        )
+                                        callback()
+                                    }
+                                    coroutineScope.launch {
+                                        offsetX.animateTo(0f)
+                                    }
+                                }
+                                active = false
+                            },
+                            onDragCancel = {
+                                Logger.i(
+                                    "SwipeGesture",
+                                    "SwipeToPlayNextContainer cancel ${draggedPx.roundToInt()}px active=$active",
+                                )
+                                if (active && draggedPx >= swipeThreshold) {
+                                    val callback = currentOnPlayNext
+                                    if (callback != null) {
+                                        Logger.i(
+                                            "SongSwipe",
+                                            "SwipeToPlayNextContainer play next on cancel (${draggedPx.roundToInt()}px)",
+                                        )
+                                        callback()
+                                    }
+                                }
+                                draggedPx = 0f
+                                active = false
+                                coroutineScope.launch {
+                                    offsetX.animateTo(0f)
+                                }
+                            },
+                        )
+                    }.onGloballyPositioned { coordinates ->
+                        with(density) {
+                            heightDp = coordinates.size.height.toDp()
+                        }
+                    },
+        ) {
+            content()
         }
     }
 }

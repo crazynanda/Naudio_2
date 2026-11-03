@@ -8,7 +8,9 @@ import com.maxrave.data.parser.search.parseSearchArtist
 import com.maxrave.data.parser.search.parseSearchPlaylist
 import com.maxrave.data.parser.search.parseSearchSong
 import com.maxrave.data.parser.search.parseSearchVideo
+import com.maxrave.domain.data.entities.RecentSongEntity
 import com.maxrave.domain.data.entities.SearchHistory
+import com.maxrave.domain.data.model.browse.album.Track
 import com.maxrave.domain.data.model.searchResult.SearchSuggestions
 import com.maxrave.domain.data.model.searchResult.albums.AlbumsResult
 import com.maxrave.domain.data.model.searchResult.artists.ArtistsResult
@@ -21,9 +23,11 @@ import com.maxrave.kotlinytmusicscraper.YouTube
 import com.maxrave.logger.Logger
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.withContext
+import kotlin.time.Clock
 
 internal class SearchRepositoryImpl(
     private val localDataSource: LocalDataSource,
@@ -42,6 +46,34 @@ internal class SearchRepositoryImpl(
     override suspend fun deleteSearchHistory() =
         withContext(Dispatchers.IO) {
             localDataSource.deleteSearchHistory()
+        }
+
+    override fun getRecentSongs(): Flow<List<RecentSongEntity>> = localDataSource.getRecentSongs()
+
+    override suspend fun saveRecentSong(track: Track) =
+        withContext(Dispatchers.IO) {
+            Logger.i("RecentSongsRepo", "save start ${track.videoId} - ${track.title}")
+            try {
+                localDataSource.saveRecentSong(
+                    RecentSongEntity(
+                        videoId = track.videoId,
+                        track = track,
+                        selectedAt = Clock.System.now().toEpochMilliseconds(),
+                    ),
+                )
+                Logger.i(
+                    "RecentSongsRepo",
+                    "save ok ${track.videoId} count=${localDataSource.getRecentSongs().first().size}",
+                )
+            } catch (e: Exception) {
+                Logger.e("RecentSongsRepo", "save failed ${track.videoId}", e)
+                throw e
+            }
+        }
+
+    override suspend fun clearRecentSongs() =
+        withContext(Dispatchers.IO) {
+            localDataSource.clearRecentSongs()
         }
 
     override fun getSearchDataSong(query: String): Flow<Resource<ArrayList<SongsResult>>> =

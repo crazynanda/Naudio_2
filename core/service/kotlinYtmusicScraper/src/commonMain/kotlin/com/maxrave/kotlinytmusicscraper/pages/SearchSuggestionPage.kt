@@ -7,14 +7,26 @@ import com.maxrave.kotlinytmusicscraper.models.ArtistItem
 import com.maxrave.kotlinytmusicscraper.models.MusicResponsiveListItemRenderer
 import com.maxrave.kotlinytmusicscraper.models.SongItem
 import com.maxrave.kotlinytmusicscraper.models.VideoItem
+import com.maxrave.kotlinytmusicscraper.models.WatchEndpoint.WatchEndpointMusicSupportedConfigs.WatchEndpointMusicConfig.Companion.MUSIC_VIDEO_TYPE_ATV
 import com.maxrave.kotlinytmusicscraper.models.YTItem
 import com.maxrave.kotlinytmusicscraper.models.oddElements
 import com.maxrave.kotlinytmusicscraper.models.splitBySeparator
+import com.maxrave.logger.Logger
+
+// isVideo is true for audio rows too: ATV is a musicVideoType like any other.
+internal fun MusicResponsiveListItemRenderer.isVideoSuggestion(): Boolean =
+    isVideo && musicVideoType != MUSIC_VIDEO_TYPE_ATV
 
 object SearchSuggestionPage {
     fun fromMusicResponsiveListItemRenderer(renderer: MusicResponsiveListItemRenderer): YTItem? {
+        Logger.i(
+            "RecentSongsParse",
+            "suggestion ${renderer.videoId} isSong=${renderer.isSong} isVideo=${renderer.isVideo} " +
+                "videoType=${renderer.musicVideoType} -> " +
+                "${if (renderer.isVideoSuggestion()) "video" else if (renderer.isSong) "song" else "none"}",
+        )
         return when {
-            renderer.isVideo -> {
+            renderer.isVideoSuggestion() -> {
                 VideoItem(
                     id = renderer.videoId ?: return null,
                     title =

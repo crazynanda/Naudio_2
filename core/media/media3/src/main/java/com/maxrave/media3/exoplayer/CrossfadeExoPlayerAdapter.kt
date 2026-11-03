@@ -440,6 +440,8 @@ internal class CrossfadeExoPlayerAdapter(
 
     // Loading management
     private var currentLoadJob: Job? = null
+    @Volatile
+    private var activeTransitionId = 0L
 
     // ========== ForwardingPlayer for MediaSession ==========
 
@@ -480,6 +482,8 @@ internal class CrossfadeExoPlayerAdapter(
                 override fun setPlayWhenReady(playWhenReady: Boolean) {
                     this@CrossfadeExoPlayerAdapter.playWhenReady = playWhenReady
                 }
+
+                override fun getPlayWhenReady(): Boolean = this@CrossfadeExoPlayerAdapter.internalPlayWhenReady
             }
     }
 
@@ -632,7 +636,7 @@ internal class CrossfadeExoPlayerAdapter(
                             0,
                             0,
                         ).build(),
-                ).setWakeMode(C.WAKE_MODE_NETWORK)
+                ).setWakeMode(C.WAKE_MODE_LOCAL)
                 .setHandleAudioBecomingNoisy(true)
                 .setSeekForwardIncrementMs(5000)
                 .setSeekBackIncrementMs(5000)
@@ -717,9 +721,11 @@ internal class CrossfadeExoPlayerAdapter(
             internalSleepFadeFactor = 1f
             return
         }
+        internalPlayWhenReady = false
+        activeTransitionId++
+        forwardingPlayer.suppressPlaybackEnded = false
         coroutineScope.launch {
             try {
-                forwardingPlayer.suppressPlaybackEnded = false
                 // Cancel any ongoing crossfade by committing the incoming track (A+1) as current.
                 // Direction 1: pausing during a crossfade stays on A+1 (the track the UI already
                 // shows) and freezes it in place via the when(internalState) block below — it does
@@ -773,8 +779,11 @@ internal class CrossfadeExoPlayerAdapter(
             remote.stop()
             return
         }
+        internalPlayWhenReady = false
+        activeTransitionId++
+        forwardingPlayer.suppressPlaybackEnded = false
+        currentLoadJob?.cancel()
         coroutineScope.launch {
-            forwardingPlayer.suppressPlaybackEnded = false
             currentPlayer?.let { player ->
                 Logger.d(TAG, "Stop called")
                 player.stop()
@@ -1540,6 +1549,9 @@ internal class CrossfadeExoPlayerAdapter(
     // ========== Release Resources ==========
 
     override fun release() {
+        internalPlayWhenReady = false
+        activeTransitionId++
+        forwardingPlayer.suppressPlaybackEnded = false
         // Cancel all ongoing jobs
         currentLoadJob?.cancel()
         precacheJob?.cancel()
@@ -1710,10 +1722,14 @@ internal class CrossfadeExoPlayerAdapter(
         // Cancel previous load
         currentLoadJob?.cancel()
 
+        val thisTransitionId = ++activeTransitionId
         currentLoadJob =
             coroutineScope.launch {
                 try {
                     transitionToState(InternalState.PREPARING)
+                    if (shouldPlay && internalPlayWhenReady) {
+                        forwardingPlayer.suppressPlaybackEnded = true
+                    }
 
                     // Notify media item transition
                     listeners.forEach {
@@ -1805,17 +1821,16 @@ internal class CrossfadeExoPlayerAdapter(
                         cachedPosition = startPositionMs
                     }
 
-                    // Auto-play if requested
-                    if (shouldPlay) {
+                    // Auto-play if requested and playback intent is still active
+                    val actuallyPlay = shouldPlay && internalPlayWhenReady
+                    if (actuallyPlay) {
                         requestAudioFocusInternal()
                         player.play()
                         transitionToState(InternalState.PLAYING)
                     } else {
                         player.pause()
-                        transitionToState(InternalState.READY)
+                        transitionToState(InternalState.PAUSED)
                     }
-
-                    forwardingPlayer.suppressPlaybackEnded = false
 
                     // Start position updates
                     startPositionUpdates()
@@ -1831,8 +1846,11 @@ internal class CrossfadeExoPlayerAdapter(
                 } catch (e: Exception) {
                     if (e is CancellationException) throw e
                     Logger.e(TAG, "Load track error: ${e.message}", e)
-                    forwardingPlayer.suppressPlaybackEnded = false
                     transitionToState(InternalState.ERROR)
+                } finally {
+                    if (activeTransitionId == thisTransitionId) {
+                        forwardingPlayer.suppressPlaybackEnded = false
+                    }
                 }
             }
     }
@@ -1863,6 +1881,7 @@ internal class CrossfadeExoPlayerAdapter(
                                 forwardingPlayer.suppressPlaybackEnded = true
                                 transitionToState(InternalState.PREPARING)
                             } else {
+                                forwardingPlayer.suppressPlaybackEnded = false
                                 transitionToState(InternalState.ENDED)
                             }
                             handleTrackEndInternal()
@@ -1914,6 +1933,7 @@ internal class CrossfadeExoPlayerAdapter(
                         Logger.d(TAG, "Ignoring onPlayerError from non-current player")
                         return
                     }
+                    Logger.e("NaudioPlayback", "ExoPlayer onPlayerError: ${error.errorCode} (${error.errorCodeName}) - ${error.message}", error)
 
                     // Retry for source errors (expired/invalid stream URL)
                     // ERROR_CODE_PARSING_CONTAINER_MALFORMED (3001) = server returned non-media response (e.g. HTML error page)

@@ -38,6 +38,7 @@ import com.maxrave.domain.extension.isSong
 import com.maxrave.domain.extension.isVideo
 import com.maxrave.domain.extension.toGenericMediaItem
 import com.maxrave.domain.manager.DataStoreManager
+import com.maxrave.simpmusic.extension.parseTimestampToMilliseconds
 import com.maxrave.domain.data.model.lyrics.RomanizationLanguage
 import com.maxrave.domain.manager.DataStoreManager.Values.FALSE
 import com.maxrave.domain.manager.DataStoreManager.Values.TRUE
@@ -50,7 +51,6 @@ import com.maxrave.domain.mediaservice.handler.QueueData
 import com.maxrave.domain.mediaservice.handler.RepeatState
 import com.maxrave.domain.mediaservice.handler.SimpleMediaState
 import com.maxrave.domain.mediaservice.handler.SleepTimerState
-import com.maxrave.domain.mediaservice.handler.addToQueueBlock
 import com.maxrave.domain.repository.AlbumRepository
 import com.maxrave.domain.repository.CacheRepository
 import com.maxrave.domain.repository.LocalPlaylistRepository
@@ -396,11 +396,14 @@ class SharedViewModel(
                     // the container is parsed, because those rows have no durationSeconds stored.
                     // Asking the player before giving up covers exactly that case: on a normal
                     // track change it usually already knows.
-                    val metadataDurationMs = (state.songEntity?.durationSeconds ?: 0).toLong() * 1000L
+                    val secDuration = (state.songEntity?.durationSeconds ?: 0).toLong() * 1000L
+                    val strDuration = state.songEntity?.duration?.takeIf { it != "null" }?.let { parseTimestampToMilliseconds(it).toLong() } ?: 0L
+                    val metadataDurationMs = secDuration.takeIf { it > 0L } ?: strDuration.takeIf { it > 0L } ?: 0L
                     val seededTotal =
                         metadataDurationMs.takeIf { it > 0L }
                             ?: mediaPlayerHandler.getPlayerDuration().takeIf { it > 0L }
                             ?: -1L
+                    Logger.i("NaudioPlayback", "Seeded timeline duration: total=${seededTotal}ms (sec=${state.songEntity?.durationSeconds}, str='${state.songEntity?.duration}') for ${state.songEntity?.videoId}")
                     _timeline.update { it.copy(total = seededTotal) }
                     state.songEntity?.let { track ->
                         _nowPlayingScreenData.value =
@@ -526,6 +529,7 @@ class SharedViewModel(
                             }
 
                             is SimpleMediaState.Ready -> {
+                                Logger.i("NaudioPlayback", "SimpleMediaState.Ready duration=${mediaState.duration}ms")
                                 _timeline.update {
                                     it.copy(
                                         current = mediaPlayerHandler.getProgress(),
@@ -1920,13 +1924,15 @@ class SharedViewModel(
 
     fun addListToQueue(listTrack: ArrayList<Track>) {
         viewModelScope.launch {
-            // A radio, a mix or an Endless queue has no end to append to, so a single song (the swipe
-            // on a song row) goes right after the current one instead.
-            val endlessQueue = dataStoreManager.endlessQueue.first() == TRUE
-            if (listTrack.size == 1 && mediaPlayerHandler.queueData.value.addToQueueBlock(endlessQueue) != null) {
+            if (listTrack.size == 1) {
+                Logger.i(
+                    "PlayNextRequest",
+                    "addListToQueue single ${listTrack.first().videoId} '${listTrack.first().title}'",
+                )
                 mediaPlayerHandler.playNext(listTrack.first())
                 makeToast(getString(Res.string.play_next))
             } else {
+                Logger.i("Queue", "add ${listTrack.size} tracks to queue")
                 mediaPlayerHandler.loadMoreCatalog(listTrack)
                 makeToast(getString(Res.string.added_to_queue))
             }

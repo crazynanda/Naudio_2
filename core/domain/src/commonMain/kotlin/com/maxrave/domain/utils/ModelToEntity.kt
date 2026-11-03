@@ -51,11 +51,25 @@ fun List<SearchHistory>.toQueryList(): ArrayList<String> {
     return list
 }
 
-fun ResultSong.toTrack(): Track =
-    Track(
+private fun formatSeconds(seconds: Int?): String {
+    if (seconds == null || seconds <= 0) return ""
+    val m = seconds / 60
+    val s = seconds % 60
+    val h = m / 60
+    return if (h > 0) {
+        val remM = m % 60
+        "${h}:${remM.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}"
+    } else {
+        "${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}"
+    }
+}
+
+fun ResultSong.toTrack(): Track {
+    val dur = formatSeconds(this.durationSeconds)
+    return Track(
         album = album,
         artists = artists,
-        duration = "",
+        duration = dur,
         durationSeconds = this.durationSeconds,
         isAvailable = isAvailable,
         isExplicit = isExplicit,
@@ -69,12 +83,14 @@ fun ResultSong.toTrack(): Track =
         resultType = if (isLive) LIVE_RESULT_TYPE else null,
         year = "",
     )
+}
 
-fun ResultVideo.toTrack(): Track =
-    Track(
+fun ResultVideo.toTrack(): Track {
+    val dur = this.duration.takeIf { !it.isNullOrBlank() && it != "null" } ?: formatSeconds(this.durationSeconds)
+    return Track(
         album = null,
         artists = this.artists ?: listOf(),
-        duration = this.duration,
+        duration = dur,
         durationSeconds = this.durationSeconds,
         isAvailable = false,
         isExplicit = false,
@@ -92,12 +108,14 @@ fun ResultVideo.toTrack(): Track =
         year = "",
         views = this.views,
     )
+}
 
-fun SongsResult.toTrack(): Track =
-    Track(
+fun SongsResult.toTrack(): Track {
+    val dur = this.duration.takeIf { !it.isNullOrBlank() && it != "null" } ?: formatSeconds(this.durationSeconds)
+    return Track(
         this.album,
         this.artists,
-        this.duration ?: "",
+        dur,
         this.durationSeconds ?: 0,
         true,
         this.isExplicit ?: false,
@@ -111,21 +129,23 @@ fun SongsResult.toTrack(): Track =
         this.resultType,
         "",
     )
+}
 
 fun Track.toSongEntity(): SongEntity {
+    val dur = this.duration.takeIf { !it.isNullOrBlank() && it != "null" } ?: formatSeconds(this.durationSeconds)
     return SongEntity(
         videoId = this.videoId,
         albumId = this.album?.id,
         albumName = this.album?.name,
         artistId = this.artists?.toListId(),
         artistName = this.artists?.toListName(),
-        duration = this.duration ?: "",
+        duration = dur,
         durationSeconds = this.durationSeconds ?: 0,
         isAvailable = this.isAvailable,
         isExplicit = this.isExplicit,
         likeStatus = this.likeStatus ?: "",
         thumbnails =
-            this.thumbnails?.last()?.url?.let {
+            this.thumbnails?.lastOrNull()?.url?.let {
                 if (it.contains("w120")) {
                     return@let Regex("([wh])120").replace(it, "$1544")
                 } else if (it.contains("sddefault")) {
@@ -153,10 +173,11 @@ fun SongEntity.toTrack(): Track {
         }
     }
     val isSong = (this.thumbnails?.contains("w544") == true && this.thumbnails?.contains("h544") == true)
+    val dur = this.duration.takeIf { !it.isNullOrBlank() && it != "null" } ?: formatSeconds(this.durationSeconds)
     return Track(
         album = this.albumId?.let { this.albumName?.let { it1 -> Album(it, it1) } },
         artists = listArtist,
-        duration = this.duration,
+        duration = dur,
         durationSeconds = this.durationSeconds,
         isAvailable = this.isAvailable,
         isExplicit = this.isExplicit,
@@ -194,10 +215,11 @@ fun ArrayList<SongsResult>.toListTrack(): ArrayList<Track> {
 fun VideosResult.toTrack(): Track {
     val thumb = Thumbnail(720, "http://i.ytimg.com/vi/${this.videoId}/maxresdefault.jpg", 1280)
     val thumbList = this.thumbnails ?: mutableListOf(thumb)
+    val dur = this.duration.takeIf { !it.isNullOrBlank() && it != "null" } ?: formatSeconds(this.durationSeconds)
     return Track(
         album = null,
         artists = this.artists,
-        duration = this.duration ?: "",
+        duration = dur,
         durationSeconds = this.durationSeconds ?: 0,
         isAvailable = true,
         isExplicit = false,

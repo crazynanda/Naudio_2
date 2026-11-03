@@ -83,6 +83,8 @@ internal class DelegatingForwardingPlayer(
         fun pause()
 
         fun setPlayWhenReady(playWhenReady: Boolean)
+
+        fun getPlayWhenReady(): Boolean = false
     }
 
     /**
@@ -108,10 +110,22 @@ internal class DelegatingForwardingPlayer(
 
     override fun getPlaybackState(): Int {
         val state = super.getPlaybackState()
-        if (state == Player.STATE_ENDED && suppressPlaybackEnded) {
+        // During track transitions, the old player enters STATE_ENDED and the new player is swapped in
+        // at STATE_IDLE while stream URLs are resolved. Suppressing both to STATE_BUFFERING ensures
+        // MediaSessionService maintains foreground status and WakeLocks during transition gaps.
+        if ((state == Player.STATE_ENDED || state == Player.STATE_IDLE) && suppressPlaybackEnded) {
             return Player.STATE_BUFFERING
         }
         return state
+    }
+
+    override fun getPlayWhenReady(): Boolean {
+        // While a track transition is in progress with intent to play, consult the provider
+        // (which reflects the user's actual internalPlayWhenReady) so pause events are not masked.
+        if (suppressPlaybackEnded) {
+            return playlistNavigationProvider?.getPlayWhenReady() ?: false
+        }
+        return super.getPlayWhenReady()
     }
 
     // ========== Listener Tracking ==========

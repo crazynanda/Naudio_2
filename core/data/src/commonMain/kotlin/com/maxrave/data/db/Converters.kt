@@ -38,7 +38,9 @@ class Converters {
     fun fromStringToListTrack(value: String?): List<Track>? =
         try {
             value?.let {
-                json.decodeFromString<List<Track>>(value)
+                json.decodeFromString<List<Track>>(value).map {
+                    if (it.duration == "null") it.copy(duration = "") else it
+                }
             }
         } catch (e: Exception) {
             e.printStackTrace()
@@ -50,6 +52,21 @@ class Converters {
         list?.let {
             json.encodeToString(it)
         }
+
+    @TypeConverter
+    fun fromStringToTrack(value: String?): Track? =
+        try {
+            value?.let {
+                val track = json.decodeFromString<Track>(it)
+                if (track.duration == "null") track.copy(duration = "") else track
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+            null
+        }
+
+    @TypeConverter
+    fun fromTrackToString(track: Track?): String? = track?.let { json.encodeToString(it) }
 
     @TypeConverter
     fun fromListLineToString(list: List<Line>?): String? =
