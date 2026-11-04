@@ -98,7 +98,8 @@ android {
             )
             splits {
                 abi {
-                    isEnable = true
+                    val isBuildingBundle = gradle.startParameter.taskNames.any { it.contains("bundle", ignoreCase = true) }
+                    isEnable = !isBuildingBundle
                     reset()
                     isUniversalApk = true
                     include(*abis)
@@ -211,7 +212,7 @@ sentry {
             }
         authToken.set(token ?: "")
         includeProguardMapping.set(true)
-        autoUploadProguardMapping.set(true)
+        autoUploadProguardMapping.set(!token.isNullOrBlank())
     } else {
         includeProguardMapping.set(false)
         autoUploadProguardMapping.set(false)

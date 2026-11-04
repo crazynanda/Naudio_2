@@ -126,9 +126,12 @@ kotlin {
 // PipePipe brings com.google.protobuf:protobuf-java (full) while Brave brings
 // com.google.protobuf:protobuf-javalite. Both occupy the com.google.protobuf.* namespace and
 // trigger DEX duplicate-class failures. Drop the full variant globally so Brave's javalite wins.
-// nanojson force is in the root build.gradle.kts so it propagates to the final APK classpath.
+// Exclude only from runtime and compilation configurations so Android Lint retains protobuf-java
+// for UsageTracker / analytics.
 configurations.all {
-    exclude(group = "com.google.protobuf", module = "protobuf-java")
+    if (!name.contains("lint", ignoreCase = true)) {
+        exclude(group = "com.google.protobuf", module = "protobuf-java")
+    }
 }
 
 tasks.withType<CompileArtProfileTask> {

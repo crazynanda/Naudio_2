@@ -2,9 +2,17 @@ name: Build APK for Release (Full & FOSS) && Desktop app release
 
 on:
   workflow_dispatch:
+    inputs:
+      publish_release:
+        description: 'Publish GitHub Release for tag'
+        required: false
+        type: boolean
+        default: false
   push:
     branches:
       - 'main'
+    tags:
+      - 'v*'
     paths-ignore:
       - 'README.md'
       - 'fastlane/**'
@@ -14,7 +22,7 @@ on:
       - '.github/ISSUE_TEMPLATE/**'
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build-full-release:
@@ -68,6 +76,26 @@ jobs:
           KEY_ALIAS: ${{ secrets.ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: ./build_and_sign_apk.sh --release --full
+
+      - name: Stage and verify Naudio release APKs
+        run: |
+          VERSION=$(grep '^version-name' gradle/libs.versions.toml | head -1 | cut -d'"' -f2)
+          cd androidApp/build/outputs/apk/release
+
+          # Create standardized Naudio release names for direct distribution
+          cp SimpMusic-full-universal-release.apk "Naudio-${VERSION}.apk"
+          cp SimpMusic-full-universal-release.apk "Naudio-${VERSION}-universal.apk"
+          cp SimpMusic-full-arm64-v8a-release.apk "Naudio-${VERSION}-arm64-v8a.apk"
+          cp SimpMusic-full-armeabi-v7a-release.apk "Naudio-${VERSION}-armeabi-v7a.apk"
+          cp SimpMusic-full-x86_64-release.apk "Naudio-${VERSION}-x86_64.apk"
+
+          # Verify every signed APK
+          BUILD_TOOLS_PATH="$ANDROID_HOME/build-tools/$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -n 1)"
+          for apk in Naudio-*.apk SimpMusic-*.apk; do
+            echo "Verifying $apk..."
+            "$BUILD_TOOLS_PATH/apksigner" verify --verbose "$apk"
+          done
+          ls -lh
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
@@ -403,3 +431,84 @@ jobs:
         with:
           name: desktop-mac-dmg
           path: dist/*.dmg
+
+  publish-github-release:
+    name: Publish GitHub Release (Production APKs)
+    runs-on: ubuntu-latest
+    needs: [build-full-release]
+    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.publish_release == true)
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Download Full Release APKs
+        uses: actions/download-artifact@v4
+        with:
+          name: app-full-release
+          path: release-apks/
+
+      - name: Set up JDK 21 for verification
+        uses: actions/setup-java@v4
+        with:
+          java-version: 21
+          distribution: "microsoft"
+
+      - name: Verify APK Signatures before publishing
+        run: |
+          set -e
+          echo "Verifying downloaded release APK signatures..."
+          apk_count=0
+          for apk in release-apks/Naudio-*.apk; do
+            if [ -f "$apk" ]; then
+              apk_count=$((apk_count + 1))
+              echo "Checking signature metadata in $apk..."
+              jar tf "$apk" | grep -E "META-INF/.*\.(RSA|DSA|EC)" || { echo "ERROR: $apk is missing signing signature block!"; exit 1; }
+            fi
+          done
+          if [ "$apk_count" -eq 0 ]; then
+            echo "ERROR: No release APKs found to verify in release-apks/!"
+            exit 1
+          fi
+
+          # Also verify cryptographic integrity with apksigner if available on runner
+          if [ -n "$ANDROID_HOME" ] && [ -d "$ANDROID_HOME/build-tools" ]; then
+            BUILD_TOOLS_PATH="$ANDROID_HOME/build-tools/$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -n 1)"
+            if [ -f "$BUILD_TOOLS_PATH/apksigner" ]; then
+              echo "Running cryptographic verification using apksigner ($BUILD_TOOLS_PATH)..."
+              for apk in release-apks/Naudio-*.apk release-apks/SimpMusic-full-*.apk; do
+                if [ -f "$apk" ]; then
+                  "$BUILD_TOOLS_PATH/apksigner" verify --verbose "$apk"
+                fi
+              done
+            fi
+          fi
+
+          echo "All release APK signatures successfully validated."
+          ls -lh release-apks/
+
+      - name: Read app version and release tag
+        id: version
+        run: |
+          VERSION=$(grep '^version-name' gradle/libs.versions.toml | head -1 | cut -d'"' -f2)
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            TAG="$GITHUB_REF_NAME"
+          else
+            TAG="v$VERSION"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Create or update GitHub Release
+        uses: softprops/action-gh-release@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: Naudio ${{ steps.version.outputs.version }}
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          files: |
+            release-apks/Naudio-*.apk
+            release-apks/SimpMusic-full-*.apk
