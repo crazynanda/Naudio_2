@@ -20,6 +20,81 @@ object Config {
             "com.spotify.music",
         )
 
+    /**
+     * Verified Naudio production release signing certificate SHA-256 fingerprint(s).
+     * Normalized: lowercase hexadecimal, no colons, exactly 64 characters.
+     * Preserves support for signing-key rotation by supporting multiple explicitly trusted fingerprints.
+     */
+    val TRUSTED_SIGNING_CERTIFICATE_HASHES: Set<String> =
+        setOf(
+            "0208a0c5291d07483d23ec92f2c9b5a877d1d49969990e872211c5effc0fb41c",
+        )
+
+    /**
+     * Normalizes a certificate fingerprint into lowercase hexadecimal without colons.
+     * Returns null if the normalized string is not exactly 64 hexadecimal characters.
+     */
+    fun normalizeSigningFingerprint(raw: String): String? {
+        val clean = raw.trim().replace(":", "").lowercase()
+        return if (clean.length == 64 && clean.all { it in '0'..'9' || it in 'a'..'f' }) {
+            clean
+        } else {
+            null
+        }
+    }
+
+    /**
+     * Checks if the provided package name is recognized as an official application package.
+     */
+    fun isOfficialPackage(
+        packageName: String,
+        officialPackageNames: Set<String> = OFFICIAL_PACKAGE_NAMES,
+    ): Boolean = packageName in officialPackageNames
+
+    /**
+     * Checks if any of the given certificate fingerprints match the trusted signing hashes.
+     */
+    fun isTrustedSigningFingerprint(
+        signingCerts: List<String>,
+        trustedCertHashes: Set<String> = TRUSTED_SIGNING_CERTIFICATE_HASHES,
+    ): Boolean {
+        val normalizedCerts = signingCerts.mapNotNull { normalizeSigningFingerprint(it) }
+        val trusted = trustedCertHashes.mapNotNull { normalizeSigningFingerprint(it) }.toSet()
+        return normalizedCerts.any { it in trusted }
+    }
+
+    /**
+     * Validates whether an installed APK constitutes an official build based on package identity
+     * and signing certificate verification.
+     *
+     * @param packageName The application's package name.
+     * @param signingCerts Certificates extracted from the installed package.
+     * @param remoteKeys Optional signing keys fetched from remote metadata (e.g. for key rotation).
+     * @param trustedCertHashes Local trusted fingerprints (defaults to [TRUSTED_SIGNING_CERTIFICATE_HASHES]).
+     * @param officialPackageNames Approved package names (defaults to [OFFICIAL_PACKAGE_NAMES]).
+     * @return True if the package is approved and signed by a trusted or remote-approved certificate; false otherwise.
+     */
+    fun validateOfficialBuild(
+        packageName: String,
+        signingCerts: List<String>,
+        remoteKeys: List<String>? = null,
+        trustedCertHashes: Set<String> = TRUSTED_SIGNING_CERTIFICATE_HASHES,
+        officialPackageNames: Set<String> = OFFICIAL_PACKAGE_NAMES,
+    ): Boolean {
+        if (!isOfficialPackage(packageName, officialPackageNames)) {
+            return false
+        }
+        val normalizedCerts = signingCerts.mapNotNull { normalizeSigningFingerprint(it) }
+        if (normalizedCerts.isEmpty()) {
+            // Certificate unavailable or cannot be read; unknown result does not block legitimate users.
+            return true
+        }
+        val allTrusted = (trustedCertHashes.mapNotNull { normalizeSigningFingerprint(it) } +
+            remoteKeys.orEmpty().mapNotNull { normalizeSigningFingerprint(it) }).toSet()
+
+        return normalizedCerts.any { it in allTrusted }
+    }
+
     const val SPOTIFY_LOG_IN_URL: String = "https://accounts.spotify.com/en/login"
     const val SPOTIFY_ACCOUNT_URL = "https://accounts.spotify.com/en/status"
     const val YOUTUBE_MUSIC_MAIN_URL = "https://music.youtube.com/"

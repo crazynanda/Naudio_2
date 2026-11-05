@@ -908,14 +908,16 @@ class YouTube {
         }
 
     /**
-     * SHA-256 of our release signing certificates: F-Droid ships the APK we sign, so it pins our keys.
-     * The field is either one inline value or a YAML list (`- <hex>` per line), e.g. after a key rotation.
+     * SHA-256 of release signing certificates from F-Droid metadata if available.
+     * Normalizes each extracted key to lowercase hexadecimal without colons.
      */
     suspend fun getFdroidSigningKeys(): Result<List<String>> =
         runCatching {
             val metadata = ytMusic.fdroidMetadata().bodyAsText()
-            val field = checkNotNull(Regex("""AllowedAPKSigningKeys:((?:\s*-?\s*[0-9a-f]{64})+)""").find(metadata)).groupValues[1]
-            Regex("[0-9a-f]{64}").findAll(field).map { it.value }.toList()
+            val field = checkNotNull(Regex("""AllowedAPKSigningKeys:((?:\s*-?\s*[0-9a-fA-F:]{64,95})+)""").find(metadata)).groupValues[1]
+            Regex("[0-9a-fA-F:]{64,95}").findAll(field)
+                .mapNotNull { com.maxrave.common.Config.normalizeSigningFingerprint(it.value) }
+                .toList()
         }
 
     suspend fun newRelease(): Result<ExplorePage> =

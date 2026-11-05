@@ -1220,23 +1220,58 @@ class SharedViewModel(
     }
 
     /**
-     * [signingCerts]: SHA-256 hex of each certificate this APK is signed with. A failed fetch leaves
-     * the app usable — it plays offline, and an unknown answer must not lock out our own users.
+     * [signingCerts]: SHA-256 hex of each certificate this APK is signed with.
+     * Evaluates package name and signing identity against Naudio's trusted release
+     * certificates and optional remote metadata.
      */
     fun checkOfficialBuild(
         packageName: String,
         signingCerts: List<String>,
     ) {
-        if (packageName !in Config.OFFICIAL_PACKAGE_NAMES) {
+        // 1. Keep the unapproved package-name rejection as the first check.
+        if (!Config.isOfficialPackage(packageName)) {
             _isOfficialBuild.value = false
             return
         }
+
+        // 2. Normalize the signing certificate fingerprints.
+        val normalizedCerts = signingCerts.mapNotNull { Config.normalizeSigningFingerprint(it) }
+
+        // 3. If no valid signing fingerprint is available, return without changing _isOfficialBuild from its initial true state.
+        if (normalizedCerts.isEmpty()) {
+            return
+        }
+
+        // 4. Continue with static trusted fingerprint validation and remote metadata validation when a fingerprint is available.
+        if (Config.isTrustedSigningFingerprint(normalizedCerts)) {
+            _isOfficialBuild.value = true
+            return
+        }
+
+        // If not matched by static trusted keys (e.g. following a key rotation published remotely),
+        // query remote signing keys.
         viewModelScope.launch {
             updateRepository.getFdroidSigningKeys().collect { response ->
-                val keys = response.data
-                // No certificate read at all is an unknown answer, and unknown never blocks.
-                if (response is Resource.Success && keys != null && signingCerts.isNotEmpty() && keys.none { it in signingCerts }) {
-                    _isOfficialBuild.value = false
+                when (response) {
+                    is Resource.Success -> {
+                        val remoteKeys = response.data.orEmpty()
+                        val isOfficial =
+                            Config.validateOfficialBuild(
+                                packageName = packageName,
+                                signingCerts = signingCerts,
+                                remoteKeys = remoteKeys,
+                            )
+                        if (!isOfficial) {
+                            _isOfficialBuild.value = false
+                        }
+                    }
+                    is Resource.Error -> {
+                        // Remote fetch failed. Since certificates were available but did not match local trusted keys,
+                        // reject the unofficial build.
+                        if (!Config.isTrustedSigningFingerprint(normalizedCerts)) {
+                            _isOfficialBuild.value = false
+                        }
+                    }
                 }
             }
         }

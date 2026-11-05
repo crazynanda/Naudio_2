@@ -94,9 +94,16 @@ jobs:
 
           # Verify every signed APK
           BUILD_TOOLS_PATH="$ANDROID_HOME/build-tools/$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -n 1)"
+          EXPECTED_FINGERPRINT="0208a0c5291d07483d23ec92f2c9b5a877d1d49969990e872211c5effc0fb41c"
           for apk in Naudio-*.apk; do
-            echo "Verifying $apk..."
+            echo "Verifying $apk signature integrity..."
             "$BUILD_TOOLS_PATH/apksigner" verify --verbose "$apk"
+
+            echo "Verifying $apk signing certificate fingerprint against production identity..."
+            "$BUILD_TOOLS_PATH/apksigner" verify --print-certs "$apk" | tr -d ' :' | tr '[:upper:]' '[:lower:]' | grep "$EXPECTED_FINGERPRINT" || {
+              echo "ERROR: $apk was not signed with expected Naudio production certificate ($EXPECTED_FINGERPRINT)!"
+              exit 1
+            }
           done
           ls -lh
 
@@ -461,6 +468,7 @@ jobs:
         run: |
           set -e
           echo "Verifying downloaded release APK signatures..."
+          EXPECTED_FINGERPRINT="0208a0c5291d07483d23ec92f2c9b5a877d1d49969990e872211c5effc0fb41c"
           apk_count=0
           for apk in release-apks/Naudio-*.apk; do
             if [ -f "$apk" ]; then
@@ -474,20 +482,27 @@ jobs:
             exit 1
           fi
 
-          # Also verify cryptographic integrity with apksigner if available on runner
+          # Also verify cryptographic integrity and production certificate fingerprint with apksigner if available on runner
           if [ -n "$ANDROID_HOME" ] && [ -d "$ANDROID_HOME/build-tools" ]; then
             BUILD_TOOLS_PATH="$ANDROID_HOME/build-tools/$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -n 1)"
             if [ -f "$BUILD_TOOLS_PATH/apksigner" ]; then
-              echo "Running cryptographic verification using apksigner ($BUILD_TOOLS_PATH)..."
+              echo "Running cryptographic verification and production fingerprint check using apksigner ($BUILD_TOOLS_PATH)..."
               for apk in release-apks/Naudio-*.apk; do
                 if [ -f "$apk" ]; then
+                  echo "Verifying signature validity of $apk..."
                   "$BUILD_TOOLS_PATH/apksigner" verify --verbose "$apk"
+
+                  echo "Verifying certificate fingerprint of $apk..."
+                  "$BUILD_TOOLS_PATH/apksigner" verify --print-certs "$apk" | tr -d ' :' | tr '[:upper:]' '[:lower:]' | grep "$EXPECTED_FINGERPRINT" || {
+                    echo "ERROR: $apk does not match expected production signing certificate ($EXPECTED_FINGERPRINT)!"
+                    exit 1
+                  }
                 fi
               done
             fi
           fi
 
-          echo "All release APK signatures successfully validated."
+          echo "All release APK signatures and certificate fingerprints successfully validated."
           ls -lh release-apks/
 
       - name: Read app version and release tag

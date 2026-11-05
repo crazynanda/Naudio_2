@@ -6,7 +6,7 @@
     <a href="https://github.com/crazynanda/Naudio_2/releases"><img src="https://img.shields.io/github/downloads/crazynanda/Naudio_2/total" alt="Total downloads"></a>
     <a href="LICENSE"><img src="https://img.shields.io/github/license/crazynanda/Naudio_2" alt="License: GPL-3.0"></a>
   </p>
-  <p><strong><a href="https://github.com/crazynanda/Naudio_2/releases/latest">Download the latest Naudio release (2.3.2)</a></strong></p>
+  <p><strong><a href="https://github.com/crazynanda/Naudio_2/releases/latest">Download the latest Naudio release (2.3.3)</a></strong></p>
 </div>
 
 Naudio is an independently developed music streaming application based on [SimpMusic](https://github.com/maxrave-dev/SimpMusic), featuring its own branding, continuous architectural improvements, enhanced playback reliability, and unique user experience features.
@@ -57,7 +57,7 @@ Naudio is an independently developed music streaming application based on [SimpM
 
 | Component | Technology / Specification |
 | :--- | :--- |
-| **Product Version** | Version 2.3.2 (Version Code: 62) |
+| **Product Version** | Version 2.3.3 (Version Code: 63) |
 | **Application ID** | `com.maxrave.simpmusic` |
 | **Official Distribution** | GitHub Releases (Direct APK) |
 | **Language & Runtime** | Kotlin Multiplatform (KMP 2.4.20) / JVM 21 |
@@ -98,18 +98,18 @@ GitHub Releases is the official and primary distribution channel for Naudio Andr
 
 Navigate to the **[Latest Naudio Release](https://github.com/crazynanda/Naudio_2/releases/latest)** and download the APK suitable for your device:
 
-- **Universal APK (`Naudio-2.3.2.apk` / `Naudio-2.3.2-universal.apk`)** [~54 MB]:
+- **Universal APK (`Naudio-2.3.3.apk` / `Naudio-2.3.3-universal.apk`)** [~54 MB]:
   *Recommended for most users.* Includes native audio binaries for all supported device architectures (`arm64-v8a`, `armeabi-v7a`, `x86_64`) and will run on any device running Android 8.0 or newer.
-- **ARM64 APK (`Naudio-2.3.2-arm64-v8a.apk`)** [~28 MB]:
+- **ARM64 APK (`Naudio-2.3.3-arm64-v8a.apk`)** [~28 MB]:
   Optimized lightweight package designed for all modern 64-bit Android smartphones and tablets.
-- **ARMv7 APK (`Naudio-2.3.2-armeabi-v7a.apk`)** [~28 MB]:
+- **ARMv7 APK (`Naudio-2.3.3-armeabi-v7a.apk`)** [~28 MB]:
   Designed for older 32-bit Android phones and legacy hardware.
-- **x86_64 APK (`Naudio-2.3.2-x86_64.apk`)** [~29 MB]:
+- **x86_64 APK (`Naudio-2.3.3-x86_64.apk`)** [~29 MB]:
   Designed for Android emulators, ChromeOS devices, and Intel/AMD-based Android hardware.
 
 ### 2. Install on Android
 
-1. Open your browser's **Downloads** or your device's **Files** app and tap the downloaded `Naudio-2.3.2.apk` file.
+1. Open your browser's **Downloads** or your device's **Files** app and tap the downloaded `Naudio-2.3.3.apk` file.
 2. If Android prompts **"For your security, your phone is not allowed to install unknown apps from this source"**:
    - Tap **Settings** in the prompt dialog.
    - Toggle on **Allow from this source** (or **Install unknown apps**) for your browser or file manager.
@@ -122,7 +122,7 @@ Navigate to the **[Latest Naudio Release](https://github.com/crazynanda/Naudio_2
 Connect your Android device with USB debugging enabled, then run:
 
 ```bash
-adb install -r Naudio-2.3.2.apk
+adb install -r Naudio-2.3.3.apk
 ```
 
 ---
