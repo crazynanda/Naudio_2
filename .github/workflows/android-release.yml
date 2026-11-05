@@ -89,9 +89,12 @@ jobs:
           cp SimpMusic-full-armeabi-v7a-release.apk "Naudio-${VERSION}-armeabi-v7a.apk"
           cp SimpMusic-full-x86_64-release.apk "Naudio-${VERSION}-x86_64.apk"
 
+          # Remove original SimpMusic release files from staging directory
+          rm -f SimpMusic-full-*.apk
+
           # Verify every signed APK
           BUILD_TOOLS_PATH="$ANDROID_HOME/build-tools/$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -n 1)"
-          for apk in Naudio-*.apk SimpMusic-*.apk; do
+          for apk in Naudio-*.apk; do
             echo "Verifying $apk..."
             "$BUILD_TOOLS_PATH/apksigner" verify --verbose "$apk"
           done
@@ -101,7 +104,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: app-full-release
-          path: androidApp/build/outputs/apk/release/*.apk
+          path: androidApp/build/outputs/apk/release/Naudio-*.apk
 
   # SimpMusic for vivo: androidApp under a package vivo's Origin Island follows (vivoAndroidApp),
   # Full build, arm64-v8a only, signed with the same key so the official-build check accepts it.
@@ -476,7 +479,7 @@ jobs:
             BUILD_TOOLS_PATH="$ANDROID_HOME/build-tools/$(ls "$ANDROID_HOME/build-tools" | sort -V | tail -n 1)"
             if [ -f "$BUILD_TOOLS_PATH/apksigner" ]; then
               echo "Running cryptographic verification using apksigner ($BUILD_TOOLS_PATH)..."
-              for apk in release-apks/Naudio-*.apk release-apks/SimpMusic-full-*.apk; do
+              for apk in release-apks/Naudio-*.apk; do
                 if [ -f "$apk" ]; then
                   "$BUILD_TOOLS_PATH/apksigner" verify --verbose "$apk"
                 fi
@@ -511,4 +514,3 @@ jobs:
           generate_release_notes: true
           files: |
             release-apks/Naudio-*.apk
-            release-apks/SimpMusic-full-*.apk
