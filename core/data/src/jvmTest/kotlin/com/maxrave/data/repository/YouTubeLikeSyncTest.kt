@@ -523,6 +523,122 @@ class YouTubeLikeSyncTest {
         assertEquals(1, fakeYt.addToLikedCalls.size, "Single attempt made; not queued for repeated automatic retry")
     }
 
+    @Test
+    fun queuedRequest_syncDisabledWhileWaiting_isSkippedWhenLockAcquired() = runBlocking {
+        insertTestSong("holder_track")
+        val lockHeld = CompletableDeferred<Unit>()
+        val releaseHolder = CompletableDeferred<Unit>()
+
+        val fakeYt = FakeYouTube().apply {
+            beforeCallHook = { mediaId ->
+                if (mediaId == "holder_track") {
+                    lockHeld.complete(Unit)
+                    releaseHolder.await()
+                }
+            }
+        }
+        val fakeDownloads = FakeDownloadHandler()
+        val testDataStore = TestDataStoreManager(
+            combineLocalAndYouTubeLikedVal = DataStoreManager.TRUE,
+            loggedInVal = DataStoreManager.TRUE,
+            cookieVal = "valid_sapisid_cookie",
+        )
+        val dataStore = testDataStore.create()
+        val repo = SongRepositoryImpl(
+            dataStoreManager = dataStore,
+            localDataSource = localDataSource,
+            youTube = fakeYt,
+            downloadHandler = fakeDownloads,
+        )
+
+        // 1. Holder holds the Mutex
+        val holderJob = launch {
+            repo.updateLikeStatus("holder_track", 1)
+        }
+        lockHeld.await() // Mutex is now held
+
+        // 2. Queue a like request for testVideoId while Mutex is held
+        val likeJob = launch {
+            repo.updateLikeStatus(testVideoId, 1)
+        }
+
+        // 3. User disables synchronisation while request is waiting in queue
+        dataStore.setCombineLocalAndYouTubeLiked(false)
+
+        // 4. Release Mutex so queued request acquires lock and executes check
+        releaseHolder.complete(Unit)
+        holderJob.join()
+        likeJob.join()
+
+        // Local favourite must remain saved!
+        assertTrue(localDataSource.getSong(testVideoId)?.liked == true, "Local favourite must be preserved")
+
+        // No YouTube request must be sent for testVideoId
+        assertFalse(
+            fakeYt.addToLikedCalls.contains(testVideoId),
+            "Queued like request must be skipped when sync was disabled while waiting",
+        )
+    }
+
+    @Test
+    fun queuedRequest_logoutWhileWaiting_isSkippedWhenLockAcquired() = runBlocking {
+        insertTestSong("holder_track")
+        val lockHeld = CompletableDeferred<Unit>()
+        val releaseHolder = CompletableDeferred<Unit>()
+
+        val fakeYt = FakeYouTube().apply {
+            beforeCallHook = { mediaId ->
+                if (mediaId == "holder_track") {
+                    lockHeld.complete(Unit)
+                    releaseHolder.await()
+                }
+            }
+        }
+        val fakeDownloads = FakeDownloadHandler()
+        val testDataStore = TestDataStoreManager(
+            combineLocalAndYouTubeLikedVal = DataStoreManager.TRUE,
+            loggedInVal = DataStoreManager.TRUE,
+            cookieVal = "valid_sapisid_cookie",
+        )
+        val dataStore = testDataStore.create()
+        val repo = SongRepositoryImpl(
+            dataStoreManager = dataStore,
+            localDataSource = localDataSource,
+            youTube = fakeYt,
+            downloadHandler = fakeDownloads,
+        )
+
+        // 1. Holder holds the Mutex
+        val holderJob = launch {
+            repo.updateLikeStatus("holder_track", 1)
+        }
+        lockHeld.await()
+
+        // 2. Queue a like request for testVideoId while Mutex is held
+        val likeJob = launch {
+            repo.updateLikeStatus(testVideoId, 1)
+        }
+
+        // 3. User logs out while request is waiting in queue
+        dataStore.setLoggedIn(false)
+        dataStore.setCookie("", null)
+        dataStore.setCombineLocalAndYouTubeLiked(false)
+
+        // 4. Release Mutex so queued request acquires lock and executes check
+        releaseHolder.complete(Unit)
+        holderJob.join()
+        likeJob.join()
+
+        // Local favourite must remain saved!
+        assertTrue(localDataSource.getSong(testVideoId)?.liked == true, "Local favourite must be preserved")
+
+        // No YouTube request must be sent for testVideoId
+        assertFalse(
+            fakeYt.addToLikedCalls.contains(testVideoId),
+            "Queued like request must be skipped when logout occurs while waiting",
+        )
+    }
+
     // Test Doubles
     private class FakeYouTube : YouTube() {
         val addToLikedCalls: MutableList<String> = Collections.synchronizedList(mutableListOf<String>())

@@ -377,6 +377,21 @@ internal class SongRepositoryImpl(
         withContext(Dispatchers.IO) {
             try {
                 youtubeLikeSyncMutex.withLock {
+                    if (dataStoreManager.combineLocalAndYouTubeLiked.first() != TRUE) {
+                        Logger.d(TAG, "Skipping YouTube like sync for $videoId: sync preference was disabled while queued")
+                        return@withLock
+                    }
+
+                    if (dataStoreManager.loggedIn.first() != TRUE) {
+                        Logger.d(TAG, "Skipping YouTube like sync for $videoId: user logged out while queued")
+                        return@withLock
+                    }
+
+                    if (dataStoreManager.cookie.first().isBlank()) {
+                        Logger.d(TAG, "Skipping YouTube like sync for $videoId: cookie became blank while queued")
+                        return@withLock
+                    }
+
                     val currentSong = localDataSource.getSong(videoId)
                     if (currentSong != null) {
                         val currentLiked = currentSong.liked
