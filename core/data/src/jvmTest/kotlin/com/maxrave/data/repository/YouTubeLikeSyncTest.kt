@@ -13,6 +13,7 @@ import com.maxrave.kotlinytmusicscraper.YouTube
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -20,6 +21,7 @@ import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.sync.Mutex
 import java.io.File
 import java.io.IOException
 import java.lang.reflect.InvocationHandler
@@ -313,13 +315,14 @@ class YouTubeLikeSyncTest {
     @Test
     fun obsoleteQueuedRequest_isSkippedWhenLocalStateChanges() = runBlocking {
         insertTestSong("holder_track")
-        val lockHeld = CompletableDeferred<Unit>()
+        val testMutex = TestMutex()
+        val holderInLock = CompletableDeferred<Unit>()
         val releaseHolder = CompletableDeferred<Unit>()
 
         val fakeYt = FakeYouTube().apply {
             beforeCallHook = { mediaId ->
                 if (mediaId == "holder_track") {
-                    lockHeld.complete(Unit)
+                    holderInLock.complete(Unit)
                     releaseHolder.await()
                 }
             }
@@ -335,23 +338,27 @@ class YouTubeLikeSyncTest {
             localDataSource = localDataSource,
             youTube = fakeYt,
             downloadHandler = fakeDownloads,
+            youtubeLikeSyncMutex = testMutex,
         )
 
         // 1. Start holder track which holds the mutex inside addToLiked
         val holderJob = launch {
             repo.updateLikeStatus("holder_track", 1)
         }
-        lockHeld.await() // Mutex is now held by holderJob
+        testMutex.lockAttemptChannel.receive() // holder requested lock
+        holderInLock.await()                   // holder acquired lock and is executing inside withLock
 
         // 2. Queue a like for testVideoId while mutex is locked
         val likeJob = launch {
             repo.updateLikeStatus(testVideoId, 1)
         }
+        testMutex.lockAttemptChannel.receive() // testVideoId has completed pre-checks and is waiting on Mutex
 
         // 3. User immediately unlikes testVideoId (updates DB immediately to 0, then queues for mutex)
         val unlikeJob = launch {
             repo.updateLikeStatus(testVideoId, 0)
         }
+        testMutex.lockAttemptChannel.receive() // unlikeJob has completed pre-checks and is waiting on Mutex
 
         // 4. Release holder job so queued jobs proceed
         releaseHolder.complete(Unit)
@@ -526,13 +533,14 @@ class YouTubeLikeSyncTest {
     @Test
     fun queuedRequest_syncDisabledWhileWaiting_isSkippedWhenLockAcquired() = runBlocking {
         insertTestSong("holder_track")
-        val lockHeld = CompletableDeferred<Unit>()
+        val testMutex = TestMutex()
+        val holderInLock = CompletableDeferred<Unit>()
         val releaseHolder = CompletableDeferred<Unit>()
 
         val fakeYt = FakeYouTube().apply {
             beforeCallHook = { mediaId ->
                 if (mediaId == "holder_track") {
-                    lockHeld.complete(Unit)
+                    holderInLock.complete(Unit)
                     releaseHolder.await()
                 }
             }
@@ -549,31 +557,36 @@ class YouTubeLikeSyncTest {
             localDataSource = localDataSource,
             youTube = fakeYt,
             downloadHandler = fakeDownloads,
+            youtubeLikeSyncMutex = testMutex,
         )
 
-        // 1. Holder holds the Mutex
+        // 1. Holder starts and acquires the Mutex
         val holderJob = launch {
             repo.updateLikeStatus("holder_track", 1)
         }
-        lockHeld.await() // Mutex is now held
+        testMutex.lockAttemptChannel.receive() // holder requested lock
+        holderInLock.await()                   // holder acquired lock and is executing inside withLock
 
-        // 2. Queue a like request for testVideoId while Mutex is held
+        // 2. Queue the second request for testVideoId while Mutex is held
         val likeJob = launch {
             repo.updateLikeStatus(testVideoId, 1)
         }
+        // Explicitly synchronize: wait until second request finishes pre-checks and reaches lock()
+        testMutex.lockAttemptChannel.receive()
 
-        // 3. User disables synchronisation while request is waiting in queue
+        // 3. At this exact point, second request is verified waiting on the Mutex.
+        // User now disables synchronisation.
         dataStore.setCombineLocalAndYouTubeLiked(false)
 
-        // 4. Release Mutex so queued request acquires lock and executes check
+        // 4. Release holder to allow second request to acquire the Mutex
         releaseHolder.complete(Unit)
         holderJob.join()
         likeJob.join()
 
-        // Local favourite must remain saved!
+        // 5. Local favourite must remain saved
         assertTrue(localDataSource.getSong(testVideoId)?.liked == true, "Local favourite must be preserved")
 
-        // No YouTube request must be sent for testVideoId
+        // 6. Verify second request aborted inside-Mutex without calling YouTube API
         assertFalse(
             fakeYt.addToLikedCalls.contains(testVideoId),
             "Queued like request must be skipped when sync was disabled while waiting",
@@ -583,13 +596,14 @@ class YouTubeLikeSyncTest {
     @Test
     fun queuedRequest_logoutWhileWaiting_isSkippedWhenLockAcquired() = runBlocking {
         insertTestSong("holder_track")
-        val lockHeld = CompletableDeferred<Unit>()
+        val testMutex = TestMutex()
+        val holderInLock = CompletableDeferred<Unit>()
         val releaseHolder = CompletableDeferred<Unit>()
 
         val fakeYt = FakeYouTube().apply {
             beforeCallHook = { mediaId ->
                 if (mediaId == "holder_track") {
-                    lockHeld.complete(Unit)
+                    holderInLock.complete(Unit)
                     releaseHolder.await()
                 }
             }
@@ -606,33 +620,37 @@ class YouTubeLikeSyncTest {
             localDataSource = localDataSource,
             youTube = fakeYt,
             downloadHandler = fakeDownloads,
+            youtubeLikeSyncMutex = testMutex,
         )
 
-        // 1. Holder holds the Mutex
+        // 1. Holder starts and acquires the Mutex
         val holderJob = launch {
             repo.updateLikeStatus("holder_track", 1)
         }
-        lockHeld.await()
+        testMutex.lockAttemptChannel.receive()
+        holderInLock.await()
 
-        // 2. Queue a like request for testVideoId while Mutex is held
+        // 2. Queue the second request for testVideoId while Mutex is held
         val likeJob = launch {
             repo.updateLikeStatus(testVideoId, 1)
         }
+        // Explicitly synchronize: wait until second request finishes pre-checks and reaches lock()
+        testMutex.lockAttemptChannel.receive()
 
-        // 3. User logs out while request is waiting in queue
+        // 3. User logs out while second request is waiting on the Mutex
         dataStore.setLoggedIn(false)
         dataStore.setCookie("", null)
         dataStore.setCombineLocalAndYouTubeLiked(false)
 
-        // 4. Release Mutex so queued request acquires lock and executes check
+        // 4. Release holder to allow second request to acquire the Mutex
         releaseHolder.complete(Unit)
         holderJob.join()
         likeJob.join()
 
-        // Local favourite must remain saved!
+        // 5. Local favourite must remain saved
         assertTrue(localDataSource.getSong(testVideoId)?.liked == true, "Local favourite must be preserved")
 
-        // No YouTube request must be sent for testVideoId
+        // 6. Verify second request aborted inside-Mutex without calling YouTube API
         assertFalse(
             fakeYt.addToLikedCalls.contains(testVideoId),
             "Queued like request must be skipped when logout occurs while waiting",
@@ -640,6 +658,15 @@ class YouTubeLikeSyncTest {
     }
 
     // Test Doubles
+    private class TestMutex(private val delegate: Mutex = Mutex()) : Mutex by delegate {
+        val lockAttemptChannel = Channel<Unit>(Channel.UNLIMITED)
+
+        override suspend fun lock(owner: Any?) {
+            lockAttemptChannel.send(Unit)
+            delegate.lock(owner)
+        }
+    }
+
     private class FakeYouTube : YouTube() {
         val addToLikedCalls: MutableList<String> = Collections.synchronizedList(mutableListOf<String>())
         val removeFromLikedCalls: MutableList<String> = Collections.synchronizedList(mutableListOf<String>())

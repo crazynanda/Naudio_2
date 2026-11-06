@@ -65,6 +65,7 @@ internal class SongRepositoryImpl(
     private val localDataSource: LocalDataSource,
     private val youTube: YouTube,
     downloadHandler: DownloadHandler? = null,
+    private val youtubeLikeSyncMutex: Mutex = Mutex(),
 ) : SongRepository {
     override fun getAllSongs(limit: Int): Flow<List<SongEntity>> =
         flow {
@@ -331,8 +332,6 @@ internal class SongRepositoryImpl(
      * already depends on this repository (it calls [recoverQueue] whenever it saves the queue).
      */
     private val mediaPlayerHandler: MediaPlayerHandler by lazy { getKoin().get() }
-
-    private val youtubeLikeSyncMutex = Mutex()
 
     /**
      * Note the side effect: liking a song can start a download, when the user has asked for that.
