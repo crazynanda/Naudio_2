@@ -664,8 +664,8 @@
     <string name="youtube_liked_music">YouTube Liked Music</string>
     <string name="keep_your_youtube_playlist_offline">Keep showing your YouTube playlist when offline</string>
     <string name="keep_your_youtube_playlist_offline_description">Save your YT playlist to local and keep to show when offline</string>
-    <string name="combine_local_and_youtube_liked_songs">Replace Favorite by YouTube Liked when logged in</string>
-    <string name="combine_local_and_youtube_liked_songs_description">Using only YouTube Liked (not support like a song when offline)</string>
+    <string name="combine_local_and_youtube_liked_songs">Sync Liked Songs with YouTube</string>
+    <string name="combine_local_and_youtube_liked_songs_description">Automatically sync songs you like or unlike in Naudio with your YouTube Music account.</string>
     <string name="this_year">This year</string>
     <string name="last_90_days">Last 90 days</string>
     <string name="last_30_days">Last 30 days</string>

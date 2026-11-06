@@ -39,6 +39,8 @@ import com.maxrave.logger.Logger
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.IO
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flow
@@ -62,6 +64,7 @@ internal class SongRepositoryImpl(
     private val dataStoreManager: DataStoreManager,
     private val localDataSource: LocalDataSource,
     private val youTube: YouTube,
+    downloadHandler: DownloadHandler? = null,
 ) : SongRepository {
     override fun getAllSongs(limit: Int): Flow<List<SongEntity>> =
         flow {
@@ -321,13 +324,15 @@ internal class SongRepositoryImpl(
      * the platform media modules, and pulling it in at construction time would make this repository
      * depend on them being built first.
      */
-    private val downloadHandler: DownloadHandler by lazy { getKoin().get() }
+    private val downloadHandler: DownloadHandler by lazy { downloadHandler ?: getKoin().get() }
 
     /**
      * Lazy for the same reason as [downloadHandler], and here it also breaks a cycle: the handler
      * already depends on this repository (it calls [recoverQueue] whenever it saves the queue).
      */
     private val mediaPlayerHandler: MediaPlayerHandler by lazy { getKoin().get() }
+
+    private val youtubeLikeSyncMutex = Mutex()
 
     /**
      * Note the side effect: liking a song can start a download, when the user has asked for that.
@@ -348,17 +353,66 @@ internal class SongRepositoryImpl(
                 downloadHandler.downloadTrack(videoId, song.title, song.thumbnails.orEmpty())
             }
         }
-//        if (dataStoreManager.combineLocalAndYouTubeLiked.first() == TRUE) {
-//            if (likeStatus == 1) {
-//                addToYouTubeLiked(videoId).collect { result ->
-//                    Logger.d(TAG, "updateLikeStatus -> addToYouTubeLiked: $result")
-//                }
-//            } else {
-//                removeFromYouTubeLiked(videoId).collect { result ->
-//                    Logger.d(TAG, "updateLikeStatus -> removeFromYouTubeLiked: $result")
-//                }
-//            }
-//        }
+
+        if (videoId.isBlank()) {
+            Logger.w(TAG, "Cannot sync like status: videoId is blank")
+            return@withContext
+        }
+
+        if (dataStoreManager.combineLocalAndYouTubeLiked.first() != TRUE) {
+            return@withContext
+        }
+
+        if (dataStoreManager.loggedIn.first() != TRUE) {
+            Logger.d(TAG, "YouTube like sync skipped: not logged in")
+            return@withContext
+        }
+
+        val cookie = dataStoreManager.cookie.first()
+        if (cookie.isBlank()) {
+            Logger.d(TAG, "YouTube like sync skipped: cookie is blank")
+            return@withContext
+        }
+
+        withContext(Dispatchers.IO) {
+            try {
+                youtubeLikeSyncMutex.withLock {
+                    val currentSong = localDataSource.getSong(videoId)
+                    if (currentSong != null) {
+                        val currentLiked = currentSong.liked
+                        if ((likeStatus == 1 && !currentLiked) || (likeStatus == 0 && currentLiked)) {
+                            Logger.d(
+                                TAG,
+                                "Skipping superseded YouTube like sync for $videoId: requested likeStatus=$likeStatus but current local state is liked=$currentLiked",
+                            )
+                            return@withLock
+                        }
+                    }
+
+                    val result =
+                        if (likeStatus == 1) {
+                            youTube.addToLiked(videoId)
+                        } else {
+                            youTube.removeFromLiked(videoId)
+                        }
+
+                    result.onSuccess { statusCode ->
+                        if (statusCode in 200..299) {
+                            Logger.i(TAG, "YouTube like sync successful for $videoId (likeStatus=$likeStatus, status=$statusCode)")
+                        } else {
+                            Logger.w(TAG, "YouTube like sync returned non-success HTTP status for $videoId (likeStatus=$likeStatus, status=$statusCode)")
+                        }
+                    }.onFailure { error ->
+                        if (error is CancellationException) throw error
+                        Logger.w(TAG, "YouTube like sync failed for $videoId (likeStatus=$likeStatus): ${error.message}")
+                    }
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Logger.e(TAG, "Error during YouTube like sync for $videoId: ${e.message}")
+            }
+        }
     }
 
     override fun updateSongInLibrary(
@@ -574,51 +628,69 @@ internal class SongRepositoryImpl(
 
     override suspend fun addToYouTubeLiked(mediaId: String?): Flow<Int> =
         flow {
-            if (mediaId != null) {
-                runCatching {
+            if (!mediaId.isNullOrBlank()) {
+                try {
                     youTube
                         .addToLiked(mediaId)
                         .onSuccess {
                             Logger.d(TAG, "Liked -> Success: $it")
                             emit(it)
                         }.onFailure {
-                            it.printStackTrace()
+                            if (it is CancellationException) throw it
+                            Logger.w(TAG, "addToYouTubeLiked failed: ${it.message}")
                             emit(0)
                         }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Logger.w(TAG, "addToYouTubeLiked error: ${e.message}")
+                    emit(0)
                 }
             }
         }.flowOn(Dispatchers.IO)
 
     override suspend fun addToYouTubeDisliked(mediaId: String?): Flow<Int> =
         flow {
-            if (mediaId != null) {
-                runCatching {
+            if (!mediaId.isNullOrBlank()) {
+                try {
                     youTube
                         .addToDisliked(mediaId)
                         .onSuccess {
                             Logger.d(TAG, "Disliked -> Success: $it")
                             emit(it)
                         }.onFailure {
-                            it.printStackTrace()
+                            if (it is CancellationException) throw it
+                            Logger.w(TAG, "addToYouTubeDisliked failed: ${it.message}")
                             emit(0)
                         }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Logger.w(TAG, "addToYouTubeDisliked error: ${e.message}")
+                    emit(0)
                 }
             }
         }.flowOn(Dispatchers.IO)
 
     override suspend fun removeFromYouTubeLiked(mediaId: String?): Flow<Int> =
         flow {
-            if (mediaId != null) {
-                runCatching {
+            if (!mediaId.isNullOrBlank()) {
+                try {
                     youTube
                         .removeFromLiked(mediaId)
                         .onSuccess {
-                            Logger.d(TAG, "Liked -> Success: $it")
+                            Logger.d(TAG, "Removed liked -> Success: $it")
                             emit(it)
                         }.onFailure {
-                            it.printStackTrace()
+                            if (it is CancellationException) throw it
+                            Logger.w(TAG, "removeFromYouTubeLiked failed: ${it.message}")
                             emit(0)
                         }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    Logger.w(TAG, "removeFromYouTubeLiked error: ${e.message}")
+                    emit(0)
                 }
             }
         }.flowOn(Dispatchers.IO)

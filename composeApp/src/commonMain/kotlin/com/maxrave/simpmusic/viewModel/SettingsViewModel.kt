@@ -1655,6 +1655,7 @@ class SettingsViewModel(
                 // here rather than from the Settings row — same teardown as setSpotifyLogIn and
                 // logOutDiscord. Only this branch: acc != null is switching account, not logout.
                 dataStoreManager.setSyncFollowToYouTube(false)
+                dataStoreManager.setCombineLocalAndYouTubeLiked(false)
                 delay(500)
                 getAllGoogleAccount()
                 getLoggedIn()
@@ -1673,6 +1674,7 @@ class SettingsViewModel(
             dataStoreManager.setCookie("", null)
             Logger.i("Auth", "YouTube: signed out of all accounts")
             dataStoreManager.setSyncFollowToYouTube(false)
+            dataStoreManager.setCombineLocalAndYouTubeLiked(false)
             delay(500)
             getAllGoogleAccount()
             getLoggedIn()

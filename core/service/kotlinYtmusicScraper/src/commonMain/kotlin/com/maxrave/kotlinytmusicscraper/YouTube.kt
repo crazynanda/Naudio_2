@@ -100,6 +100,7 @@ import io.ktor.client.engine.http
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.URLBuilder
 import io.ktor.http.parseQueryString
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.IO
 import kotlinx.coroutines.delay
@@ -141,7 +142,7 @@ private const val TAG = "YouTubeScraper"
  * @author maxrave-dev
  */
 
-class YouTube {
+open class YouTube {
     private val ytMusic = Ytmusic()
 
     private val tidalTokenMutex = Mutex()
@@ -2221,20 +2222,20 @@ class YouTube {
             ytMusic.unsubscribeChannel(channelId).status.value
         }
 
-    suspend fun addToLiked(mediaId: String) =
+    open suspend fun addToLiked(mediaId: String): Result<Int> =
         runCatching {
             ytMusic.addToLiked(mediaId).status.value
-        }
+        }.onFailure { if (it is CancellationException) throw it }
 
-    suspend fun addToDisliked(mediaId: String) =
+    open suspend fun addToDisliked(mediaId: String): Result<Int> =
         runCatching {
             ytMusic.addToDisliked(mediaId).status.value
-        }
+        }.onFailure { if (it is CancellationException) throw it }
 
-    suspend fun removeFromLiked(mediaId: String) =
+    open suspend fun removeFromLiked(mediaId: String): Result<Int> =
         runCatching {
             ytMusic.removeFromLiked(mediaId).status.value
-        }
+        }.onFailure { if (it is CancellationException) throw it }
 
     suspend fun getSimpMusicChart() =
         runCatching {
