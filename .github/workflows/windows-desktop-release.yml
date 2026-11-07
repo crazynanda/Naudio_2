@@ -1,0 +1,419 @@
+name: Windows Desktop Release
+
+'on':
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Target GitHub Release tag (e.g. v2.3.4)'
+        required: true
+        type: string
+        default: 'v2.3.4'
+      publish_to_release:
+        description: 'Publish Windows installer to GitHub Release'
+        required: true
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows-desktop:
+    name: Build & Package Windows Desktop (x64)
+    runs-on: ubuntu-22.04
+    outputs:
+      app_version: ${{ steps.version.outputs.app_version }}
+      expected_tag: ${{ steps.version.outputs.expected_tag }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout main with recursive submodules
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          submodules: 'recursive'
+
+      - name: Read app version from libs.versions.toml
+        id: version
+        run: |
+          set -euo pipefail
+          APP_VERSION=$(grep '^version-name' gradle/libs.versions.toml | head -1 | cut -d'"' -f2)
+          if [ -z "$APP_VERSION" ]; then
+            echo "::error::Failed to read version-name from gradle/libs.versions.toml!"
+            exit 1
+          fi
+          EXPECTED_TAG="v$APP_VERSION"
+          echo "App version: $APP_VERSION"
+          echo "Expected release tag: $EXPECTED_TAG"
+          echo "app_version=$APP_VERSION" >> "$GITHUB_OUTPUT"
+          echo "expected_tag=$EXPECTED_TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: 21
+          distribution: 'microsoft'
+          cache: 'gradle'
+
+      - name: Configure local.properties
+        env:
+          SENTRY_DSN: ${{ secrets.SENTRY_DSN_JVM }}
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          LASTFM_API_KEY: ${{ secrets.LASTFM_API_KEY }}
+          LASTFM_SECRET: ${{ secrets.LASTFM_SECRET }}
+        run: |
+          touch ./local.properties
+          if [ -n "$SENTRY_DSN" ]; then
+            echo "SENTRY_DSN=$SENTRY_DSN" >> ./local.properties
+          fi
+          if [ -n "$SENTRY_AUTH_TOKEN" ]; then
+            echo "SENTRY_AUTH_TOKEN=$SENTRY_AUTH_TOKEN" >> ./local.properties
+          fi
+          if [ -n "$LASTFM_API_KEY" ]; then
+            echo "LASTFM_API_KEY=$LASTFM_API_KEY" >> ./local.properties
+          fi
+          if [ -n "$LASTFM_SECRET" ]; then
+            echo "LASTFM_SECRET=$LASTFM_SECRET" >> ./local.properties
+          fi
+
+      - name: Set isFullBuild in gradle.properties
+        run: |
+          echo "" >> ./gradle.properties
+          echo "isFullBuild=true" >> ./gradle.properties
+
+      - name: Generate aboutLibraries.json
+        run: ./gradlew exportLibraryDefinitions
+
+      - name: Cache mpv-natives
+        uses: actions/cache@v4
+        with:
+          path: mpv-natives
+          key: mpv-natives-${{ hashFiles('composeApp/build.gradle.kts') }}
+
+      - name: Populate mpv-natives for all OSes
+        run: ./gradlew :composeApp:mpvSetupAll --no-configuration-cache
+
+      - name: Generate Conveyor config
+        run: ./gradlew :desktopApp:writeConveyorConfig --no-configuration-cache
+
+      - name: Build Windows x64 MSIX via Conveyor
+        uses: hydraulic-software/conveyor/actions/build@v22.0
+        with:
+          command: '-Kapp.machines=windows.amd64 make site'
+          agree_to_license: 1
+          signing_key: ${{ secrets.CONVEYOR_SIGNING_KEY }}
+
+      - name: Package Windows offline installer
+        run: |
+          set -euo pipefail
+
+          if [ ! -f output/simpmusic.crt ]; then
+            echo "::error::output/simpmusic.crt missing — Conveyor signing must have failed"
+            exit 1
+          fi
+
+          msix=$(ls output/simpmusic-*.x64.msix 2>/dev/null | head -1)
+          if [ -z "$msix" ]; then
+            echo "::error::No simpmusic-*.x64.msix found in output/"
+            exit 1
+          fi
+
+          if [ ! -s "$msix" ]; then
+            echo "::error::MSIX package $msix is empty"
+            exit 1
+          fi
+
+          echo "Verified Windows MSIX: $msix ($(stat -c%s "$msix") bytes)"
+          echo "Verified signing certificate: output/simpmusic.crt ($(stat -c%s output/simpmusic.crt) bytes)"
+
+          mkdir -p installers/
+          stage="$(mktemp -d)"
+          cp scripts/windows/install.bat "$stage/"
+          cp output/simpmusic.crt        "$stage/"
+          cp "$msix"                      "$stage/"
+          ( cd "$stage" && zip -q -j \
+            "${GITHUB_WORKSPACE}/installers/SimpMusic-Windows-installer.zip" \
+            install.bat simpmusic.crt "$(basename "$msix")" )
+          rm -rf "$stage"
+          ls -lh installers/
+
+      - name: Verify output package and installer ZIP
+        env:
+          APP_VERSION: ${{ steps.version.outputs.app_version }}
+        run: |
+          set -euo pipefail
+          msix=$(ls output/simpmusic-*.x64.msix | head -1)
+          zip_path="installers/SimpMusic-Windows-installer.zip"
+
+          echo "=== 1. Checking Installer ZIP Integrity & Contents ==="
+          if [ ! -f "$zip_path" ]; then
+            echo "::error::Installer ZIP $zip_path not found!"
+            exit 1
+          fi
+
+          zip_entries=$(unzip -Z -1 "$zip_path")
+          echo "ZIP entries:"
+          echo "$zip_entries"
+
+          file_count=$(echo "$zip_entries" | wc -l)
+          if [ "$file_count" -ne 3 ]; then
+            echo "::error::Installer ZIP contains $file_count files, expected exactly 3"
+            exit 1
+          fi
+
+          echo "$zip_entries" | grep -qx "install.bat" || { echo "::error::install.bat missing from ZIP"; exit 1; }
+          echo "$zip_entries" | grep -qx "simpmusic.crt" || { echo "::error::simpmusic.crt missing from ZIP"; exit 1; }
+          echo "$zip_entries" | grep -E -qx "simpmusic-.*\.x64\.msix" || { echo "::error::MSIX missing from ZIP"; exit 1; }
+          echo "✓ Installer ZIP contains all 3 required files"
+
+          echo "=== 2. Verifying MSIX Manifest (Architecture, Version, Identity) ==="
+          manifest=$(unzip -p "$msix" AppxManifest.xml)
+          identity_line=$(echo "$manifest" | grep -i '<Identity' || true)
+          echo "MSIX Identity tag: $identity_line"
+
+          # Architecture check
+          if echo "$manifest" | grep -i 'ProcessorArchitecture="x64"' > /dev/null; then
+            echo "✓ Architecture confirmed: x64"
+          else
+            echo "::error::MSIX ProcessorArchitecture is not x64!"
+            exit 1
+          fi
+
+          # Version check dynamically against APP_VERSION from gradle/libs.versions.toml
+          escaped_version=$(printf '%s\n' "$APP_VERSION" | sed 's/[.]/\\./g')
+          if echo "$manifest" | grep -E -i "Version=\"${escaped_version}(\\.0)?\"" > /dev/null; then
+            echo "✓ Version confirmed matching gradle/libs.versions.toml: $APP_VERSION"
+          else
+            echo "::error::MSIX Version in AppxManifest.xml does not match expected app version $APP_VERSION!"
+            exit 1
+          fi
+
+          # Identity name check
+          if echo "$manifest" | grep -i 'Name="Simpmusic"' > /dev/null; then
+            echo "✓ Package identity confirmed: Simpmusic"
+          else
+            echo "::error::MSIX Identity Name in AppxManifest.xml does not match Simpmusic!"
+            exit 1
+          fi
+
+          echo "=== 3. Verifying MSIX Signing & Certificate ==="
+          openssl x509 -in output/simpmusic.crt -noout -subject -issuer -dates
+          echo "✓ simpmusic.crt is a valid X.509 certificate"
+
+          tmp_sig="$(mktemp)"
+          unzip -p "$msix" AppxSignature.p7x > "$tmp_sig"
+          if [ ! -s "$tmp_sig" ]; then
+            echo "::error::AppxSignature.p7x missing or empty inside $msix"
+            exit 1
+          fi
+          openssl pkcs7 -inform DER -in "$tmp_sig" -print_certs -noout
+          rm -f "$tmp_sig"
+          echo "✓ MSIX signature block AppxSignature.p7x is valid and readable"
+
+      - name: Upload Windows desktop installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: naudio-windows-desktop
+          path: installers/SimpMusic-Windows-installer.zip
+          if-no-files-found: error
+
+  verify-windows-signature:
+    name: Verify MSIX Signature (Microsoft SignTool)
+    runs-on: windows-latest
+    needs: [build-windows-desktop]
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Download Windows installer artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: naudio-windows-desktop
+          path: installer-artifact
+
+      - name: Extract installer ZIP and locate assets
+        id: locate
+        run: |
+          $zipPath = (Get-ChildItem -Path "installer-artifact" -Filter "*.zip" | Select-Object -First 1).FullName
+          if (-not $zipPath -or -not (Test-Path $zipPath)) {
+            Write-Error "Installer ZIP not found in downloaded artifact!"
+            exit 1
+          }
+          Write-Host "Found installer ZIP: $zipPath"
+
+          $extractDir = Join-Path $PWD "extracted-installer"
+          Expand-Archive -Path $zipPath -DestinationPath $extractDir -Force
+
+          $crtFile = Get-ChildItem -Path $extractDir -Filter "simpmusic.crt" | Select-Object -First 1
+          if (-not $crtFile) {
+            Write-Error "simpmusic.crt not found in extracted installer!"
+            exit 1
+          }
+
+          $msixFile = Get-ChildItem -Path $extractDir -Filter "*.msix" | Select-Object -First 1
+          if (-not $msixFile) {
+            Write-Error "MSIX file not found in extracted installer!"
+            exit 1
+          }
+
+          Write-Host "Located Certificate: $($crtFile.FullName)"
+          Write-Host "Located MSIX Package: $($msixFile.FullName)"
+
+          "extract_dir=$extractDir" >> $env:GITHUB_OUTPUT
+          "crt_path=$($crtFile.FullName)" >> $env:GITHUB_OUTPUT
+          "msix_path=$($msixFile.FullName)" >> $env:GITHUB_OUTPUT
+
+      - name: Import certificate to TrustedPeople store
+        run: |
+          $crtPath = "${{ steps.locate.outputs.crt_path }}"
+          Write-Host "Importing $crtPath into LocalMachine\TrustedPeople..."
+
+          certutil -addstore -f "TrustedPeople" $crtPath
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "Failed to import certificate into TrustedPeople store (exit code: $LASTEXITCODE)"
+            exit 1
+          }
+
+          Write-Host "Certificate successfully imported into LocalMachine\TrustedPeople."
+
+      - name: Locate Windows SDK SignTool
+        id: signtool
+        run: |
+          $signtoolPaths = Get-ChildItem -Path "C:\Program Files (x86)\Windows Kits\10\bin" -Filter "signtool.exe" -Recurse -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -like "*\x64\*" } |
+            Sort-Object FullName -Descending
+
+          if ($signtoolPaths.Count -gt 0) {
+            $toolPath = $signtoolPaths[0].FullName
+          } else {
+            $cmd = Get-Command signtool.exe -ErrorAction SilentlyContinue
+            if ($cmd) {
+              $toolPath = $cmd.Source
+            } else {
+              Write-Error "signtool.exe could not be located in Windows Kits or system PATH!"
+              exit 1
+            }
+          }
+
+          Write-Host "Located SignTool: $toolPath"
+          "path=$toolPath" >> $env:GITHUB_OUTPUT
+
+      - name: Verify MSIX signature with SignTool
+        run: |
+          $tool = "${{ steps.signtool.outputs.path }}"
+          $msix = "${{ steps.locate.outputs.msix_path }}"
+          $crt = "${{ steps.locate.outputs.crt_path }}"
+
+          Write-Host "Executing Microsoft SignTool verification:"
+          Write-Host "& `"$tool`" verify /pa /v `"$msix`""
+
+          $signtoolOutput = & $tool verify /pa /v $msix 2>&1
+          $exitCode = $LASTEXITCODE
+
+          Write-Host "--- SignTool Verbose Output ---"
+          $signtoolOutput | ForEach-Object { Write-Host $_ }
+          Write-Host "-------------------------------"
+
+          if ($exitCode -ne 0) {
+            Write-Error "SignTool verification failed with exit code $exitCode!"
+            exit 1
+          }
+          Write-Host "✓ SignTool verified MSIX signature successfully (/pa policy)."
+
+          Write-Host "=== Matching Signer Certificate with Bundled Certificate ==="
+          $bundledCert = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($crt)
+          $bundledThumbprint = $bundledCert.Thumbprint.ToUpperInvariant()
+          $bundledSubject = $bundledCert.Subject
+          $bundledSerial = $bundledCert.SerialNumber.ToUpperInvariant()
+
+          $sig = Get-AuthenticodeSignature -FilePath $msix
+          if (-not $sig -or -not $sig.SignerCertificate) {
+            Write-Error "Could not retrieve SignerCertificate from $msix using Get-AuthenticodeSignature!"
+            exit 1
+          }
+
+          $msixCert = $sig.SignerCertificate
+          $msixThumbprint = $msixCert.Thumbprint.ToUpperInvariant()
+          $msixSubject = $msixCert.Subject
+          $msixSerial = $msixCert.SerialNumber.ToUpperInvariant()
+
+          Write-Host "Bundled Certificate:"
+          Write-Host "  Subject:    $bundledSubject"
+          Write-Host "  Thumbprint: $bundledThumbprint"
+          Write-Host "  Serial:     $bundledSerial"
+
+          Write-Host "MSIX Signer Certificate:"
+          Write-Host "  Subject:    $msixSubject"
+          Write-Host "  Thumbprint: $msixThumbprint"
+          Write-Host "  Serial:     $msixSerial"
+          Write-Host "  Status:     $($sig.Status)"
+
+          if ($bundledThumbprint -ne $msixThumbprint) {
+            Write-Error "Certificate Thumbprint mismatch! Bundled: $bundledThumbprint, MSIX: $msixThumbprint"
+            exit 1
+          }
+          Write-Host "✓ Certificate Thumbprints match: $bundledThumbprint"
+
+          if ($bundledSerial -ne $msixSerial) {
+            Write-Error "Certificate Serial Number mismatch! Bundled: $bundledSerial, MSIX: $msixSerial"
+            exit 1
+          }
+          Write-Host "✓ Certificate Serial Numbers match: $bundledSerial"
+
+          Write-Host "✓ MSIX Authenticode signing is verified and cryptographically matches simpmusic.crt."
+
+  publish-windows-release:
+    name: Publish to GitHub Release
+    runs-on: ubuntu-latest
+    needs: [build-windows-desktop, verify-windows-signature]
+    if: inputs.publish_to_release == true && needs.verify-windows-signature.result == 'success'
+    permissions:
+      contents: write
+    steps:
+      - name: Verify release tag consistency with app version
+        env:
+          APP_VERSION: ${{ needs.build-windows-desktop.outputs.app_version }}
+          EXPECTED_TAG: ${{ needs.build-windows-desktop.outputs.expected_tag }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          echo "=== Release Tag Consistency Check ==="
+          echo "App version from gradle/libs.versions.toml: $APP_VERSION"
+          echo "Expected release tag:                      $EXPECTED_TAG"
+          echo "Target release tag:                        $RELEASE_TAG"
+
+          if [ -z "$APP_VERSION" ] || [ -z "$EXPECTED_TAG" ]; then
+            echo "::error::App version or expected tag not received from build-windows-desktop outputs! Aborting publication."
+            exit 1
+          fi
+
+          if [ "$RELEASE_TAG" != "$EXPECTED_TAG" ]; then
+            echo "::error::Release tag mismatch! Supplied release_tag '$RELEASE_TAG' does not match expected tag '$EXPECTED_TAG' for app version $APP_VERSION. Aborting publication."
+            exit 1
+          fi
+
+          echo "✓ Release tag '$RELEASE_TAG' matches expected '$EXPECTED_TAG' for app version $APP_VERSION."
+
+      - name: Download Windows installer artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: naudio-windows-desktop
+          path: installers/
+
+      - name: Publish to existing GitHub Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          echo "Verifying target release exists on GitHub: $RELEASE_TAG"
+
+          if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "::error::Target GitHub Release '$RELEASE_TAG' does not exist! Aborting publication to prevent accidental creation."
+            exit 1
+          fi
+
+          echo "Target release exists. Uploading SimpMusic-Windows-installer.zip to release '$RELEASE_TAG' with overwrite/clobber..."
+          gh release upload "$RELEASE_TAG" installers/SimpMusic-Windows-installer.zip --clobber
+          echo "Successfully uploaded Windows desktop installer to release $RELEASE_TAG."
