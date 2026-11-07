@@ -264,10 +264,10 @@ jobs:
           "crt_path=$($crtFile.FullName)" >> $env:GITHUB_OUTPUT
           "msix_path=$($msixFile.FullName)" >> $env:GITHUB_OUTPUT
 
-      - name: Import certificate to trusted store
+      - name: Import certificate to TrustedPeople store
         run: |
           $crtPath = "${{ steps.locate.outputs.crt_path }}"
-          Write-Host "Importing $crtPath into LocalMachine\TrustedPeople and LocalMachine\Root..."
+          Write-Host "Importing $crtPath into LocalMachine\TrustedPeople..."
 
           certutil -addstore -f "TrustedPeople" $crtPath
           if ($LASTEXITCODE -ne 0) {
@@ -275,13 +275,7 @@ jobs:
             exit 1
           }
 
-          certutil -addstore -f "Root" $crtPath
-          if ($LASTEXITCODE -ne 0) {
-            Write-Error "Failed to import certificate into Root store (exit code: $LASTEXITCODE)"
-            exit 1
-          }
-
-          Write-Host "Certificate successfully imported into runner stores."
+          Write-Host "Certificate successfully imported into LocalMachine\TrustedPeople."
 
       - name: Locate Windows SDK SignTool
         id: signtool
