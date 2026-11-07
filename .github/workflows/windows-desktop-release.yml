@@ -197,14 +197,178 @@ jobs:
           path: installers/SimpMusic-Windows-installer.zip
           if-no-files-found: error
 
+  verify-windows-signature:
+    name: Verify MSIX Signature (Microsoft SignTool)
+    runs-on: windows-latest
+    needs: [build-windows-desktop]
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Download Windows installer artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: naudio-windows-desktop
+          path: installer-artifact
+
+      - name: Extract installer ZIP and locate assets
+        id: locate
+        run: |
+          $zipPath = (Get-ChildItem -Path "installer-artifact" -Filter "*.zip" | Select-Object -First 1).FullName
+          if (-not $zipPath -or -not (Test-Path $zipPath)) {
+            Write-Error "Installer ZIP not found in downloaded artifact!"
+            exit 1
+          }
+          Write-Host "Found installer ZIP: $zipPath"
+
+          $extractDir = Join-Path $PWD "extracted-installer"
+          Expand-Archive -Path $zipPath -DestinationPath $extractDir -Force
+
+          $crtFile = Get-ChildItem -Path $extractDir -Filter "simpmusic.crt" | Select-Object -First 1
+          if (-not $crtFile) {
+            Write-Error "simpmusic.crt not found in extracted installer!"
+            exit 1
+          }
+
+          $msixFile = Get-ChildItem -Path $extractDir -Filter "*.msix" | Select-Object -First 1
+          if (-not $msixFile) {
+            Write-Error "MSIX file not found in extracted installer!"
+            exit 1
+          }
+
+          Write-Host "Located Certificate: $($crtFile.FullName)"
+          Write-Host "Located MSIX Package: $($msixFile.FullName)"
+
+          "extract_dir=$extractDir" >> $env:GITHUB_OUTPUT
+          "crt_path=$($crtFile.FullName)" >> $env:GITHUB_OUTPUT
+          "msix_path=$($msixFile.FullName)" >> $env:GITHUB_OUTPUT
+
+      - name: Import certificate to trusted store
+        run: |
+          $crtPath = "${{ steps.locate.outputs.crt_path }}"
+          Write-Host "Importing $crtPath into LocalMachine\TrustedPeople and LocalMachine\Root..."
+
+          certutil -addstore -f "TrustedPeople" $crtPath
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "Failed to import certificate into TrustedPeople store (exit code: $LASTEXITCODE)"
+            exit 1
+          }
+
+          certutil -addstore -f "Root" $crtPath
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "Failed to import certificate into Root store (exit code: $LASTEXITCODE)"
+            exit 1
+          }
+
+          Write-Host "Certificate successfully imported into runner stores."
+
+      - name: Locate Windows SDK SignTool
+        id: signtool
+        run: |
+          $signtoolPaths = Get-ChildItem -Path "C:\Program Files (x86)\Windows Kits\10\bin" -Filter "signtool.exe" -Recurse -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -like "*\x64\*" } |
+            Sort-Object FullName -Descending
+
+          if ($signtoolPaths.Count -gt 0) {
+            $toolPath = $signtoolPaths[0].FullName
+          } else {
+            $cmd = Get-Command signtool.exe -ErrorAction SilentlyContinue
+            if ($cmd) {
+              $toolPath = $cmd.Source
+            } else {
+              Write-Error "signtool.exe could not be located in Windows Kits or system PATH!"
+              exit 1
+            }
+          }
+
+          Write-Host "Located SignTool: $toolPath"
+          "path=$toolPath" >> $env:GITHUB_OUTPUT
+
+      - name: Verify MSIX signature with SignTool
+        run: |
+          $tool = "${{ steps.signtool.outputs.path }}"
+          $msix = "${{ steps.locate.outputs.msix_path }}"
+          $crt = "${{ steps.locate.outputs.crt_path }}"
+
+          Write-Host "Executing Microsoft SignTool verification:"
+          Write-Host "& `"$tool`" verify /pa /v `"$msix`""
+
+          $signtoolOutput = & $tool verify /pa /v $msix 2>&1
+          $exitCode = $LASTEXITCODE
+
+          Write-Host "--- SignTool Verbose Output ---"
+          $signtoolOutput | ForEach-Object { Write-Host $_ }
+          Write-Host "-------------------------------"
+
+          if ($exitCode -ne 0) {
+            Write-Error "SignTool verification failed with exit code $exitCode!"
+            exit 1
+          }
+          Write-Host "✓ SignTool verified MSIX signature successfully (/pa policy)."
+
+          Write-Host "=== Matching Signer Certificate with Bundled Certificate ==="
+          $bundledCert = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($crt)
+          $bundledThumbprint = $bundledCert.Thumbprint.ToUpperInvariant()
+          $bundledSubject = $bundledCert.Subject
+          $bundledSerial = $bundledCert.SerialNumber.ToUpperInvariant()
+
+          $sig = Get-AuthenticodeSignature -FilePath $msix
+          if (-not $sig -or -not $sig.SignerCertificate) {
+            Write-Error "Could not retrieve SignerCertificate from $msix using Get-AuthenticodeSignature!"
+            exit 1
+          }
+
+          $msixCert = $sig.SignerCertificate
+          $msixThumbprint = $msixCert.Thumbprint.ToUpperInvariant()
+          $msixSubject = $msixCert.Subject
+          $msixSerial = $msixCert.SerialNumber.ToUpperInvariant()
+
+          Write-Host "Bundled Certificate:"
+          Write-Host "  Subject:    $bundledSubject"
+          Write-Host "  Thumbprint: $bundledThumbprint"
+          Write-Host "  Serial:     $bundledSerial"
+
+          Write-Host "MSIX Signer Certificate:"
+          Write-Host "  Subject:    $msixSubject"
+          Write-Host "  Thumbprint: $msixThumbprint"
+          Write-Host "  Serial:     $msixSerial"
+          Write-Host "  Status:     $($sig.Status)"
+
+          if ($bundledThumbprint -ne $msixThumbprint) {
+            Write-Error "Certificate Thumbprint mismatch! Bundled: $bundledThumbprint, MSIX: $msixThumbprint"
+            exit 1
+          }
+          Write-Host "✓ Certificate Thumbprints match: $bundledThumbprint"
+
+          if ($bundledSerial -ne $msixSerial) {
+            Write-Error "Certificate Serial Number mismatch! Bundled: $bundledSerial, MSIX: $msixSerial"
+            exit 1
+          }
+          Write-Host "✓ Certificate Serial Numbers match: $bundledSerial"
+
+          Write-Host "✓ MSIX Authenticode signing is verified and cryptographically matches simpmusic.crt."
+
+  publish-windows-release:
+    name: Publish to GitHub Release
+    runs-on: ubuntu-latest
+    needs: [build-windows-desktop, verify-windows-signature]
+    if: inputs.publish_to_release == true && needs.verify-windows-signature.result == 'success'
+    permissions:
+      contents: write
+    steps:
+      - name: Download Windows installer artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: naudio-windows-desktop
+          path: installers/
+
       - name: Publish to existing GitHub Release
-        if: inputs.publish_to_release == true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
           set -euo pipefail
-          echo "Verifying target release: $RELEASE_TAG"
+          echo "Target release tag: $RELEASE_TAG"
 
           if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             echo "::error::Target GitHub Release '$RELEASE_TAG' does not exist! Aborting publication to prevent accidental creation."
