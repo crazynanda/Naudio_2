@@ -529,3 +529,72 @@ jobs:
           generate_release_notes: true
           files: |
             release-apks/Naudio-*.apk
+
+  publish-desktop-assets:
+    name: Publish Desktop Packages (Release Assets)
+    runs-on: ubuntu-latest
+    needs: [publish-github-release, build-desktop-packages, wrap-mac-dmg]
+    if: |
+      always() &&
+      needs.publish-github-release.result == 'success' &&
+      needs.build-desktop-packages.result == 'success' &&
+      (startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.publish_release == true))
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Read app version and release tag
+        id: version
+        run: |
+          VERSION=$(grep '^version-name' gradle/libs.versions.toml | head -1 | cut -d'"' -f2)
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            TAG="$GITHUB_REF_NAME"
+          else
+            TAG="v$VERSION"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Create desktop assets directory
+        run: mkdir -p desktop-assets/
+
+      - name: Download Linux AppImage
+        uses: actions/download-artifact@v4
+        with:
+          name: desktop-appimage
+          path: desktop-assets/
+
+      - name: Download macOS ZIPs
+        uses: actions/download-artifact@v4
+        with:
+          name: desktop-mac-zips
+          path: desktop-assets/
+
+      - name: Download Windows offline installer
+        uses: actions/download-artifact@v4
+        with:
+          name: desktop-windows
+          path: desktop-assets/
+
+      - name: Download macOS DMGs (if available)
+        if: needs.wrap-mac-dmg.result == 'success'
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: desktop-mac-dmg
+          path: desktop-assets/
+
+      - name: List staged desktop release assets
+        run: |
+          echo "Staged desktop release assets:"
+          ls -lh desktop-assets/
+
+      - name: Attach desktop packages to GitHub Release
+        uses: softprops/action-gh-release@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          files: |
+            desktop-assets/*
