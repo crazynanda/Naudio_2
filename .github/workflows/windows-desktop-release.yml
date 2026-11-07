@@ -1,0 +1,216 @@
+name: Windows Desktop Release
+
+'on':
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Target GitHub Release tag (e.g. v2.3.4)'
+        required: true
+        type: string
+        default: 'v2.3.4'
+      publish_to_release:
+        description: 'Publish Windows installer to GitHub Release'
+        required: true
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows-desktop:
+    name: Build & Package Windows Desktop (x64)
+    runs-on: ubuntu-22.04
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout main with recursive submodules
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          submodules: 'recursive'
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: 21
+          distribution: 'microsoft'
+          cache: 'gradle'
+
+      - name: Configure local.properties
+        env:
+          SENTRY_DSN: ${{ secrets.SENTRY_DSN_JVM }}
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          LASTFM_API_KEY: ${{ secrets.LASTFM_API_KEY }}
+          LASTFM_SECRET: ${{ secrets.LASTFM_SECRET }}
+        run: |
+          touch ./local.properties
+          if [ -n "$SENTRY_DSN" ]; then
+            echo "SENTRY_DSN=$SENTRY_DSN" >> ./local.properties
+          fi
+          if [ -n "$SENTRY_AUTH_TOKEN" ]; then
+            echo "SENTRY_AUTH_TOKEN=$SENTRY_AUTH_TOKEN" >> ./local.properties
+          fi
+          if [ -n "$LASTFM_API_KEY" ]; then
+            echo "LASTFM_API_KEY=$LASTFM_API_KEY" >> ./local.properties
+          fi
+          if [ -n "$LASTFM_SECRET" ]; then
+            echo "LASTFM_SECRET=$LASTFM_SECRET" >> ./local.properties
+          fi
+
+      - name: Set isFullBuild in gradle.properties
+        run: |
+          echo "" >> ./gradle.properties
+          echo "isFullBuild=true" >> ./gradle.properties
+
+      - name: Generate aboutLibraries.json
+        run: ./gradlew exportLibraryDefinitions
+
+      - name: Cache mpv-natives
+        uses: actions/cache@v4
+        with:
+          path: mpv-natives
+          key: mpv-natives-${{ hashFiles('composeApp/build.gradle.kts') }}
+
+      - name: Populate mpv-natives for all OSes
+        run: ./gradlew :composeApp:mpvSetupAll --no-configuration-cache
+
+      - name: Generate Conveyor config
+        run: ./gradlew :desktopApp:writeConveyorConfig --no-configuration-cache
+
+      - name: Build Windows x64 MSIX via Conveyor
+        uses: hydraulic-software/conveyor/actions/build@v22.0
+        with:
+          command: '-Kapp.machines=windows.amd64 make site'
+          agree_to_license: 1
+          signing_key: ${{ secrets.CONVEYOR_SIGNING_KEY }}
+
+      - name: Package Windows offline installer
+        run: |
+          set -euo pipefail
+
+          if [ ! -f output/simpmusic.crt ]; then
+            echo "::error::output/simpmusic.crt missing — Conveyor signing must have failed"
+            exit 1
+          fi
+
+          msix=$(ls output/simpmusic-*.x64.msix 2>/dev/null | head -1)
+          if [ -z "$msix" ]; then
+            echo "::error::No simpmusic-*.x64.msix found in output/"
+            exit 1
+          fi
+
+          if [ ! -s "$msix" ]; then
+            echo "::error::MSIX package $msix is empty"
+            exit 1
+          fi
+
+          echo "Verified Windows MSIX: $msix ($(stat -c%s "$msix") bytes)"
+          echo "Verified signing certificate: output/simpmusic.crt ($(stat -c%s output/simpmusic.crt) bytes)"
+
+          mkdir -p installers/
+          stage="$(mktemp -d)"
+          cp scripts/windows/install.bat "$stage/"
+          cp output/simpmusic.crt        "$stage/"
+          cp "$msix"                      "$stage/"
+          ( cd "$stage" && zip -q -j \
+            "${GITHUB_WORKSPACE}/installers/SimpMusic-Windows-installer.zip" \
+            install.bat simpmusic.crt "$(basename "$msix")" )
+          rm -rf "$stage"
+          ls -lh installers/
+
+      - name: Verify output package and installer ZIP
+        run: |
+          set -euo pipefail
+          msix=$(ls output/simpmusic-*.x64.msix | head -1)
+          zip_path="installers/SimpMusic-Windows-installer.zip"
+
+          echo "=== 1. Checking Installer ZIP Integrity & Contents ==="
+          if [ ! -f "$zip_path" ]; then
+            echo "::error::Installer ZIP $zip_path not found!"
+            exit 1
+          fi
+
+          zip_entries=$(unzip -Z -1 "$zip_path")
+          echo "ZIP entries:"
+          echo "$zip_entries"
+
+          file_count=$(echo "$zip_entries" | wc -l)
+          if [ "$file_count" -ne 3 ]; then
+            echo "::error::Installer ZIP contains $file_count files, expected exactly 3"
+            exit 1
+          fi
+
+          echo "$zip_entries" | grep -qx "install.bat" || { echo "::error::install.bat missing from ZIP"; exit 1; }
+          echo "$zip_entries" | grep -qx "simpmusic.crt" || { echo "::error::simpmusic.crt missing from ZIP"; exit 1; }
+          echo "$zip_entries" | grep -E -qx "simpmusic-.*\.x64\.msix" || { echo "::error::MSIX missing from ZIP"; exit 1; }
+          echo "✓ Installer ZIP contains all 3 required files"
+
+          echo "=== 2. Verifying MSIX Manifest (Architecture, Version, Identity) ==="
+          manifest=$(unzip -p "$msix" AppxManifest.xml)
+          identity_line=$(echo "$manifest" | grep -i '<Identity' || true)
+          echo "MSIX Identity tag: $identity_line"
+
+          # Architecture check
+          if echo "$manifest" | grep -i 'ProcessorArchitecture="x64"' > /dev/null; then
+            echo "✓ Architecture confirmed: x64"
+          else
+            echo "::error::MSIX ProcessorArchitecture is not x64!"
+            exit 1
+          fi
+
+          # Version check (2.3.4 or 2.3.4.0)
+          if echo "$manifest" | grep -E -i 'Version="2\.3\.4(\.0)?"' > /dev/null; then
+            echo "✓ Version confirmed: 2.3.4"
+          else
+            echo "::error::MSIX Version in AppxManifest.xml does not match 2.3.4!"
+            exit 1
+          fi
+
+          # Identity name check
+          if echo "$manifest" | grep -i 'Name="Simpmusic"' > /dev/null; then
+            echo "✓ Package identity confirmed: Simpmusic"
+          else
+            echo "::error::MSIX Identity Name in AppxManifest.xml does not match Simpmusic!"
+            exit 1
+          fi
+
+          echo "=== 3. Verifying MSIX Signing & Certificate ==="
+          openssl x509 -in output/simpmusic.crt -noout -subject -issuer -dates
+          echo "✓ simpmusic.crt is a valid X.509 certificate"
+
+          tmp_sig="$(mktemp)"
+          unzip -p "$msix" AppxSignature.p7x > "$tmp_sig"
+          if [ ! -s "$tmp_sig" ]; then
+            echo "::error::AppxSignature.p7x missing or empty inside $msix"
+            exit 1
+          fi
+          openssl pkcs7 -inform DER -in "$tmp_sig" -print_certs -noout
+          rm -f "$tmp_sig"
+          echo "✓ MSIX signature block AppxSignature.p7x is valid and readable"
+
+      - name: Upload Windows desktop installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: naudio-windows-desktop
+          path: installers/SimpMusic-Windows-installer.zip
+          if-no-files-found: error
+
+      - name: Publish to existing GitHub Release
+        if: inputs.publish_to_release == true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          echo "Verifying target release: $RELEASE_TAG"
+
+          if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "::error::Target GitHub Release '$RELEASE_TAG' does not exist! Aborting publication to prevent accidental creation."
+            exit 1
+          fi
+
+          echo "Target release exists. Uploading SimpMusic-Windows-installer.zip to release '$RELEASE_TAG' with overwrite/clobber..."
+          gh release upload "$RELEASE_TAG" installers/SimpMusic-Windows-installer.zip --clobber
+          echo "Successfully uploaded Windows desktop installer to release $RELEASE_TAG."
