@@ -15,12 +15,15 @@ name: Windows Desktop Release
         default: true
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build-windows-desktop:
     name: Build & Package Windows Desktop (x64)
     runs-on: ubuntu-22.04
+    outputs:
+      app_version: ${{ steps.version.outputs.app_version }}
+      expected_tag: ${{ steps.version.outputs.expected_tag }}
     defaults:
       run:
         shell: bash
@@ -30,6 +33,21 @@ jobs:
         with:
           ref: main
           submodules: 'recursive'
+
+      - name: Read app version from libs.versions.toml
+        id: version
+        run: |
+          set -euo pipefail
+          APP_VERSION=$(grep '^version-name' gradle/libs.versions.toml | head -1 | cut -d'"' -f2)
+          if [ -z "$APP_VERSION" ]; then
+            echo "::error::Failed to read version-name from gradle/libs.versions.toml!"
+            exit 1
+          fi
+          EXPECTED_TAG="v$APP_VERSION"
+          echo "App version: $APP_VERSION"
+          echo "Expected release tag: $EXPECTED_TAG"
+          echo "app_version=$APP_VERSION" >> "$GITHUB_OUTPUT"
+          echo "expected_tag=$EXPECTED_TAG" >> "$GITHUB_OUTPUT"
 
       - name: Set up JDK 21
         uses: actions/setup-java@v4
@@ -121,6 +139,8 @@ jobs:
           ls -lh installers/
 
       - name: Verify output package and installer ZIP
+        env:
+          APP_VERSION: ${{ steps.version.outputs.app_version }}
         run: |
           set -euo pipefail
           msix=$(ls output/simpmusic-*.x64.msix | head -1)
@@ -160,11 +180,12 @@ jobs:
             exit 1
           fi
 
-          # Version check (2.3.4 or 2.3.4.0)
-          if echo "$manifest" | grep -E -i 'Version="2\.3\.4(\.0)?"' > /dev/null; then
-            echo "✓ Version confirmed: 2.3.4"
+          # Version check dynamically against APP_VERSION from gradle/libs.versions.toml
+          escaped_version=$(printf '%s\n' "$APP_VERSION" | sed 's/[.]/\\./g')
+          if echo "$manifest" | grep -E -i "Version=\"${escaped_version}(\\.0)?\"" > /dev/null; then
+            echo "✓ Version confirmed matching gradle/libs.versions.toml: $APP_VERSION"
           else
-            echo "::error::MSIX Version in AppxManifest.xml does not match 2.3.4!"
+            echo "::error::MSIX Version in AppxManifest.xml does not match expected app version $APP_VERSION!"
             exit 1
           fi
 
@@ -356,6 +377,30 @@ jobs:
     permissions:
       contents: write
     steps:
+      - name: Verify release tag consistency with app version
+        env:
+          APP_VERSION: ${{ needs.build-windows-desktop.outputs.app_version }}
+          EXPECTED_TAG: ${{ needs.build-windows-desktop.outputs.expected_tag }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          echo "=== Release Tag Consistency Check ==="
+          echo "App version from gradle/libs.versions.toml: $APP_VERSION"
+          echo "Expected release tag:                      $EXPECTED_TAG"
+          echo "Target release tag:                        $RELEASE_TAG"
+
+          if [ -z "$APP_VERSION" ] || [ -z "$EXPECTED_TAG" ]; then
+            echo "::error::App version or expected tag not received from build-windows-desktop outputs! Aborting publication."
+            exit 1
+          fi
+
+          if [ "$RELEASE_TAG" != "$EXPECTED_TAG" ]; then
+            echo "::error::Release tag mismatch! Supplied release_tag '$RELEASE_TAG' does not match expected tag '$EXPECTED_TAG' for app version $APP_VERSION. Aborting publication."
+            exit 1
+          fi
+
+          echo "✓ Release tag '$RELEASE_TAG' matches expected '$EXPECTED_TAG' for app version $APP_VERSION."
+
       - name: Download Windows installer artifact
         uses: actions/download-artifact@v4
         with:
@@ -368,7 +413,7 @@ jobs:
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
           set -euo pipefail
-          echo "Target release tag: $RELEASE_TAG"
+          echo "Verifying target release exists on GitHub: $RELEASE_TAG"
 
           if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             echo "::error::Target GitHub Release '$RELEASE_TAG' does not exist! Aborting publication to prevent accidental creation."
