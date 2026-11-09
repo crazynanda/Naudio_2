@@ -428,17 +428,17 @@ jobs:
 
       - name: Publish to existing GitHub Release
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
           set -euo pipefail
-          echo "Verifying target release exists on GitHub: $RELEASE_TAG"
+          echo "Verifying target release exists on GitHub: $RELEASE_TAG (repo: $GITHUB_REPOSITORY)"
 
-          if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            echo "::error::Target GitHub Release '$RELEASE_TAG' does not exist! Aborting publication to prevent accidental creation."
+          if ! gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json tagName,name; then
+            echo "::error::Target GitHub Release '$RELEASE_TAG' does not exist in $GITHUB_REPOSITORY or verification failed! Aborting publication to prevent accidental creation."
             exit 1
           fi
 
           echo "Target release exists. Uploading SimpMusic-Windows-installer.zip to release '$RELEASE_TAG' with overwrite/clobber..."
-          gh release upload "$RELEASE_TAG" installers/SimpMusic-Windows-installer.zip --clobber
+          gh release upload "$RELEASE_TAG" installers/SimpMusic-Windows-installer.zip --clobber --repo "$GITHUB_REPOSITORY"
           echo "Successfully uploaded Windows desktop installer to release $RELEASE_TAG."
