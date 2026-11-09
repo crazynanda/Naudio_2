@@ -89,6 +89,22 @@ class LoginSyncClient {
         }
     }
 
+    /** Sends favorites [payload] to the connected computer and returns its reply. Throws [LoginSyncTransportException]. */
+    suspend fun sendFavorites(payload: ByteArray): ByteArray {
+        val code = invite
+        val target = host
+        if (code == null || target == null) throw LoginSyncTransportException(LoginSyncTransportException.Kind.FAILED, "not connected")
+        return try {
+            call(code, target, LoginSyncWire.FAVORITES, payload)
+        } catch (e: LoginSyncTransportException) {
+            throw e
+        } catch (e: Exception) {
+            if (e is CancellationException) throw e
+            Logger.e(TAG, "sendFavorites failed", e)
+            throw LoginSyncTransportException(LoginSyncTransportException.Kind.FAILED, e.describe())
+        }
+    }
+
     /**
      * Ends the session and, if the computer is still waiting on this phone, puts it back on its QR.
      * Returns at once: the notice goes out in the background. After a delivered payload the computer

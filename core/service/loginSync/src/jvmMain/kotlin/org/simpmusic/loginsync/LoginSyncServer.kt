@@ -44,6 +44,9 @@ class LoginSyncServer(
         /** The phone's payload; the return value is sealed back as the reply. Throwing rejects it. */
         suspend fun onPayload(payload: ByteArray): ByteArray
 
+        /** The phone's favorites payload; the return value is sealed back as the reply. Throwing rejects it. */
+        suspend fun onFavorites(payload: ByteArray): ByteArray = "{}".encodeToByteArray()
+
         /** The reply to a payload has been sent: the session is spent. */
         fun onDelivered()
 
@@ -77,6 +80,7 @@ class LoginSyncServer(
                 routing {
                     post(LoginSyncWire.path(LoginSyncWire.HELLO)) { handle(call, LoginSyncWire.HELLO) }
                     post(LoginSyncWire.path(LoginSyncWire.PAYLOAD)) { handle(call, LoginSyncWire.PAYLOAD) }
+                    post(LoginSyncWire.path(LoginSyncWire.FAVORITES)) { handle(call, LoginSyncWire.FAVORITES) }
                     post(LoginSyncWire.path(LoginSyncWire.CANCEL)) { handle(call, LoginSyncWire.CANCEL) }
                 }
             }
@@ -117,6 +121,10 @@ class LoginSyncServer(
                         handler.onPayload(plain)
                     }
 
+                    LoginSyncWire.FAVORITES -> {
+                        handler.onFavorites(plain)
+                    }
+
                     else -> {
                         handler.onCancel()
                         "{}".encodeToByteArray()
@@ -145,7 +153,7 @@ class LoginSyncServer(
         reason: String,
     ) {
         Logger.e(TAG, "reject $kind ${status.value}: $reason")
-        if (kind == LoginSyncWire.PAYLOAD) handler.onRejected(reason)
+        if (kind == LoginSyncWire.PAYLOAD || kind == LoginSyncWire.FAVORITES) handler.onRejected(reason)
         call.respond(status)
     }
 }

@@ -14,6 +14,7 @@ import com.maxrave.domain.data.entities.AutoEqCurveEntity
 import com.maxrave.domain.data.entities.AutoEqEntryEntity
 import com.maxrave.domain.data.entities.AutoEqIndexMetaEntity
 import com.maxrave.domain.data.entities.EpisodeEntity
+import com.maxrave.domain.data.entities.FavoriteSyncTombstoneEntity
 import com.maxrave.domain.data.entities.FollowedArtistSingleAndAlbum
 import com.maxrave.domain.data.entities.GoogleAccountEntity
 import com.maxrave.domain.data.entities.LocalPlaylistEntity
@@ -1710,4 +1711,42 @@ interface DatabaseDao {
         insertAutoEqEntries(entries)
         upsertAutoEqIndexMeta(meta)
     }
+
+    // Favorite Synchronization & Tombstones
+    @Insert(onConflict = REPLACE)
+    suspend fun insertFavoriteTombstone(tombstone: FavoriteSyncTombstoneEntity): Long
+
+    @Insert(onConflict = REPLACE)
+    suspend fun insertFavoriteTombstones(tombstones: List<FavoriteSyncTombstoneEntity>)
+
+    @Query("SELECT * FROM favorite_sync_tombstone WHERE type = :type AND id = :id LIMIT 1")
+    suspend fun getFavoriteTombstone(type: String, id: String): FavoriteSyncTombstoneEntity?
+
+    @Query("SELECT * FROM favorite_sync_tombstone")
+    suspend fun getAllFavoriteTombstones(): List<FavoriteSyncTombstoneEntity>
+
+    @Query("DELETE FROM favorite_sync_tombstone WHERE type = :type AND id = :id")
+    suspend fun deleteFavoriteTombstone(type: String, id: String): Int
+
+    @Query("SELECT * FROM song WHERE liked = 1")
+    suspend fun getAllLikedSongs(): List<SongEntity>
+
+    @Query("SELECT * FROM album WHERE liked = 1")
+    suspend fun getAllLikedAlbums(): List<AlbumEntity>
+
+    @Query("SELECT * FROM playlist WHERE liked = 1")
+    suspend fun getAllLikedPlaylists(): List<PlaylistEntity>
+
+    @Query("SELECT * FROM podcast_table WHERE isFavorite = 1")
+    suspend fun getAllFavoritePodcasts(): List<PodcastsEntity>
+
+    @Query("SELECT * FROM artist WHERE followed = 1")
+    suspend fun getAllFollowedArtists(): List<ArtistEntity>
+
+    @Query("UPDATE podcast_table SET isFavorite = :isFavorite, favoriteTime = :favoriteTime WHERE podcastId = :podcastId")
+    suspend fun updatePodcastFavorite(
+        isFavorite: Boolean,
+        podcastId: String,
+        favoriteTime: LocalDateTime? = if (isFavorite) now() else null,
+    ): Int
 }

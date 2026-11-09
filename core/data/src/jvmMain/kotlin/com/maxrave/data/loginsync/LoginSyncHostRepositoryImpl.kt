@@ -1,5 +1,8 @@
 package com.maxrave.data.loginsync
 
+import com.maxrave.data.favoritesync.FavoriteSyncStore
+import com.maxrave.data.favoritesync.FavoritesSyncBundle
+import com.maxrave.data.favoritesync.favoritesSyncJson
 import com.maxrave.domain.data.model.loginsync.LoginSyncHostState
 import com.maxrave.domain.data.model.loginsync.LoginSyncService
 import com.maxrave.domain.data.model.loginsync.NetAddress
@@ -24,6 +27,7 @@ private const val TAG = "LoginSyncHost"
 /** Desktop: runs the loginSync service's server and restores whatever sign-ins the phone sends. */
 internal class LoginSyncHostRepositoryImpl(
     private val store: LoginSyncStore,
+    private val favoriteSyncStore: FavoriteSyncStore,
 ) : LoginSyncHostRepository,
     LoginSyncServer.Handler {
     private val _state = MutableStateFlow<LoginSyncHostState>(LoginSyncHostState.Starting)
@@ -103,6 +107,14 @@ internal class LoginSyncHostRepositoryImpl(
         val bundle = loginSyncJson.decodeFromString(LoginBundle.serializer(), payload.decodeToString())
         restored = store.restore(bundle)
         return loginSyncJson.encodeToString(LoginSyncAck.serializer(), LoginSyncAck(restored.map { it.name })).encodeToByteArray()
+    }
+
+    override suspend fun onFavorites(payload: ByteArray): ByteArray {
+        val incomingBundle = favoritesSyncJson.decodeFromString(FavoritesSyncBundle.serializer(), payload.decodeToString())
+        val mergeResult = favoriteSyncStore.mergeBundle(incomingBundle)
+        _state.value = LoginSyncHostState.FavoritesSynced(mergeResult)
+        val replyBundle = favoriteSyncStore.exportBundle()
+        return favoritesSyncJson.encodeToString(FavoritesSyncBundle.serializer(), replyBundle).encodeToByteArray()
     }
 
     override fun onDelivered() {
