@@ -202,14 +202,39 @@ jobs:
           echo "✓ simpmusic.crt is a valid X.509 certificate"
 
           tmp_sig="$(mktemp)"
+          tmp_pkcs7="$(mktemp)"
+          trap 'rm -f "$tmp_sig" "$tmp_pkcs7"' EXIT
+
+          # 1. Extract AppxSignature.p7x from the MSIX package
           unzip -p "$msix" AppxSignature.p7x > "$tmp_sig"
           if [ ! -s "$tmp_sig" ]; then
             echo "::error::AppxSignature.p7x missing or empty inside $msix"
             exit 1
           fi
-          openssl pkcs7 -inform DER -in "$tmp_sig" -print_certs -noout
-          rm -f "$tmp_sig"
-          echo "✓ MSIX signature block AppxSignature.p7x is valid and readable"
+
+          # 2. Verify the 4-byte Microsoft MSIX header magic:
+          # MSIX AppxSignature.p7x starts with a Microsoft-specific four-byte header
+          # (P7X_FILE_ID = 0x58434B50, little-endian ASCII "PKCX") preceding the actual
+          # ASN.1 PKCS#7 DER signature data. Microsoft's MSIX specification and source
+          # confirm that parsers skip sizeof(DWORD) (4 bytes) before decoding the ASN.1
+          # signature. Feeding the raw P7X file directly to OpenSSL causes an ASN.1 wrong tag error.
+          header=$(head -c 4 "$tmp_sig")
+          if [ "$header" != "PKCX" ]; then
+            echo "::error::Invalid AppxSignature.p7x header: expected 'PKCX' (0x58434B50), got '$header'"
+            exit 1
+          fi
+          echo "✓ Verified MSIX AppxSignature.p7x header magic (PKCX / 0x58434B50)"
+
+          # 3. Strip exactly the first four bytes to isolate the raw PKCS#7 DER payload
+          tail -c +5 "$tmp_sig" > "$tmp_pkcs7"
+          if [ ! -s "$tmp_pkcs7" ]; then
+            echo "::error::Extracted PKCS#7 payload is empty after stripping 4-byte PKCX header"
+            exit 1
+          fi
+
+          # 4. Parse and validate the stripped PKCS#7 DER structure with OpenSSL
+          openssl pkcs7 -inform DER -in "$tmp_pkcs7" -print_certs -noout
+          echo "✓ MSIX PKCS#7 ASN.1 signature block successfully validated with OpenSSL"
 
       - name: Upload Windows desktop installer artifact
         uses: actions/upload-artifact@v4
