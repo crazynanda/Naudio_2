@@ -29,6 +29,7 @@ private const val TAG = "LoginSyncHost"
 internal class LoginSyncHostRepositoryImpl(
     private val store: LoginSyncStore,
     private val favoriteSyncStore: FavoriteSyncStore,
+    private val allowLoopbackFallback: Boolean = false,
 ) : LoginSyncHostRepository,
     LoginSyncServer.Handler {
     private val _state = MutableStateFlow<LoginSyncHostState>(LoginSyncHostState.Starting)
@@ -39,6 +40,7 @@ internal class LoginSyncHostRepositoryImpl(
     // Owns stop(): it must finish even when the caller's scope is being cancelled.
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val lifecycle = Mutex()
+    private val favoritesMutex = Mutex()
 
     // Bumped by every start(), so a stop() queued behind a quick reopen cannot kill the new session.
     @Volatile
@@ -50,6 +52,15 @@ internal class LoginSyncHostRepositoryImpl(
     private var hostBatches: List<FavoritesSyncBundle>? = null
     private var cumulativeHostMergeResult = FavoritesSyncResult()
 
+    @Volatile
+    private var favoritesCompleted = false
+
+    @Volatile
+    private var loginCompleted = false
+
+    @Volatile
+    private var exchangeInProgress = false
+
     override suspend fun start() =
         lifecycle.withLock {
             server.stop()
@@ -57,8 +68,12 @@ internal class LoginSyncHostRepositoryImpl(
             hostBatches = null
             cumulativeHostMergeResult = FavoritesSyncResult()
             restored = emptyList()
+            favoritesCompleted = false
+            loginCompleted = false
+            exchangeInProgress = false
             _state.value = LoginSyncHostState.Starting
-            val found = withContext(Dispatchers.IO) { reachableAddresses() }.map { NetAddress(it.interfaceName, it.ip) }
+            val rawFound = withContext(Dispatchers.IO) { reachableAddresses() }.map { NetAddress(it.interfaceName, it.ip) }
+            val found = if (rawFound.isNotEmpty() || !allowLoopbackFallback) rawFound else listOf(NetAddress("Loopback", "127.0.0.1"))
             if (found.isEmpty()) {
                 _state.value = LoginSyncHostState.NoNetwork
                 return@withLock
@@ -93,22 +108,33 @@ internal class LoginSyncHostRepositoryImpl(
         scope.launch { lifecycle.withLock { if (generation == target) server.stop() } }
     }
 
-    private fun waiting(): LoginSyncHostState.Waiting {
-        val address = checkNotNull(selected)
-        val invite = checkNotNull(session).invite(address.ip)
+    private fun waiting(): LoginSyncHostState {
+        val address = selected ?: return LoginSyncHostState.Starting
+        val sess = session ?: return LoginSyncHostState.Starting
+        val invite = sess.invite(address.ip)
         return LoginSyncHostState.Waiting(invite.toUri(), addresses, address)
     }
 
     // LoginSyncServer.Handler — called from the server's request coroutines.
 
     override fun onHello() {
-        if (restored.isEmpty() && cumulativeHostMergeResult.isEmpty) {
+        if (!favoritesCompleted && !loginCompleted) {
             _state.value = LoginSyncHostState.Connected
         }
     }
 
     override fun onCancel() {
-        _state.value = waiting()
+        if (!exchangeInProgress && (favoritesCompleted || loginCompleted)) {
+            // A CANCEL received after a successfully completed favorites exchange or login transfer
+            // must not erase the completed state.
+            return
+        }
+        hostBatches = null
+        exchangeInProgress = false
+        if (!favoritesCompleted && !loginCompleted) {
+            cumulativeHostMergeResult = FavoritesSyncResult()
+            _state.value = waiting()
+        }
     }
 
     override suspend fun onPayload(payload: ByteArray): ByteArray {
@@ -117,70 +143,84 @@ internal class LoginSyncHostRepositoryImpl(
         return loginSyncJson.encodeToString(LoginSyncAck.serializer(), LoginSyncAck(restored.map { it.name })).encodeToByteArray()
     }
 
-    override suspend fun onFavorites(payload: ByteArray): ByteArray {
-        val incomingBundle = favoritesSyncJson.decodeFromString(FavoritesSyncBundle.serializer(), payload.decodeToString())
+    override suspend fun onFavorites(payload: ByteArray): ByteArray =
+        favoritesMutex.withLock {
+            val incomingBundle = favoritesSyncJson.decodeFromString(FavoritesSyncBundle.serializer(), payload.decodeToString())
 
-        // Snapshot desktop's local favorites on the first request of an exchange
-        if (incomingBundle.requestBatchIndex == 0 || hostBatches == null) {
-            hostBatches = favoriteSyncStore.exportBundles()
-            cumulativeHostMergeResult = FavoritesSyncResult()
+            // Snapshot desktop's local favorites on the first request of an exchange
+            if (incomingBundle.requestBatchIndex == 0 || hostBatches == null) {
+                hostBatches = favoriteSyncStore.exportBundles()
+                cumulativeHostMergeResult = FavoritesSyncResult()
+                exchangeInProgress = true
+            }
+
+            val mergeResult = favoriteSyncStore.mergeBundle(incomingBundle)
+            cumulativeHostMergeResult =
+                cumulativeHostMergeResult.copy(
+                    songsAddedOrUpdated = cumulativeHostMergeResult.songsAddedOrUpdated + mergeResult.songsAddedOrUpdated,
+                    songsRemoved = cumulativeHostMergeResult.songsRemoved + mergeResult.songsRemoved,
+                    albumsAddedOrUpdated = cumulativeHostMergeResult.albumsAddedOrUpdated + mergeResult.albumsAddedOrUpdated,
+                    albumsRemoved = cumulativeHostMergeResult.albumsRemoved + mergeResult.albumsRemoved,
+                    playlistsAddedOrUpdated = cumulativeHostMergeResult.playlistsAddedOrUpdated + mergeResult.playlistsAddedOrUpdated,
+                    playlistsRemoved = cumulativeHostMergeResult.playlistsRemoved + mergeResult.playlistsRemoved,
+                    podcastsAddedOrUpdated = cumulativeHostMergeResult.podcastsAddedOrUpdated + mergeResult.podcastsAddedOrUpdated,
+                    podcastsRemoved = cumulativeHostMergeResult.podcastsRemoved + mergeResult.podcastsRemoved,
+                    artistsAddedOrUpdated = cumulativeHostMergeResult.artistsAddedOrUpdated + mergeResult.artistsAddedOrUpdated,
+                    artistsRemoved = cumulativeHostMergeResult.artistsRemoved + mergeResult.artistsRemoved,
+                )
+
+            val batches = hostBatches ?: emptyList()
+            val replyBundle =
+                if (incomingBundle.requestBatchIndex in batches.indices) {
+                    batches[incomingBundle.requestBatchIndex]
+                } else {
+                    FavoritesSyncBundle(
+                        clientTimestamp = kotlin.time.Clock.System.now().toEpochMilliseconds(),
+                        batchIndex = incomingBundle.requestBatchIndex,
+                        batchTotal = maxOf(batches.size, 1),
+                        hasMore = false,
+                    )
+                }
+
+            // A favorites exchange is complete only after both devices have finished sending their batches.
+            val clientFinished = !incomingBundle.hasMore
+            val hostFinished = !replyBundle.hasMore
+            if (clientFinished && hostFinished) {
+                exchangeInProgress = false
+                favoritesCompleted = true
+                val nowMs = kotlin.time.Clock.System.now().toEpochMilliseconds()
+                _state.value =
+                    if (loginCompleted || restored.isNotEmpty()) {
+                        LoginSyncHostState.Done(
+                            services = restored,
+                            favoritesResult = cumulativeHostMergeResult,
+                            timestamp = nowMs,
+                        )
+                    } else {
+                        LoginSyncHostState.FavoritesSynced(
+                            result = cumulativeHostMergeResult,
+                            timestamp = nowMs,
+                        )
+                    }
+            }
+
+            favoritesSyncJson.encodeToString(FavoritesSyncBundle.serializer(), replyBundle).encodeToByteArray()
         }
 
-        val mergeResult = favoriteSyncStore.mergeBundle(incomingBundle)
-        cumulativeHostMergeResult =
-            cumulativeHostMergeResult.copy(
-                songsAddedOrUpdated = cumulativeHostMergeResult.songsAddedOrUpdated + mergeResult.songsAddedOrUpdated,
-                songsRemoved = cumulativeHostMergeResult.songsRemoved + mergeResult.songsRemoved,
-                albumsAddedOrUpdated = cumulativeHostMergeResult.albumsAddedOrUpdated + mergeResult.albumsAddedOrUpdated,
-                albumsRemoved = cumulativeHostMergeResult.albumsRemoved + mergeResult.albumsRemoved,
-                playlistsAddedOrUpdated = cumulativeHostMergeResult.playlistsAddedOrUpdated + mergeResult.playlistsAddedOrUpdated,
-                playlistsRemoved = cumulativeHostMergeResult.playlistsRemoved + mergeResult.playlistsRemoved,
-                podcastsAddedOrUpdated = cumulativeHostMergeResult.podcastsAddedOrUpdated + mergeResult.podcastsAddedOrUpdated,
-                podcastsRemoved = cumulativeHostMergeResult.podcastsRemoved + mergeResult.podcastsRemoved,
-                artistsAddedOrUpdated = cumulativeHostMergeResult.artistsAddedOrUpdated + mergeResult.artistsAddedOrUpdated,
-                artistsRemoved = cumulativeHostMergeResult.artistsRemoved + mergeResult.artistsRemoved,
-            )
-
-        val nowMs = kotlin.time.Clock.System.now().toEpochMilliseconds()
-        _state.value =
-            if (restored.isNotEmpty()) {
-                LoginSyncHostState.Done(
-                    services = restored,
-                    favoritesResult = cumulativeHostMergeResult,
-                    timestamp = nowMs,
-                )
-            } else {
-                LoginSyncHostState.FavoritesSynced(
-                    result = cumulativeHostMergeResult,
-                    timestamp = nowMs,
-                )
-            }
-
-        val batches = hostBatches ?: emptyList()
-        val replyBundle =
-            if (incomingBundle.requestBatchIndex in batches.indices) {
-                batches[incomingBundle.requestBatchIndex]
-            } else {
-                FavoritesSyncBundle(
-                    clientTimestamp = kotlin.time.Clock.System.now().toEpochMilliseconds(),
-                    batchIndex = incomingBundle.requestBatchIndex,
-                    batchTotal = maxOf(batches.size, 1),
-                    hasMore = false,
-                )
-            }
-        return favoritesSyncJson.encodeToString(FavoritesSyncBundle.serializer(), replyBundle).encodeToByteArray()
-    }
-
     override fun onDelivered() {
+        loginCompleted = true
         _state.value =
             LoginSyncHostState.Done(
                 services = restored,
-                favoritesResult = cumulativeHostMergeResult.takeUnless { it.isEmpty },
+                favoritesResult = if (favoritesCompleted) cumulativeHostMergeResult else null,
                 timestamp = kotlin.time.Clock.System.now().toEpochMilliseconds(),
             )
     }
 
     override fun onRejected(reason: String) {
-        _state.value = LoginSyncHostState.Rejected(reason)
+        exchangeInProgress = false
+        if (!favoritesCompleted && !loginCompleted) {
+            _state.value = LoginSyncHostState.Rejected(reason)
+        }
     }
 }

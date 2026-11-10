@@ -148,12 +148,16 @@ class LoginSyncServer(
     private suspend fun handleLoginPayload(call: ApplicationCall) {
         val kind = LoginSyncWire.PAYLOAD
         if (loginPayloadDelivered) {
-            return reject(call, kind, HttpStatusCode.Gone, "login credentials have already been transferred for this session")
+            Logger.e(TAG, "reject $kind 410: login credentials have already been transferred for this session")
+            call.respond(HttpStatusCode.Gone)
+            return
         }
 
         loginPayloadMutex.withLock {
             if (loginPayloadDelivered) {
-                return reject(call, kind, HttpStatusCode.Gone, "login credentials have already been transferred for this session")
+                Logger.e(TAG, "reject $kind 410: login credentials have already been transferred for this session")
+                call.respond(HttpStatusCode.Gone)
+                return
             }
             try {
                 val plain =

@@ -11,12 +11,12 @@ import com.maxrave.logger.Logger
 import kotlinx.coroutines.flow.first
 
 /** Reads this device's sign-ins, and writes a received bundle in the same shape the login screens do. */
-internal class LoginSyncStore(
+internal open class LoginSyncStore(
     private val dataStore: DataStoreManager,
     private val localDataSource: LocalDataSource,
     private val commonRepository: CommonRepository,
 ) {
-    suspend fun signedIn(): List<LoginSyncService> =
+    open suspend fun signedIn(): List<LoginSyncService> =
         buildList {
             if (dataStore.loggedIn.first() == TRUE && dataStore.cookie.first().isNotEmpty()) add(LoginSyncService.YOUTUBE)
             if (dataStore.spdc.first().isNotEmpty()) add(LoginSyncService.SPOTIFY)
@@ -24,7 +24,7 @@ internal class LoginSyncStore(
             if (dataStore.lastfmSessionKey.first().isNotEmpty()) add(LoginSyncService.LASTFM)
         }
 
-    suspend fun bundle(services: Set<LoginSyncService>): LoginBundle =
+    open suspend fun bundle(services: Set<LoginSyncService>): LoginBundle =
         LoginBundle(
             youtube =
                 if (LoginSyncService.YOUTUBE in services) {
@@ -49,7 +49,7 @@ internal class LoginSyncStore(
         )
 
     /** Writes [bundle] over this device's sign-ins and returns the services it carried. */
-    suspend fun restore(bundle: LoginBundle): List<LoginSyncService> =
+    open suspend fun restore(bundle: LoginBundle): List<LoginSyncService> =
         buildList {
             bundle.youtube?.let {
                 restoreYouTube(it)
