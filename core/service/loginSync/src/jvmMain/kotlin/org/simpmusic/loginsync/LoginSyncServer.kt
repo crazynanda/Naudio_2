@@ -16,6 +16,8 @@ import io.ktor.server.routing.routing
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.net.Inet4Address
@@ -65,6 +67,8 @@ class LoginSyncServer(
     private var server: EmbeddedServer<*, *>? = null
     private var key = ByteArray(0)
 
+    private var loginPayloadMutex = Mutex()
+
     @Volatile
     private var loginPayloadDelivered = false
 
@@ -74,6 +78,7 @@ class LoginSyncServer(
     suspend fun start(): Session {
         stop()
         key = LoginSyncCipher.newKey()
+        loginPayloadMutex = Mutex()
         loginPayloadDelivered = false
         val http =
             embeddedServer(CIO, port = 0, host = "0.0.0.0") {
@@ -105,10 +110,12 @@ class LoginSyncServer(
             return reject(call, kind, HttpStatusCode.PayloadTooLarge, "the request was larger than ${LoginSyncWire.MAX_BODY_BYTES / 1024 / 1024} MB")
         }
         // Login credentials must remain a one-time operation and cannot be transferred repeatedly.
-        // Favorites synchronization remains available during the active session.
-        if (kind == LoginSyncWire.PAYLOAD && loginPayloadDelivered) {
-            return reject(call, kind, HttpStatusCode.Gone, "login credentials have already been transferred for this session")
+        if (kind == LoginSyncWire.PAYLOAD) {
+            handleLoginPayload(call)
+            return
         }
+
+        // Favorites synchronization, hello, and cancel remain concurrently available during the active session.
         try {
             val plain =
                 LoginSyncCipher.open(key, LoginSyncWire.aad(kind, reply = false), call.receive<ByteArray>())
@@ -118,10 +125,6 @@ class LoginSyncServer(
                     LoginSyncWire.HELLO -> {
                         handler.onHello()
                         LoginSyncWire.json.encodeToString(DeviceName.serializer(), withContext(Dispatchers.IO) { device }).encodeToByteArray()
-                    }
-
-                    LoginSyncWire.PAYLOAD -> {
-                        handler.onPayload(plain)
                     }
 
                     LoginSyncWire.FAVORITES -> {
@@ -134,16 +137,39 @@ class LoginSyncServer(
                     }
                 }
             call.respondBytes(LoginSyncCipher.seal(key, LoginSyncWire.aad(kind, reply = true), reply), ContentType.Application.OctetStream)
-            if (kind == LoginSyncWire.PAYLOAD) {
-                // Only once the phone has its answer.
-                loginPayloadDelivered = true
-                handler.onDelivered()
-            }
         } catch (e: Exception) {
             if (e is CancellationException) throw e
             Logger.e(TAG, "handle $kind", e)
             handler.onRejected(e.message ?: e.describe())
             call.respond(HttpStatusCode.InternalServerError)
+        }
+    }
+
+    private suspend fun handleLoginPayload(call: ApplicationCall) {
+        val kind = LoginSyncWire.PAYLOAD
+        if (loginPayloadDelivered) {
+            return reject(call, kind, HttpStatusCode.Gone, "login credentials have already been transferred for this session")
+        }
+
+        loginPayloadMutex.withLock {
+            if (loginPayloadDelivered) {
+                return reject(call, kind, HttpStatusCode.Gone, "login credentials have already been transferred for this session")
+            }
+            try {
+                val plain =
+                    LoginSyncCipher.open(key, LoginSyncWire.aad(kind, reply = false), call.receive<ByteArray>())
+                        ?: return reject(call, kind, HttpStatusCode.Forbidden, "the phone used a different code")
+                val reply = handler.onPayload(plain)
+                call.respondBytes(LoginSyncCipher.seal(key, LoginSyncWire.aad(kind, reply = true), reply), ContentType.Application.OctetStream)
+                // Set the delivered state only after successful processing and response.
+                loginPayloadDelivered = true
+                handler.onDelivered()
+            } catch (e: Exception) {
+                if (e is CancellationException) throw e
+                Logger.e(TAG, "handle $kind", e)
+                handler.onRejected(e.message ?: e.describe())
+                call.respond(HttpStatusCode.InternalServerError)
+            }
         }
     }
 
