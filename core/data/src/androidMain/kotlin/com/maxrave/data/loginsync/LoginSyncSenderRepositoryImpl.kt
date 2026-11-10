@@ -36,13 +36,31 @@ internal class LoginSyncSenderRepositoryImpl(
     }
 
     override suspend fun syncFavorites(): FavoritesSyncResult {
-        val bundles = favoriteSyncStore.exportBundles()
+        val outgoingBundles = favoriteSyncStore.exportBundles()
         var combinedResult = FavoritesSyncResult()
-        for (bundle in bundles) {
-            val payload = favoritesSyncJson.encodeToString(FavoritesSyncBundle.serializer(), bundle).encodeToByteArray()
+        var outgoingIndex = 0
+        var requestingBatchIndex = 0
+        var hostHasMore = true
+
+        while (outgoingIndex < outgoingBundles.size || hostHasMore) {
+            val outgoingBundle =
+                if (outgoingIndex < outgoingBundles.size) {
+                    outgoingBundles[outgoingIndex].copy(requestBatchIndex = requestingBatchIndex)
+                } else {
+                    FavoritesSyncBundle(
+                        clientTimestamp = kotlin.time.Clock.System.now().toEpochMilliseconds(),
+                        batchIndex = outgoingIndex,
+                        batchTotal = outgoingBundles.size,
+                        hasMore = false,
+                        requestBatchIndex = requestingBatchIndex,
+                    )
+                }
+
+            val payload = favoritesSyncJson.encodeToString(FavoritesSyncBundle.serializer(), outgoingBundle).encodeToByteArray()
             val reply = transport { client.sendFavorites(payload) }
             val hostBundle = favoritesSyncJson.decodeFromString(FavoritesSyncBundle.serializer(), reply.decodeToString())
             val mergeResult = favoriteSyncStore.mergeBundle(hostBundle)
+
             combinedResult = combinedResult.copy(
                 songsAddedOrUpdated = combinedResult.songsAddedOrUpdated + mergeResult.songsAddedOrUpdated,
                 songsRemoved = combinedResult.songsRemoved + mergeResult.songsRemoved,
@@ -55,6 +73,12 @@ internal class LoginSyncSenderRepositoryImpl(
                 artistsAddedOrUpdated = combinedResult.artistsAddedOrUpdated + mergeResult.artistsAddedOrUpdated,
                 artistsRemoved = combinedResult.artistsRemoved + mergeResult.artistsRemoved,
             )
+
+            hostHasMore = hostBundle.hasMore
+            if (outgoingIndex < outgoingBundles.size) {
+                outgoingIndex++
+            }
+            requestingBatchIndex++
         }
         return combinedResult
     }

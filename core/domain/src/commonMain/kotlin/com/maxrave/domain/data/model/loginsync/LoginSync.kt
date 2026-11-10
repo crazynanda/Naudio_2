@@ -44,6 +44,7 @@ sealed interface LoginSyncHostState {
 
     data class FavoritesSynced(
         val result: FavoritesSyncResult,
+        val timestamp: Long = kotlin.time.Clock.System.now().toEpochMilliseconds(),
     ) : LoginSyncHostState
 
     data object Expired : LoginSyncHostState

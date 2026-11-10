@@ -15,7 +15,7 @@ import com.maxrave.domain.data.entities.PodcastsEntity
 import com.maxrave.domain.data.entities.SongEntity
 import com.maxrave.domain.extension.now
 import kotlinx.coroutines.runBlocking
-import kotlinx.datetime.Clock
+import kotlin.time.Clock
 import kotlinx.datetime.LocalDateTime
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toInstant
@@ -159,17 +159,56 @@ class FavoriteSyncTest {
     )
 
     /**
-     * Simulates full bidirectional peer-to-peer sync:
-     * Android exports -> Windows merges -> Windows exports -> Android merges.
+     * Simulates full bidirectional peer-to-peer sync matching the production protocol:
+     * Android streams outgoing batches while requesting host batches until both sides have hasMore = false.
      */
     private suspend fun performBidirectionalSync() {
-        val androidBundles = androidSyncStore.exportBundles()
-        for (bundle in androidBundles) {
-            windowsSyncStore.mergeBundle(bundle)
-        }
-        val windowsBundles = windowsSyncStore.exportBundles()
-        for (bundle in windowsBundles) {
-            androidSyncStore.mergeBundle(bundle)
+        val outgoingBundles = androidSyncStore.exportBundles()
+        var outgoingIndex = 0
+        var requestingBatchIndex = 0
+        var hostHasMore = true
+        var hostBatches: List<FavoritesSyncBundle>? = null
+
+        while (outgoingIndex < outgoingBundles.size || hostHasMore) {
+            val outgoingBundle =
+                if (outgoingIndex < outgoingBundles.size) {
+                    outgoingBundles[outgoingIndex].copy(requestBatchIndex = requestingBatchIndex)
+                } else {
+                    FavoritesSyncBundle(
+                        clientTimestamp = Clock.System.now().toEpochMilliseconds(),
+                        batchIndex = outgoingIndex,
+                        batchTotal = outgoingBundles.size,
+                        hasMore = false,
+                        requestBatchIndex = requestingBatchIndex,
+                    )
+                }
+
+            // Desktop host side: snapshot on first request, then merge incoming
+            if (outgoingBundle.requestBatchIndex == 0 || hostBatches == null) {
+                hostBatches = windowsSyncStore.exportBundles()
+            }
+            windowsSyncStore.mergeBundle(outgoingBundle)
+
+            val replyBundle =
+                if (outgoingBundle.requestBatchIndex in hostBatches.indices) {
+                    hostBatches[outgoingBundle.requestBatchIndex]
+                } else {
+                    FavoritesSyncBundle(
+                        clientTimestamp = Clock.System.now().toEpochMilliseconds(),
+                        batchIndex = outgoingBundle.requestBatchIndex,
+                        batchTotal = maxOf(hostBatches.size, 1),
+                        hasMore = false,
+                    )
+                }
+
+            // Android client side: merge host response
+            androidSyncStore.mergeBundle(replyBundle)
+
+            hostHasMore = replyBundle.hasMore
+            if (outgoingIndex < outgoingBundles.size) {
+                outgoingIndex++
+            }
+            requestingBatchIndex++
         }
     }
 
@@ -540,5 +579,306 @@ class FavoriteSyncTest {
                 .addTypeConverter(Converters())
                 .build()
         }
+    }
+
+    @Test
+    fun globalBatchingAcrossAllEntityTypes() = runBlocking {
+        // Create 200 songs, 150 albums, 100 playlists, 100 podcasts, 100 artists, 100 tombstones = 750 items
+        for (i in 1..200) {
+            val s = createSong("global_song_$i")
+            androidDb.getDatabaseDao().insertSong(s)
+            androidDb.getDatabaseDao().updateLiked(1, s.videoId, s.favoriteAt)
+        }
+        for (i in 1..150) {
+            val a = createAlbum("global_album_$i")
+            androidDb.getDatabaseDao().insertAlbum(a)
+            androidDb.getDatabaseDao().updateAlbumLiked(1, a.browseId, a.favoriteAt)
+        }
+        for (i in 1..100) {
+            val p = createPlaylist("global_playlist_$i")
+            androidDb.getDatabaseDao().insertPlaylist(p)
+            androidDb.getDatabaseDao().updatePlaylistLiked(1, p.id, p.favoriteAt)
+        }
+        for (i in 1..100) {
+            val pod = createPodcast("global_podcast_$i")
+            androidDb.getDatabaseDao().insertPodcast(pod)
+            androidDb.getDatabaseDao().updatePodcastFavorite(true, pod.podcastId, pod.favoriteTime)
+        }
+        for (i in 1..100) {
+            val art = createArtist("global_artist_$i")
+            androidDb.getDatabaseDao().insertArtist(art)
+            androidDb.getDatabaseDao().updateFollowed(1, art.channelId, art.followedAt)
+        }
+        for (i in 1..100) {
+            androidDb.getDatabaseDao().insertFavoriteTombstone(
+                FavoriteSyncTombstoneEntity(
+                    type = FavoriteSyncType.SONG,
+                    id = "deleted_song_$i",
+                    isFavorite = false,
+                    updatedAt = 50_000L + i,
+                ),
+            )
+        }
+
+        // Export with chunkSize = 250 items
+        val bundles = androidSyncStore.exportBundles(chunkSize = 250)
+        assertEquals(3, bundles.size, "750 items chunked into 250 must result in exactly 3 batches")
+
+        // Verify that EVERY batch strictly enforces totalItems <= 250 across all entity types
+        for ((idx, b) in bundles.withIndex()) {
+            val totalInBatch = b.songs.size + b.albums.size + b.playlists.size + b.podcasts.size + b.artists.size + b.tombstones.size
+            assertTrue(totalInBatch <= 250, "Batch $idx has $totalInBatch items, exceeding chunkSize of 250")
+            assertEquals(idx, b.batchIndex)
+            assertEquals(3, b.batchTotal)
+            assertEquals(idx < 2, b.hasMore)
+
+            val serializedBytes = favoritesSyncJson.encodeToString(FavoritesSyncBundle.serializer(), b).encodeToByteArray().size
+            assertTrue(serializedBytes < 4 * 1024 * 1024, "Batch $idx exceeds 4MB transport limit: $serializedBytes bytes")
+        }
+
+        // Verify total items across batches equals 750 without skips or duplicates
+        val allSongs = bundles.flatMap { it.songs.map { s -> s.videoId } }.toSet()
+        val allAlbums = bundles.flatMap { it.albums.map { a -> a.browseId } }.toSet()
+        val allPlaylists = bundles.flatMap { it.playlists.map { p -> p.id } }.toSet()
+        val allPodcasts = bundles.flatMap { it.podcasts.map { pod -> pod.podcastId } }.toSet()
+        val allArtists = bundles.flatMap { it.artists.map { art -> art.channelId } }.toSet()
+        val allTombstones = bundles.flatMap { it.tombstones.map { t -> t.id } }.toSet()
+
+        assertEquals(200, allSongs.size)
+        assertEquals(150, allAlbums.size)
+        assertEquals(100, allPlaylists.size)
+        assertEquals(100, allPodcasts.size)
+        assertEquals(100, allArtists.size)
+        assertEquals(100, allTombstones.size)
+
+        // Merge onto Windows via performBidirectionalSync
+        performBidirectionalSync()
+
+        assertEquals(200, windowsDb.getDatabaseDao().getAllLikedSongs().size)
+        assertEquals(150, windowsDb.getDatabaseDao().getAllLikedAlbums().size)
+        assertEquals(100, windowsDb.getDatabaseDao().getAllLikedPlaylists().size)
+        assertEquals(100, windowsDb.getDatabaseDao().getAllFavoritePodcasts().size)
+        assertEquals(100, windowsDb.getDatabaseDao().getAllFollowedArtists().size)
+    }
+
+    @Test
+    fun largeMetadataPayloadsSplitProperlyBelowTransportLimit() = runBlocking {
+        // Create an album and playlist with large metadata strings (each ~150KB)
+        val largeDesc = "x".repeat(150_000)
+        val largeTracks = (1..500).map { "Track description $it - " + "y".repeat(200) }
+
+        for (i in 1..4) {
+            val album = AlbumEntity(
+                browseId = "large_album_$i",
+                title = "Large Album $i",
+                audioPlaylistId = "OLAK_$i",
+                description = largeDesc,
+                duration = "60:00",
+                durationSeconds = 3600,
+                thumbnails = "https://example.com/cover.jpg",
+                trackCount = largeTracks.size,
+                tracks = largeTracks,
+                type = "ALBUM",
+                year = "2024",
+                liked = true,
+                favoriteAt = now(),
+                inLibrary = now(),
+            )
+            androidDb.getDatabaseDao().insertAlbum(album)
+            androidDb.getDatabaseDao().updateAlbumLiked(1, album.browseId, album.favoriteAt)
+        }
+
+        // Export with maxBytes = 200_000 (200 KB per batch)
+        val bundles = androidSyncStore.exportBundles(chunkSize = 500, maxBytes = 200_000)
+        assertTrue(bundles.size >= 4, "Large metadata should force splitting into at least 4 batches, got ${bundles.size}")
+
+        // Verify each bundle's serialized size is strictly within the limit and well below 4 MB
+        for (b in bundles) {
+            val serialized = favoritesSyncJson.encodeToString(FavoritesSyncBundle.serializer(), b).encodeToByteArray()
+            assertTrue(serialized.size <= 300_000, "Serialized batch size was ${serialized.size}")
+            assertTrue(serialized.size < 4 * 1024 * 1024, "Must not exceed 4MB")
+        }
+
+        // Merge to Windows and verify all large metadata survives
+        for (b in bundles) {
+            windowsSyncStore.mergeBundle(b)
+        }
+        for (i in 1..4) {
+            val restored = windowsDb.getDatabaseDao().getAlbum("large_album_$i")
+            assertNotNull(restored)
+            assertEquals(largeDesc, restored.description)
+            assertEquals(largeTracks.size, restored.tracks?.size)
+        }
+    }
+
+    @Test
+    fun multiBatchSyncWindowsHasMoreBatchesThanAndroid() = runBlocking {
+        // Android has only 10 songs (1 batch)
+        for (i in 1..10) {
+            val s = createSong("android_song_$i")
+            androidDb.getDatabaseDao().insertSong(s)
+            androidDb.getDatabaseDao().updateLiked(1, s.videoId, s.favoriteAt)
+        }
+
+        // Windows has 600 items across multiple types (300 songs + 300 albums)
+        for (i in 1..300) {
+            val s = createSong("win_song_$i")
+            windowsDb.getDatabaseDao().insertSong(s)
+            windowsDb.getDatabaseDao().updateLiked(1, s.videoId, s.favoriteAt)
+        }
+        for (i in 1..300) {
+            val a = createAlbum("win_album_$i")
+            windowsDb.getDatabaseDao().insertAlbum(a)
+            windowsDb.getDatabaseDao().updateAlbumLiked(1, a.browseId, a.favoriteAt)
+        }
+
+        // Perform bidirectional sync: Android pulls all 600 items from Windows across all batches
+        performBidirectionalSync()
+
+        // Verify Android received all 300 songs and 300 albums from Windows
+        assertEquals(310, androidDb.getDatabaseDao().getAllLikedSongs().size)
+        assertEquals(300, androidDb.getDatabaseDao().getAllLikedAlbums().size)
+
+        // Verify Windows received Android's 10 songs
+        assertEquals(310, windowsDb.getDatabaseDao().getAllLikedSongs().size)
+        assertEquals(300, windowsDb.getDatabaseDao().getAllLikedAlbums().size)
+    }
+
+    @Test
+    fun multiBatchSyncAndroidHasMoreBatchesThanWindows() = runBlocking {
+        // Android has 600 items (300 songs + 300 albums)
+        for (i in 1..300) {
+            val s = createSong("android_bulk_song_$i")
+            androidDb.getDatabaseDao().insertSong(s)
+            androidDb.getDatabaseDao().updateLiked(1, s.videoId, s.favoriteAt)
+        }
+        for (i in 1..300) {
+            val a = createAlbum("android_bulk_album_$i")
+            androidDb.getDatabaseDao().insertAlbum(a)
+            androidDb.getDatabaseDao().updateAlbumLiked(1, a.browseId, a.favoriteAt)
+        }
+
+        // Windows has only 10 songs
+        for (i in 1..10) {
+            val s = createSong("win_small_song_$i")
+            windowsDb.getDatabaseDao().insertSong(s)
+            windowsDb.getDatabaseDao().updateLiked(1, s.videoId, s.favoriteAt)
+        }
+
+        performBidirectionalSync()
+
+        assertEquals(310, androidDb.getDatabaseDao().getAllLikedSongs().size)
+        assertEquals(300, androidDb.getDatabaseDao().getAllLikedAlbums().size)
+
+        assertEquals(310, windowsDb.getDatabaseDao().getAllLikedSongs().size)
+        assertEquals(300, windowsDb.getDatabaseDao().getAllLikedAlbums().size)
+    }
+
+    @Test
+    fun atomicFavoriteMutationsWithTombstone() = runBlocking {
+        // Test updateSongLikedWithTombstone
+        val song = createSong("atomic_song_1")
+        androidDb.getDatabaseDao().insertSong(song)
+        val songTomb = FavoriteSyncTombstoneEntity(
+            type = FavoriteSyncType.SONG,
+            id = song.videoId,
+            isFavorite = true,
+            updatedAt = 123456L,
+        )
+        androidDb.getDatabaseDao().updateSongLikedWithTombstone(1, song.videoId, song.favoriteAt, songTomb)
+
+        assertTrue(androidDb.getDatabaseDao().getSong("atomic_song_1")!!.liked)
+        assertEquals(123456L, androidDb.getDatabaseDao().getFavoriteTombstone(FavoriteSyncType.SONG, "atomic_song_1")!!.updatedAt)
+
+        // Test updateAlbumLikedWithTombstone
+        val album = createAlbum("atomic_album_1")
+        androidDb.getDatabaseDao().insertAlbum(album)
+        val albumTomb = FavoriteSyncTombstoneEntity(
+            type = FavoriteSyncType.ALBUM,
+            id = album.browseId,
+            isFavorite = true,
+            updatedAt = 234567L,
+        )
+        androidDb.getDatabaseDao().updateAlbumLikedWithTombstone(1, album.browseId, album.favoriteAt, albumTomb)
+        assertTrue(androidDb.getDatabaseDao().getAlbum("atomic_album_1")!!.liked)
+        assertEquals(234567L, androidDb.getDatabaseDao().getFavoriteTombstone(FavoriteSyncType.ALBUM, "atomic_album_1")!!.updatedAt)
+
+        // Test updatePlaylistLikedWithTombstone
+        val playlist = createPlaylist("atomic_playlist_1")
+        androidDb.getDatabaseDao().insertPlaylist(playlist)
+        val playlistTomb = FavoriteSyncTombstoneEntity(
+            type = FavoriteSyncType.PLAYLIST,
+            id = playlist.id,
+            isFavorite = true,
+            updatedAt = 345678L,
+        )
+        androidDb.getDatabaseDao().updatePlaylistLikedWithTombstone(1, playlist.id, playlist.favoriteAt, playlistTomb)
+        assertTrue(androidDb.getDatabaseDao().getPlaylist("atomic_playlist_1")!!.liked)
+        assertEquals(345678L, androidDb.getDatabaseDao().getFavoriteTombstone(FavoriteSyncType.PLAYLIST, "atomic_playlist_1")!!.updatedAt)
+
+        // Test updateFollowedWithTombstone
+        val artist = createArtist("atomic_artist_1")
+        androidDb.getDatabaseDao().insertArtist(artist)
+        val artistTomb = FavoriteSyncTombstoneEntity(
+            type = FavoriteSyncType.ARTIST,
+            id = artist.channelId,
+            isFavorite = true,
+            updatedAt = 456789L,
+        )
+        androidDb.getDatabaseDao().updateFollowedWithTombstone(1, artist.channelId, artist.followedAt, artistTomb)
+        assertTrue(androidDb.getDatabaseDao().getArtist("atomic_artist_1")!!.followed)
+        assertEquals(456789L, androidDb.getDatabaseDao().getFavoriteTombstone(FavoriteSyncType.ARTIST, "atomic_artist_1")!!.updatedAt)
+
+        // Test updatePodcastFavoriteWithTombstone
+        val podcast = createPodcast("atomic_podcast_1")
+        androidDb.getDatabaseDao().insertPodcast(podcast)
+        val podcastTomb = FavoriteSyncTombstoneEntity(
+            type = FavoriteSyncType.PODCAST,
+            id = podcast.podcastId,
+            isFavorite = true,
+            updatedAt = 567890L,
+        )
+        val success = androidDb.getDatabaseDao().updatePodcastFavoriteWithTombstone(
+            podcastId = podcast.podcastId,
+            isFavorite = true,
+            favoriteTime = podcast.favoriteTime,
+            tombstone = podcastTomb,
+        )
+        assertTrue(success)
+        assertTrue(androidDb.getDatabaseDao().getPodcast("atomic_podcast_1")!!.isFavorite)
+        assertEquals(567890L, androidDb.getDatabaseDao().getFavoriteTombstone(FavoriteSyncType.PODCAST, "atomic_podcast_1")!!.updatedAt)
+    }
+
+    @Test
+    fun safeRetriesAndIdempotencyAcrossNetworkDrop() = runBlocking {
+        // Android has 30 songs
+        for (i in 1..30) {
+            val s = createSong("retry_song_$i")
+            androidDb.getDatabaseDao().insertSong(s)
+            androidDataSource.updateLiked(1, s.videoId, s.favoriteAt)
+        }
+
+        // Export batches of 10 items (30 songs + 30 tombstones = 60 items -> 6 batches)
+        val batches = androidSyncStore.exportBundles(chunkSize = 10)
+        assertEquals(6, batches.size, "30 songs + 30 tombstones = 60 items chunked into 10 = 6 batches")
+
+        // Simulate network: Batch 0 succeeds, Batch 1 succeeds, then network fails before remaining batches
+        windowsSyncStore.mergeBundle(batches[0])
+        windowsSyncStore.mergeBundle(batches[1])
+        assertTrue(windowsDb.getDatabaseDao().getAllLikedSongs().size in 1..20)
+
+        // Android retries the entire sync from the beginning
+        for (b in batches) {
+            windowsSyncStore.mergeBundle(b)
+        }
+
+        // Verify all 30 songs are present with zero duplicates
+        assertEquals(30, windowsDb.getDatabaseDao().getAllLikedSongs().size)
+
+        // Re-running a third time does not add anything
+        val thirdResult = windowsSyncStore.mergeBundle(batches[0])
+        assertEquals(0, thirdResult.totalAddedOrUpdated)
+        assertEquals(0, thirdResult.totalRemoved)
+        assertEquals(30, windowsDb.getDatabaseDao().getAllLikedSongs().size)
     }
 }

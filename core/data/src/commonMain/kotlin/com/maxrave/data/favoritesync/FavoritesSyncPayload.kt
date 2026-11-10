@@ -32,6 +32,10 @@ data class FavoritesSyncBundle(
     val artists: List<FavoriteArtistDto> = emptyList(),
     val tombstones: List<FavoriteTombstoneDto> = emptyList(),
     val clientTimestamp: Long = 0L,
+    val batchIndex: Int = 0,
+    val batchTotal: Int = 1,
+    val hasMore: Boolean = false,
+    val requestBatchIndex: Int = 0,
 )
 
 @Serializable

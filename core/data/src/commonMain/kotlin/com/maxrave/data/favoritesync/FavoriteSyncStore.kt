@@ -2,7 +2,6 @@ package com.maxrave.data.favoritesync
 
 import DatabaseDao
 import com.maxrave.domain.data.entities.FavoriteSyncTombstoneEntity
-import com.maxrave.domain.data.entities.FavoriteSyncType
 import com.maxrave.domain.data.model.favoritesync.FavoritesSyncResult
 import kotlin.time.Clock
 
@@ -48,432 +47,178 @@ internal class FavoriteSyncStore(
             artists = artists,
             tombstones = tombstones,
             clientTimestamp = Clock.System.now().toEpochMilliseconds(),
+            batchIndex = 0,
+            batchTotal = 1,
+            hasMore = false,
         )
     }
 
-    suspend fun exportBundles(chunkSize: Int = 500): List<FavoritesSyncBundle> {
-        val full = exportBundle()
-        val allItemsCount = full.songs.size + full.albums.size + full.playlists.size + full.podcasts.size + full.artists.size + full.tombstones.size
-        if (allItemsCount <= chunkSize) {
-            return listOf(full)
-        }
+    suspend fun exportBundles(
+        chunkSize: Int = 500,
+        maxBytes: Int = 3_500_000,
+    ): List<FavoritesSyncBundle> {
+        val now = Clock.System.now().toEpochMilliseconds()
+        val songs = databaseDao.getAllLikedSongs().map { it.toFavoriteDto() }
+        val albums = databaseDao.getAllLikedAlbums().map { it.toFavoriteDto() }
+        val playlists = databaseDao.getAllLikedPlaylists().map { it.toFavoriteDto() }
+        val podcasts = databaseDao.getAllFavoritePodcasts().map { it.toFavoriteDto() }
+        val artists = databaseDao.getAllFollowedArtists().map { it.toFavoriteDto() }
+        val tombstones =
+            databaseDao.getAllFavoriteTombstones().map {
+                FavoriteTombstoneDto(
+                    type = it.type,
+                    id = it.id,
+                    isFavorite = it.isFavorite,
+                    updatedAtEpochMs = it.updatedAt,
+                )
+            }
 
-        // Chunking large collections into smaller batches
-        val bundles = mutableListOf<FavoritesSyncBundle>()
-        val songChunks = full.songs.chunked(chunkSize)
-        val albumChunks = full.albums.chunked(chunkSize)
-        val playlistChunks = full.playlists.chunked(chunkSize)
-        val podcastChunks = full.podcasts.chunked(chunkSize)
-        val artistChunks = full.artists.chunked(chunkSize)
-        val tombstoneChunks = full.tombstones.chunked(chunkSize)
-
-        val maxChunks = maxOf(
-            songChunks.size,
-            albumChunks.size,
-            playlistChunks.size,
-            podcastChunks.size,
-            artistChunks.size,
-            tombstoneChunks.size,
-            1,
-        )
-
-        for (i in 0 until maxChunks) {
-            bundles += FavoritesSyncBundle(
-                songs = songChunks.getOrElse(i) { emptyList() },
-                albums = albumChunks.getOrElse(i) { emptyList() },
-                playlists = playlistChunks.getOrElse(i) { emptyList() },
-                podcasts = podcastChunks.getOrElse(i) { emptyList() },
-                artists = artistChunks.getOrElse(i) { emptyList() },
-                tombstones = tombstoneChunks.getOrElse(i) { emptyList() },
-                clientTimestamp = full.clientTimestamp,
+        val totalCount =
+            songs.size + albums.size + playlists.size + podcasts.size + artists.size + tombstones.size
+        if (totalCount == 0) {
+            return listOf(
+                FavoritesSyncBundle(
+                    clientTimestamp = now,
+                    batchIndex = 0,
+                    batchTotal = 1,
+                    hasMore = false,
+                ),
             )
         }
-        return bundles
+
+        val batches = mutableListOf<FavoritesSyncBundle>()
+
+        var currentSongs = mutableListOf<FavoriteSongDto>()
+        var currentAlbums = mutableListOf<FavoriteAlbumDto>()
+        var currentPlaylists = mutableListOf<FavoritePlaylistDto>()
+        var currentPodcasts = mutableListOf<FavoritePodcastDto>()
+        var currentArtists = mutableListOf<FavoriteArtistDto>()
+        var currentTombstones = mutableListOf<FavoriteTombstoneDto>()
+        var currentEstimatedBytes = 0
+
+        fun currentCount() =
+            currentSongs.size + currentAlbums.size + currentPlaylists.size + currentPodcasts.size + currentArtists.size + currentTombstones.size
+
+        fun flushCurrent() {
+            if (currentCount() == 0) return
+            batches.add(
+                FavoritesSyncBundle(
+                    songs = currentSongs,
+                    albums = currentAlbums,
+                    playlists = currentPlaylists,
+                    podcasts = currentPodcasts,
+                    artists = currentArtists,
+                    tombstones = currentTombstones,
+                    clientTimestamp = now,
+                ),
+            )
+            currentSongs = mutableListOf()
+            currentAlbums = mutableListOf()
+            currentPlaylists = mutableListOf()
+            currentPodcasts = mutableListOf()
+            currentArtists = mutableListOf()
+            currentTombstones = mutableListOf()
+            currentEstimatedBytes = 0
+        }
+
+        fun addItem(
+            itemEstimatedBytes: Int,
+            addBlock: () -> Unit,
+        ) {
+            if (currentCount() >= chunkSize || (currentCount() > 0 && currentEstimatedBytes + itemEstimatedBytes > maxBytes)) {
+                flushCurrent()
+            }
+            addBlock()
+            currentEstimatedBytes += itemEstimatedBytes
+        }
+
+        for (s in songs) {
+            val est = 300 + s.title.length * 2 + (s.thumbnails?.length ?: 0)
+            addItem(est) { currentSongs.add(s) }
+        }
+        for (a in albums) {
+            val est = 300 + a.title.length * 2 + (a.description?.length ?: 0) * 2 + (a.tracks?.sumOf { it.length } ?: 0)
+            addItem(est) { currentAlbums.add(a) }
+        }
+        for (p in playlists) {
+            val est = 300 + p.title.length * 2 + (p.description?.length ?: 0) * 2 + (p.tracks?.sumOf { it.length } ?: 0)
+            addItem(est) { currentPlaylists.add(p) }
+        }
+        for (pod in podcasts) {
+            val est = 300 + pod.title.length * 2 + (pod.description?.length ?: 0) * 2 + pod.listEpisodes.sumOf { it.length }
+            addItem(est) { currentPodcasts.add(pod) }
+        }
+        for (art in artists) {
+            val est = 250 + art.name.length * 2 + (art.thumbnails?.length ?: 0)
+            addItem(est) { currentArtists.add(art) }
+        }
+        for (t in tombstones) {
+            val est = 100 + t.id.length
+            addItem(est) { currentTombstones.add(t) }
+        }
+
+        flushCurrent()
+
+        // Double check actual serialized byte size of each batch against maxBytes;
+        // If an individual batch exceeds maxBytes (e.g. huge metadata), split it in half until valid.
+        val verifiedBatches = mutableListOf<FavoritesSyncBundle>()
+        for (b in batches) {
+            splitIfOversized(b, maxBytes, verifiedBatches)
+        }
+
+        val totalBatches = verifiedBatches.size
+        return verifiedBatches.mapIndexed { idx, bundle ->
+            bundle.copy(
+                batchIndex = idx,
+                batchTotal = totalBatches,
+                hasMore = idx < totalBatches - 1,
+            )
+        }
     }
 
-    suspend fun mergeBundle(incoming: FavoritesSyncBundle): FavoritesSyncResult {
-        val localTombstones = databaseDao.getAllFavoriteTombstones().associateBy { "${it.type}:${it.id}" }
-
-        var songsAddedOrUpdated = 0
-        var songsRemoved = 0
-        var albumsAddedOrUpdated = 0
-        var albumsRemoved = 0
-        var playlistsAddedOrUpdated = 0
-        var playlistsRemoved = 0
-        var podcastsAddedOrUpdated = 0
-        var podcastsRemoved = 0
-        var artistsAddedOrUpdated = 0
-        var artistsRemoved = 0
-
-        // 1. Process Songs
-        for (songDto in incoming.songs) {
-            val key = "${FavoriteSyncType.SONG}:${songDto.videoId}"
-            val tombstone = localTombstones[key]
-            if (tombstone != null && !tombstone.isFavorite && tombstone.updatedAt >= songDto.favoriteAtEpochMs) {
-                // Local deletion is newer than or equal to incoming favorite
-                continue
-            }
-            val existing = databaseDao.getSong(songDto.videoId)
-            if (existing == null) {
-                databaseDao.insertSong(songDto.toEntity())
-                databaseDao.updateLiked(liked = 1, videoId = songDto.videoId, favoriteAt = songDto.favoriteAtEpochMs.toLocalDateTimeSystem())
-                databaseDao.insertFavoriteTombstone(
-                    FavoriteSyncTombstoneEntity(
-                        type = FavoriteSyncType.SONG,
-                        id = songDto.videoId,
-                        isFavorite = true,
-                        updatedAt = songDto.favoriteAtEpochMs,
-                    ),
-                )
-                songsAddedOrUpdated++
-            } else {
-                val localFavEpoch = existing.favoriteAt.toEpochMillis()
-                if (!existing.liked || songDto.favoriteAtEpochMs > localFavEpoch) {
-                    val newerEpoch = songDto.favoriteAtEpochMs
-                    databaseDao.updateLiked(
-                        liked = 1,
-                        videoId = songDto.videoId,
-                        favoriteAt = newerEpoch.toLocalDateTimeSystem(),
-                    )
-                    databaseDao.insertFavoriteTombstone(
-                        FavoriteSyncTombstoneEntity(
-                            type = FavoriteSyncType.SONG,
-                            id = songDto.videoId,
-                            isFavorite = true,
-                            updatedAt = newerEpoch,
-                        ),
-                    )
-                    songsAddedOrUpdated++
-                }
-            }
+    private fun splitIfOversized(
+        bundle: FavoritesSyncBundle,
+        maxBytes: Int,
+        outList: MutableList<FavoritesSyncBundle>,
+    ) {
+        val bytes = favoritesSyncJson.encodeToString(FavoritesSyncBundle.serializer(), bundle).encodeToByteArray().size
+        val count =
+            bundle.songs.size + bundle.albums.size + bundle.playlists.size + bundle.podcasts.size + bundle.artists.size + bundle.tombstones.size
+        if (bytes <= maxBytes || count <= 1) {
+            outList.add(bundle)
+            return
         }
 
-        // Process Song Deletions
-        for (tomb in incoming.tombstones.filter { it.type == FavoriteSyncType.SONG && !it.isFavorite }) {
-            val key = "${FavoriteSyncType.SONG}:${tomb.id}"
-            val localTomb = localTombstones[key]
-            if (localTomb != null && localTomb.updatedAt > tomb.updatedAtEpochMs) {
-                // Local state is newer than remote deletion
-                continue
-            }
-            val existing = databaseDao.getSong(tomb.id)
-            val localFavEpoch = existing?.favoriteAt?.toEpochMillis() ?: 0L
-            if (localFavEpoch > tomb.updatedAtEpochMs) {
-                continue
-            }
-            if (existing != null && existing.liked) {
-                databaseDao.updateLiked(liked = 0, videoId = tomb.id, favoriteAt = null)
-                songsRemoved++
-            }
-            databaseDao.insertFavoriteTombstone(
-                FavoriteSyncTombstoneEntity(
-                    type = FavoriteSyncType.SONG,
-                    id = tomb.id,
-                    isFavorite = false,
-                    updatedAt = tomb.updatedAtEpochMs,
-                ),
+        val halfSongs = (bundle.songs.size + 1) / 2
+        val halfAlbums = (bundle.albums.size + 1) / 2
+        val halfPlaylists = (bundle.playlists.size + 1) / 2
+        val halfPodcasts = (bundle.podcasts.size + 1) / 2
+        val halfArtists = (bundle.artists.size + 1) / 2
+        val halfTombstones = (bundle.tombstones.size + 1) / 2
+
+        val b1 =
+            bundle.copy(
+                songs = bundle.songs.take(halfSongs),
+                albums = bundle.albums.take(halfAlbums),
+                playlists = bundle.playlists.take(halfPlaylists),
+                podcasts = bundle.podcasts.take(halfPodcasts),
+                artists = bundle.artists.take(halfArtists),
+                tombstones = bundle.tombstones.take(halfTombstones),
             )
-        }
-
-        // 2. Process Albums
-        for (albumDto in incoming.albums) {
-            val key = "${FavoriteSyncType.ALBUM}:${albumDto.browseId}"
-            val tombstone = localTombstones[key]
-            if (tombstone != null && !tombstone.isFavorite && tombstone.updatedAt >= albumDto.favoriteAtEpochMs) {
-                continue
-            }
-            val existing = databaseDao.getAlbum(albumDto.browseId)
-            if (existing == null) {
-                databaseDao.insertAlbum(albumDto.toEntity())
-                databaseDao.updateAlbumLiked(
-                    liked = 1,
-                    browseId = albumDto.browseId,
-                    favoriteAt = albumDto.favoriteAtEpochMs.toLocalDateTimeSystem(),
-                )
-                databaseDao.insertFavoriteTombstone(
-                    FavoriteSyncTombstoneEntity(
-                        type = FavoriteSyncType.ALBUM,
-                        id = albumDto.browseId,
-                        isFavorite = true,
-                        updatedAt = albumDto.favoriteAtEpochMs,
-                    ),
-                )
-                albumsAddedOrUpdated++
-            } else {
-                val localFavEpoch = existing.favoriteAt.toEpochMillis()
-                if (!existing.liked || albumDto.favoriteAtEpochMs > localFavEpoch) {
-                    val newerEpoch = albumDto.favoriteAtEpochMs
-                    databaseDao.updateAlbumLiked(
-                        liked = 1,
-                        browseId = albumDto.browseId,
-                        favoriteAt = newerEpoch.toLocalDateTimeSystem(),
-                    )
-                    databaseDao.insertFavoriteTombstone(
-                        FavoriteSyncTombstoneEntity(
-                            type = FavoriteSyncType.ALBUM,
-                            id = albumDto.browseId,
-                            isFavorite = true,
-                            updatedAt = newerEpoch,
-                        ),
-                    )
-                    albumsAddedOrUpdated++
-                }
-            }
-        }
-
-        // Process Album Deletions
-        for (tomb in incoming.tombstones.filter { it.type == FavoriteSyncType.ALBUM && !it.isFavorite }) {
-            val key = "${FavoriteSyncType.ALBUM}:${tomb.id}"
-            val localTomb = localTombstones[key]
-            if (localTomb != null && localTomb.updatedAt > tomb.updatedAtEpochMs) {
-                continue
-            }
-            val existing = databaseDao.getAlbum(tomb.id)
-            val localFavEpoch = existing?.favoriteAt?.toEpochMillis() ?: 0L
-            if (localFavEpoch > tomb.updatedAtEpochMs) {
-                continue
-            }
-            if (existing != null && existing.liked) {
-                databaseDao.updateAlbumLiked(liked = 0, browseId = tomb.id, favoriteAt = null)
-                albumsRemoved++
-            }
-            databaseDao.insertFavoriteTombstone(
-                FavoriteSyncTombstoneEntity(
-                    type = FavoriteSyncType.ALBUM,
-                    id = tomb.id,
-                    isFavorite = false,
-                    updatedAt = tomb.updatedAtEpochMs,
-                ),
+        val b2 =
+            bundle.copy(
+                songs = bundle.songs.drop(halfSongs),
+                albums = bundle.albums.drop(halfAlbums),
+                playlists = bundle.playlists.drop(halfPlaylists),
+                podcasts = bundle.podcasts.drop(halfPodcasts),
+                artists = bundle.artists.drop(halfArtists),
+                tombstones = bundle.tombstones.drop(halfTombstones),
             )
-        }
 
-        // 3. Process Playlists
-        for (playlistDto in incoming.playlists) {
-            val key = "${FavoriteSyncType.PLAYLIST}:${playlistDto.id}"
-            val tombstone = localTombstones[key]
-            if (tombstone != null && !tombstone.isFavorite && tombstone.updatedAt >= playlistDto.favoriteAtEpochMs) {
-                continue
-            }
-            val existing = databaseDao.getPlaylist(playlistDto.id)
-            if (existing == null) {
-                databaseDao.insertPlaylist(playlistDto.toEntity())
-                databaseDao.updatePlaylistLiked(
-                    liked = 1,
-                    playlistId = playlistDto.id,
-                    favoriteAt = playlistDto.favoriteAtEpochMs.toLocalDateTimeSystem(),
-                )
-                databaseDao.insertFavoriteTombstone(
-                    FavoriteSyncTombstoneEntity(
-                        type = FavoriteSyncType.PLAYLIST,
-                        id = playlistDto.id,
-                        isFavorite = true,
-                        updatedAt = playlistDto.favoriteAtEpochMs,
-                    ),
-                )
-                playlistsAddedOrUpdated++
-            } else {
-                val localFavEpoch = existing.favoriteAt.toEpochMillis()
-                if (!existing.liked || playlistDto.favoriteAtEpochMs > localFavEpoch) {
-                    val newerEpoch = playlistDto.favoriteAtEpochMs
-                    databaseDao.updatePlaylistLiked(
-                        liked = 1,
-                        playlistId = playlistDto.id,
-                        favoriteAt = newerEpoch.toLocalDateTimeSystem(),
-                    )
-                    databaseDao.insertFavoriteTombstone(
-                        FavoriteSyncTombstoneEntity(
-                            type = FavoriteSyncType.PLAYLIST,
-                            id = playlistDto.id,
-                            isFavorite = true,
-                            updatedAt = newerEpoch,
-                        ),
-                    )
-                    playlistsAddedOrUpdated++
-                }
-            }
-        }
-
-        // Process Playlist Deletions
-        for (tomb in incoming.tombstones.filter { it.type == FavoriteSyncType.PLAYLIST && !it.isFavorite }) {
-            val key = "${FavoriteSyncType.PLAYLIST}:${tomb.id}"
-            val localTomb = localTombstones[key]
-            if (localTomb != null && localTomb.updatedAt > tomb.updatedAtEpochMs) {
-                continue
-            }
-            val existing = databaseDao.getPlaylist(tomb.id)
-            val localFavEpoch = existing?.favoriteAt?.toEpochMillis() ?: 0L
-            if (localFavEpoch > tomb.updatedAtEpochMs) {
-                continue
-            }
-            if (existing != null && existing.liked) {
-                databaseDao.updatePlaylistLiked(liked = 0, playlistId = tomb.id, favoriteAt = null)
-                playlistsRemoved++
-            }
-            databaseDao.insertFavoriteTombstone(
-                FavoriteSyncTombstoneEntity(
-                    type = FavoriteSyncType.PLAYLIST,
-                    id = tomb.id,
-                    isFavorite = false,
-                    updatedAt = tomb.updatedAtEpochMs,
-                ),
-            )
-        }
-
-        // 4. Process Podcasts
-        for (podcastDto in incoming.podcasts) {
-            val key = "${FavoriteSyncType.PODCAST}:${podcastDto.podcastId}"
-            val tombstone = localTombstones[key]
-            if (tombstone != null && !tombstone.isFavorite && tombstone.updatedAt >= podcastDto.favoriteTimeEpochMs) {
-                continue
-            }
-            val existing = databaseDao.getPodcast(podcastDto.podcastId)
-            if (existing == null) {
-                databaseDao.insertPodcast(podcastDto.toEntity())
-                databaseDao.updatePodcastFavorite(
-                    isFavorite = true,
-                    podcastId = podcastDto.podcastId,
-                    favoriteTime = podcastDto.favoriteTimeEpochMs.toLocalDateTimeSystem(),
-                )
-                databaseDao.insertFavoriteTombstone(
-                    FavoriteSyncTombstoneEntity(
-                        type = FavoriteSyncType.PODCAST,
-                        id = podcastDto.podcastId,
-                        isFavorite = true,
-                        updatedAt = podcastDto.favoriteTimeEpochMs,
-                    ),
-                )
-                podcastsAddedOrUpdated++
-            } else {
-                val localFavEpoch = existing.favoriteTime.toEpochMillis()
-                if (!existing.isFavorite || podcastDto.favoriteTimeEpochMs > localFavEpoch) {
-                    val newerEpoch = podcastDto.favoriteTimeEpochMs
-                    databaseDao.updatePodcastFavorite(
-                        isFavorite = true,
-                        podcastId = podcastDto.podcastId,
-                        favoriteTime = newerEpoch.toLocalDateTimeSystem(),
-                    )
-                    databaseDao.insertFavoriteTombstone(
-                        FavoriteSyncTombstoneEntity(
-                            type = FavoriteSyncType.PODCAST,
-                            id = podcastDto.podcastId,
-                            isFavorite = true,
-                            updatedAt = newerEpoch,
-                        ),
-                    )
-                    podcastsAddedOrUpdated++
-                }
-            }
-        }
-
-        // Process Podcast Deletions
-        for (tomb in incoming.tombstones.filter { it.type == FavoriteSyncType.PODCAST && !it.isFavorite }) {
-            val key = "${FavoriteSyncType.PODCAST}:${tomb.id}"
-            val localTomb = localTombstones[key]
-            if (localTomb != null && localTomb.updatedAt > tomb.updatedAtEpochMs) {
-                continue
-            }
-            val existing = databaseDao.getPodcast(tomb.id)
-            val localFavEpoch = existing?.favoriteTime?.toEpochMillis() ?: 0L
-            if (localFavEpoch > tomb.updatedAtEpochMs) {
-                continue
-            }
-            if (existing != null && existing.isFavorite) {
-                databaseDao.updatePodcastFavorite(isFavorite = false, podcastId = tomb.id, favoriteTime = null)
-                podcastsRemoved++
-            }
-            databaseDao.insertFavoriteTombstone(
-                FavoriteSyncTombstoneEntity(
-                    type = FavoriteSyncType.PODCAST,
-                    id = tomb.id,
-                    isFavorite = false,
-                    updatedAt = tomb.updatedAtEpochMs,
-                ),
-            )
-        }
-
-        // 5. Process Artists
-        for (artistDto in incoming.artists) {
-            val key = "${FavoriteSyncType.ARTIST}:${artistDto.channelId}"
-            val tombstone = localTombstones[key]
-            if (tombstone != null && !tombstone.isFavorite && tombstone.updatedAt >= artistDto.followedAtEpochMs) {
-                continue
-            }
-            val existing = databaseDao.getArtist(artistDto.channelId)
-            if (existing == null) {
-                databaseDao.insertArtist(artistDto.toEntity())
-                databaseDao.updateFollowed(
-                    followed = 1,
-                    channelId = artistDto.channelId,
-                    followedAt = artistDto.followedAtEpochMs.toLocalDateTimeSystem(),
-                )
-                databaseDao.insertFavoriteTombstone(
-                    FavoriteSyncTombstoneEntity(
-                        type = FavoriteSyncType.ARTIST,
-                        id = artistDto.channelId,
-                        isFavorite = true,
-                        updatedAt = artistDto.followedAtEpochMs,
-                    ),
-                )
-                artistsAddedOrUpdated++
-            } else {
-                val localFavEpoch = existing.followedAt.toEpochMillis()
-                if (!existing.followed || artistDto.followedAtEpochMs > localFavEpoch) {
-                    val newerEpoch = artistDto.followedAtEpochMs
-                    databaseDao.updateFollowed(
-                        followed = 1,
-                        channelId = artistDto.channelId,
-                        followedAt = newerEpoch.toLocalDateTimeSystem(),
-                    )
-                    databaseDao.insertFavoriteTombstone(
-                        FavoriteSyncTombstoneEntity(
-                            type = FavoriteSyncType.ARTIST,
-                            id = artistDto.channelId,
-                            isFavorite = true,
-                            updatedAt = newerEpoch,
-                        ),
-                    )
-                    artistsAddedOrUpdated++
-                }
-            }
-        }
-
-        // Process Artist Deletions
-        for (tomb in incoming.tombstones.filter { it.type == FavoriteSyncType.ARTIST && !it.isFavorite }) {
-            val key = "${FavoriteSyncType.ARTIST}:${tomb.id}"
-            val localTomb = localTombstones[key]
-            if (localTomb != null && localTomb.updatedAt > tomb.updatedAtEpochMs) {
-                continue
-            }
-            val existing = databaseDao.getArtist(tomb.id)
-            val localFavEpoch = existing?.followedAt?.toEpochMillis() ?: 0L
-            if (localFavEpoch > tomb.updatedAtEpochMs) {
-                continue
-            }
-            if (existing != null && existing.followed) {
-                databaseDao.updateFollowed(followed = 0, channelId = tomb.id, followedAt = null)
-                artistsRemoved++
-            }
-            databaseDao.insertFavoriteTombstone(
-                FavoriteSyncTombstoneEntity(
-                    type = FavoriteSyncType.ARTIST,
-                    id = tomb.id,
-                    isFavorite = false,
-                    updatedAt = tomb.updatedAtEpochMs,
-                ),
-            )
-        }
-
-        return FavoritesSyncResult(
-            songsAddedOrUpdated = songsAddedOrUpdated,
-            songsRemoved = songsRemoved,
-            albumsAddedOrUpdated = albumsAddedOrUpdated,
-            albumsRemoved = albumsRemoved,
-            playlistsAddedOrUpdated = playlistsAddedOrUpdated,
-            playlistsRemoved = playlistsRemoved,
-            podcastsAddedOrUpdated = podcastsAddedOrUpdated,
-            podcastsRemoved = podcastsRemoved,
-            artistsAddedOrUpdated = artistsAddedOrUpdated,
-            artistsRemoved = artistsRemoved,
-        )
+        splitIfOversized(b1, maxBytes, outList)
+        splitIfOversized(b2, maxBytes, outList)
     }
+
+    suspend fun mergeBundle(incoming: FavoritesSyncBundle): FavoritesSyncResult =
+        databaseDao.mergeFavoritesBundle(incoming)
 }

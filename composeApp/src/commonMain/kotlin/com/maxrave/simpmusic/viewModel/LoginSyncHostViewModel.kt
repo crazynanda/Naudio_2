@@ -38,6 +38,11 @@ class LoginSyncHostViewModel(
                             repository.expire()
                         }
 
+                        is LoginSyncHostState.FavoritesSynced -> {
+                            delay(SessionTimeout)
+                            repository.expire()
+                        }
+
                         is LoginSyncHostState.Done -> {
                             repository.stop()
                         }

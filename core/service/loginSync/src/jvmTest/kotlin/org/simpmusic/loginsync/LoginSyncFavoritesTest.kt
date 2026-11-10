@@ -47,4 +47,36 @@ class LoginSyncFavoritesTest {
             server.stop()
         }
     }
+
+    @Test
+    fun payloadExceedingMaxBodyBytesIsRejected() = runBlocking {
+        val server = LoginSyncServer(
+            object : LoginSyncServer.Handler {
+                override fun onHello() {}
+                override fun onCancel() {}
+                override suspend fun onPayload(payload: ByteArray): ByteArray = "ok".encodeToByteArray()
+                override suspend fun onFavorites(payload: ByteArray): ByteArray = "ok".encodeToByteArray()
+                override fun onDelivered() {}
+                override fun onRejected(reason: String) {}
+            },
+        )
+        val session = server.start()
+        try {
+            val client = LoginSyncClient()
+            client.connect(session.invite("127.0.0.1"))
+
+            // Payload greater than 4 MB
+            val hugePayload = ByteArray(LoginSyncWire.MAX_BODY_BYTES + 1024)
+            val exception = kotlin.test.assertFailsWith<LoginSyncTransportException> {
+                client.sendFavorites(hugePayload)
+            }
+            assertTrue(
+                exception.message?.contains("exceeds transport limit") == true ||
+                    exception.message?.contains("413") == true ||
+                    exception.message?.contains("FAILED") == true,
+            )
+        } finally {
+            server.stop()
+        }
+    }
 }

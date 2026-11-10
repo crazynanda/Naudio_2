@@ -132,9 +132,16 @@ class LoginSyncClient {
         kind: String,
         plain: ByteArray,
     ): ByteArray {
+        val sealed = LoginSyncCipher.seal(code.key, LoginSyncWire.aad(kind, reply = false), plain)
+        if (sealed.size > LoginSyncWire.MAX_BODY_BYTES) {
+            throw LoginSyncTransportException(
+                LoginSyncTransportException.Kind.FAILED,
+                "payload exceeds transport limit of ${LoginSyncWire.MAX_BODY_BYTES} bytes: ${sealed.size}",
+            )
+        }
         val response =
             http.post("http://$target:${code.port}${LoginSyncWire.path(kind)}") {
-                setBody(LoginSyncCipher.seal(code.key, LoginSyncWire.aad(kind, reply = false), plain))
+                setBody(sealed)
             }
         when (response.status) {
             HttpStatusCode.OK -> {

@@ -3,6 +3,7 @@ package com.maxrave.data.loginsync
 import com.maxrave.data.favoritesync.FavoriteSyncStore
 import com.maxrave.data.favoritesync.FavoritesSyncBundle
 import com.maxrave.data.favoritesync.favoritesSyncJson
+import com.maxrave.domain.data.model.favoritesync.FavoritesSyncResult
 import com.maxrave.domain.data.model.loginsync.LoginSyncHostState
 import com.maxrave.domain.data.model.loginsync.LoginSyncService
 import com.maxrave.domain.data.model.loginsync.NetAddress
@@ -46,11 +47,15 @@ internal class LoginSyncHostRepositoryImpl(
     private var addresses = emptyList<NetAddress>()
     private var selected: NetAddress? = null
     private var restored = emptyList<LoginSyncService>()
+    private var hostBatches: List<FavoritesSyncBundle>? = null
+    private var cumulativeHostMergeResult = FavoritesSyncResult()
 
     override suspend fun start() =
         lifecycle.withLock {
             server.stop()
             generation++
+            hostBatches = null
+            cumulativeHostMergeResult = FavoritesSyncResult()
             _state.value = LoginSyncHostState.Starting
             val found = withContext(Dispatchers.IO) { reachableAddresses() }.map { NetAddress(it.interfaceName, it.ip) }
             if (found.isEmpty()) {
@@ -111,9 +116,41 @@ internal class LoginSyncHostRepositoryImpl(
 
     override suspend fun onFavorites(payload: ByteArray): ByteArray {
         val incomingBundle = favoritesSyncJson.decodeFromString(FavoritesSyncBundle.serializer(), payload.decodeToString())
+
+        // Snapshot desktop's local favorites on the first request of an exchange
+        if (incomingBundle.requestBatchIndex == 0 || hostBatches == null) {
+            hostBatches = favoriteSyncStore.exportBundles()
+            cumulativeHostMergeResult = FavoritesSyncResult()
+        }
+
         val mergeResult = favoriteSyncStore.mergeBundle(incomingBundle)
-        _state.value = LoginSyncHostState.FavoritesSynced(mergeResult)
-        val replyBundle = favoriteSyncStore.exportBundle()
+        cumulativeHostMergeResult =
+            cumulativeHostMergeResult.copy(
+                songsAddedOrUpdated = cumulativeHostMergeResult.songsAddedOrUpdated + mergeResult.songsAddedOrUpdated,
+                songsRemoved = cumulativeHostMergeResult.songsRemoved + mergeResult.songsRemoved,
+                albumsAddedOrUpdated = cumulativeHostMergeResult.albumsAddedOrUpdated + mergeResult.albumsAddedOrUpdated,
+                albumsRemoved = cumulativeHostMergeResult.albumsRemoved + mergeResult.albumsRemoved,
+                playlistsAddedOrUpdated = cumulativeHostMergeResult.playlistsAddedOrUpdated + mergeResult.playlistsAddedOrUpdated,
+                playlistsRemoved = cumulativeHostMergeResult.playlistsRemoved + mergeResult.playlistsRemoved,
+                podcastsAddedOrUpdated = cumulativeHostMergeResult.podcastsAddedOrUpdated + mergeResult.podcastsAddedOrUpdated,
+                podcastsRemoved = cumulativeHostMergeResult.podcastsRemoved + mergeResult.podcastsRemoved,
+                artistsAddedOrUpdated = cumulativeHostMergeResult.artistsAddedOrUpdated + mergeResult.artistsAddedOrUpdated,
+                artistsRemoved = cumulativeHostMergeResult.artistsRemoved + mergeResult.artistsRemoved,
+            )
+        _state.value = LoginSyncHostState.FavoritesSynced(cumulativeHostMergeResult)
+
+        val batches = hostBatches ?: emptyList()
+        val replyBundle =
+            if (incomingBundle.requestBatchIndex in batches.indices) {
+                batches[incomingBundle.requestBatchIndex]
+            } else {
+                FavoritesSyncBundle(
+                    clientTimestamp = kotlin.time.Clock.System.now().toEpochMilliseconds(),
+                    batchIndex = incomingBundle.requestBatchIndex,
+                    batchTotal = maxOf(batches.size, 1),
+                    hasMore = false,
+                )
+            }
         return favoritesSyncJson.encodeToString(FavoritesSyncBundle.serializer(), replyBundle).encodeToByteArray()
     }
 
