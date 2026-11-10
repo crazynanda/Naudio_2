@@ -602,6 +602,9 @@ interface DatabaseDao {
     @Insert(onConflict = OnConflictStrategy.Companion.IGNORE)
     suspend fun insertAlbum(album: AlbumEntity): Long
 
+    @Insert(onConflict = OnConflictStrategy.Companion.REPLACE)
+    suspend fun insertAndReplaceAlbum(album: AlbumEntity): Long
+
     @Query("UPDATE album SET liked = :liked, favoriteAt = :favoriteAt  WHERE browseId = :browseId")
     suspend fun updateAlbumLiked(
         liked: Int,
@@ -1929,6 +1932,12 @@ interface DatabaseDao {
                 )
                 albumsAddedOrUpdated++
             } else {
+                val mergedTracks = if (albumDto.tracks != null) {
+                    (existing.tracks.orEmpty() + albumDto.tracks).distinct()
+                } else {
+                    existing.tracks
+                }
+                insertAndReplaceAlbum(existing.copy(tracks = mergedTracks))
                 val localFavEpoch = existing.favoriteAt.toEpochMillis()
                 if (!existing.liked || albumDto.favoriteAtEpochMs > localFavEpoch) {
                     val newerEpoch = albumDto.favoriteAtEpochMs
@@ -2001,6 +2010,12 @@ interface DatabaseDao {
                 )
                 playlistsAddedOrUpdated++
             } else {
+                val mergedTracks = if (playlistDto.tracks != null) {
+                    (existing.tracks.orEmpty() + playlistDto.tracks).distinct()
+                } else {
+                    existing.tracks
+                }
+                insertAndReplacePlaylist(existing.copy(tracks = mergedTracks))
                 val localFavEpoch = existing.favoriteAt.toEpochMillis()
                 if (!existing.liked || playlistDto.favoriteAtEpochMs > localFavEpoch) {
                     val newerEpoch = playlistDto.favoriteAtEpochMs
@@ -2073,6 +2088,8 @@ interface DatabaseDao {
                 )
                 podcastsAddedOrUpdated++
             } else {
+                val mergedEpisodes = (existing.listEpisodes + podcastDto.listEpisodes).distinct()
+                insertPodcast(existing.copy(listEpisodes = mergedEpisodes))
                 val localFavEpoch = existing.favoriteTime.toEpochMillis()
                 if (!existing.isFavorite || podcastDto.favoriteTimeEpochMs > localFavEpoch) {
                     val newerEpoch = podcastDto.favoriteTimeEpochMs

@@ -44,7 +44,8 @@ class LoginSyncHostViewModel(
                         }
 
                         is LoginSyncHostState.Done -> {
-                            repository.stop()
+                            delay(SessionTimeout)
+                            repository.expire()
                         }
 
                         else -> {}

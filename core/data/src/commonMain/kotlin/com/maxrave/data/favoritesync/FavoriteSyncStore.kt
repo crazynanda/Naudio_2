@@ -3,7 +3,16 @@ package com.maxrave.data.favoritesync
 import DatabaseDao
 import com.maxrave.domain.data.entities.FavoriteSyncTombstoneEntity
 import com.maxrave.domain.data.model.favoritesync.FavoritesSyncResult
+import com.maxrave.domain.data.model.loginsync.LoginSyncException
 import kotlin.time.Clock
+
+class OversizedEntitySyncException(
+    val entityType: String,
+    val entityId: String,
+    val size: Int,
+    val maxBytes: Int,
+    message: String = "Entity '$entityId' of type '$entityType' ($size bytes) exceeds the maximum synchronization size of $maxBytes bytes",
+) : LoginSyncException(Reason.FAILED, message)
 
 internal class FavoriteSyncStore(
     private val databaseDao: DatabaseDao,
@@ -182,41 +191,121 @@ internal class FavoriteSyncStore(
         outList: MutableList<FavoritesSyncBundle>,
     ) {
         val bytes = favoritesSyncJson.encodeToString(FavoritesSyncBundle.serializer(), bundle).encodeToByteArray().size
-        val count =
-            bundle.songs.size + bundle.albums.size + bundle.playlists.size + bundle.podcasts.size + bundle.artists.size + bundle.tombstones.size
-        if (bytes <= maxBytes || count <= 1) {
+        if (bytes <= maxBytes) {
             outList.add(bundle)
             return
         }
 
-        val halfSongs = (bundle.songs.size + 1) / 2
-        val halfAlbums = (bundle.albums.size + 1) / 2
-        val halfPlaylists = (bundle.playlists.size + 1) / 2
-        val halfPodcasts = (bundle.podcasts.size + 1) / 2
-        val halfArtists = (bundle.artists.size + 1) / 2
-        val halfTombstones = (bundle.tombstones.size + 1) / 2
+        val totalRecords =
+            bundle.songs.size + bundle.albums.size + bundle.playlists.size +
+                bundle.podcasts.size + bundle.artists.size + bundle.tombstones.size
 
-        val b1 =
-            bundle.copy(
-                songs = bundle.songs.take(halfSongs),
-                albums = bundle.albums.take(halfAlbums),
-                playlists = bundle.playlists.take(halfPlaylists),
-                podcasts = bundle.podcasts.take(halfPodcasts),
-                artists = bundle.artists.take(halfArtists),
-                tombstones = bundle.tombstones.take(halfTombstones),
-            )
-        val b2 =
-            bundle.copy(
-                songs = bundle.songs.drop(halfSongs),
-                albums = bundle.albums.drop(halfAlbums),
-                playlists = bundle.playlists.drop(halfPlaylists),
-                podcasts = bundle.podcasts.drop(halfPodcasts),
-                artists = bundle.artists.drop(halfArtists),
-                tombstones = bundle.tombstones.drop(halfTombstones),
-            )
+        if (totalRecords > 1) {
+            // Guaranteed progress split: partition totalRecords into two strictly smaller non-empty parts
+            var remainingToTake = totalRecords / 2
 
-        splitIfOversized(b1, maxBytes, outList)
-        splitIfOversized(b2, maxBytes, outList)
+            val takeSongs = minOf(remainingToTake, bundle.songs.size)
+            remainingToTake -= takeSongs
+
+            val takeAlbums = minOf(remainingToTake, bundle.albums.size)
+            remainingToTake -= takeAlbums
+
+            val takePlaylists = minOf(remainingToTake, bundle.playlists.size)
+            remainingToTake -= takePlaylists
+
+            val takePodcasts = minOf(remainingToTake, bundle.podcasts.size)
+            remainingToTake -= takePodcasts
+
+            val takeArtists = minOf(remainingToTake, bundle.artists.size)
+            remainingToTake -= takeArtists
+
+            val takeTombstones = minOf(remainingToTake, bundle.tombstones.size)
+            remainingToTake -= takeTombstones
+
+            val b1 =
+                bundle.copy(
+                    songs = bundle.songs.take(takeSongs),
+                    albums = bundle.albums.take(takeAlbums),
+                    playlists = bundle.playlists.take(takePlaylists),
+                    podcasts = bundle.podcasts.take(takePodcasts),
+                    artists = bundle.artists.take(takeArtists),
+                    tombstones = bundle.tombstones.take(takeTombstones),
+                )
+            val b2 =
+                bundle.copy(
+                    songs = bundle.songs.drop(takeSongs),
+                    albums = bundle.albums.drop(takeAlbums),
+                    playlists = bundle.playlists.drop(takePlaylists),
+                    podcasts = bundle.podcasts.drop(takePodcasts),
+                    artists = bundle.artists.drop(takeArtists),
+                    tombstones = bundle.tombstones.drop(takeTombstones),
+                )
+
+            splitIfOversized(b1, maxBytes, outList)
+            splitIfOversized(b2, maxBytes, outList)
+            return
+        }
+
+        // totalRecords == 1 and bytes > maxBytes: individually oversized entity
+        val fragmented = tryFragmentSingleEntity(bundle)
+        if (fragmented != null) {
+            val (f1, f2) = fragmented
+            splitIfOversized(f1, maxBytes, outList)
+            splitIfOversized(f2, maxBytes, outList)
+            return
+        }
+
+        val (entityType, entityId) = getSingleEntityInfo(bundle)
+        throw OversizedEntitySyncException(
+            entityType = entityType,
+            entityId = entityId,
+            size = bytes,
+            maxBytes = maxBytes,
+        )
+    }
+
+    private fun tryFragmentSingleEntity(bundle: FavoritesSyncBundle): Pair<FavoritesSyncBundle, FavoritesSyncBundle>? {
+        if (bundle.playlists.isNotEmpty()) {
+            val p = bundle.playlists.first()
+            val tracks = p.tracks
+            if (tracks != null && tracks.size > 1) {
+                val half = tracks.size / 2
+                val p1 = p.copy(tracks = tracks.take(half))
+                val p2 = p.copy(tracks = tracks.drop(half))
+                return Pair(bundle.copy(playlists = listOf(p1)), bundle.copy(playlists = listOf(p2)))
+            }
+        }
+        if (bundle.albums.isNotEmpty()) {
+            val a = bundle.albums.first()
+            val tracks = a.tracks
+            if (tracks != null && tracks.size > 1) {
+                val half = tracks.size / 2
+                val a1 = a.copy(tracks = tracks.take(half))
+                val a2 = a.copy(tracks = tracks.drop(half))
+                return Pair(bundle.copy(albums = listOf(a1)), bundle.copy(albums = listOf(a2)))
+            }
+        }
+        if (bundle.podcasts.isNotEmpty()) {
+            val pod = bundle.podcasts.first()
+            val episodes = pod.listEpisodes
+            if (episodes.size > 1) {
+                val half = episodes.size / 2
+                val pod1 = pod.copy(listEpisodes = episodes.take(half))
+                val pod2 = pod.copy(listEpisodes = episodes.drop(half))
+                return Pair(bundle.copy(podcasts = listOf(pod1)), bundle.copy(podcasts = listOf(pod2)))
+            }
+        }
+        return null
+    }
+
+    private fun getSingleEntityInfo(bundle: FavoritesSyncBundle): Pair<String, String> {
+        bundle.songs.firstOrNull()?.let { return Pair("SONG", it.videoId) }
+        bundle.albums.firstOrNull()?.let { return Pair("ALBUM", it.browseId) }
+        bundle.playlists.firstOrNull()?.let { return Pair("PLAYLIST", it.id) }
+        bundle.podcasts.firstOrNull()?.let { return Pair("PODCAST", it.podcastId) }
+        bundle.artists.firstOrNull()?.let { return Pair("ARTIST", it.channelId) }
+        bundle.tombstones.firstOrNull()?.let { return Pair("TOMBSTONE", "${it.type}:${it.id}") }
+        return Pair("UNKNOWN", "unknown")
     }
 
     suspend fun mergeBundle(incoming: FavoritesSyncBundle): FavoritesSyncResult =

@@ -56,6 +56,7 @@ internal class LoginSyncHostRepositoryImpl(
             generation++
             hostBatches = null
             cumulativeHostMergeResult = FavoritesSyncResult()
+            restored = emptyList()
             _state.value = LoginSyncHostState.Starting
             val found = withContext(Dispatchers.IO) { reachableAddresses() }.map { NetAddress(it.interfaceName, it.ip) }
             if (found.isEmpty()) {
@@ -101,7 +102,9 @@ internal class LoginSyncHostRepositoryImpl(
     // LoginSyncServer.Handler — called from the server's request coroutines.
 
     override fun onHello() {
-        _state.value = LoginSyncHostState.Connected
+        if (restored.isEmpty() && cumulativeHostMergeResult.isEmpty) {
+            _state.value = LoginSyncHostState.Connected
+        }
     }
 
     override fun onCancel() {
@@ -137,7 +140,21 @@ internal class LoginSyncHostRepositoryImpl(
                 artistsAddedOrUpdated = cumulativeHostMergeResult.artistsAddedOrUpdated + mergeResult.artistsAddedOrUpdated,
                 artistsRemoved = cumulativeHostMergeResult.artistsRemoved + mergeResult.artistsRemoved,
             )
-        _state.value = LoginSyncHostState.FavoritesSynced(cumulativeHostMergeResult)
+
+        val nowMs = kotlin.time.Clock.System.now().toEpochMilliseconds()
+        _state.value =
+            if (restored.isNotEmpty()) {
+                LoginSyncHostState.Done(
+                    services = restored,
+                    favoritesResult = cumulativeHostMergeResult,
+                    timestamp = nowMs,
+                )
+            } else {
+                LoginSyncHostState.FavoritesSynced(
+                    result = cumulativeHostMergeResult,
+                    timestamp = nowMs,
+                )
+            }
 
         val batches = hostBatches ?: emptyList()
         val replyBundle =
@@ -155,7 +172,12 @@ internal class LoginSyncHostRepositoryImpl(
     }
 
     override fun onDelivered() {
-        _state.value = LoginSyncHostState.Done(restored)
+        _state.value =
+            LoginSyncHostState.Done(
+                services = restored,
+                favoritesResult = cumulativeHostMergeResult.takeUnless { it.isEmpty },
+                timestamp = kotlin.time.Clock.System.now().toEpochMilliseconds(),
+            )
     }
 
     override fun onRejected(reason: String) {

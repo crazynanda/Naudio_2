@@ -27,6 +27,7 @@ import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
@@ -880,5 +881,186 @@ class FavoriteSyncTest {
         assertEquals(0, thirdResult.totalAddedOrUpdated)
         assertEquals(0, thirdResult.totalRemoved)
         assertEquals(30, windowsDb.getDatabaseDao().getAllLikedSongs().size)
+    }
+
+    @Test
+    fun regressionTestOneOversizedSongPlusOneAlbum() = runBlocking {
+        // 1 oversized song (e.g. 2500 bytes) + 1 album (e.g. 2500 bytes)
+        val bigThumb = "x".repeat(2200)
+        val bigDesc = "y".repeat(2200)
+        val song = createSong("oversized_song_1").copy(thumbnails = bigThumb)
+        val album = createAlbum("oversized_album_1").copy(description = bigDesc)
+
+        androidDb.getDatabaseDao().insertSong(song)
+        androidDb.getDatabaseDao().insertAlbum(album)
+
+        // Together, bundle is ~4700 bytes. With maxBytes = 3500, together they exceed maxBytes.
+        // Old implementation had (1+1)/2 = 1 for both, resulting in an infinite recursion.
+        // New implementation partitions totalRecords=2 into b1 (1 song) and b2 (1 album).
+        val bundles = androidSyncStore.exportBundles(maxBytes = 3500)
+        assertEquals(2, bundles.size, "Should split into exactly 2 batches without infinite recursion")
+        assertTrue(bundles[0].songs.size + bundles[0].albums.size == 1)
+        assertTrue(bundles[1].songs.size + bundles[1].albums.size == 1)
+
+        for (b in bundles) {
+            val bytes = favoritesSyncJson.encodeToString(FavoritesSyncBundle.serializer(), b).encodeToByteArray().size
+            assertTrue(bytes <= 3500, "Every batch must be <= maxBytes")
+            windowsSyncStore.mergeBundle(b)
+        }
+
+        // Verify both are restored with zero omissions or duplicates
+        assertEquals(1, windowsDb.getDatabaseDao().getAllLikedSongs().size)
+        assertEquals(1, windowsDb.getDatabaseDao().getAllLikedAlbums().size)
+        assertEquals("oversized_song_1", windowsDb.getDatabaseDao().getAllLikedSongs().first().videoId)
+        assertEquals("oversized_album_1", windowsDb.getDatabaseDao().getAllLikedAlbums().first().browseId)
+    }
+
+    @Test
+    fun regressionTestOneItemInEachOfSeveralEntityCategories() = runBlocking {
+        // 1 Song, 1 Album, 1 Playlist, 1 Podcast, 1 Artist, 1 Tombstone
+        androidDb.getDatabaseDao().insertSong(createSong("multi_s1").copy(title = "Song with padding " + "s".repeat(300)))
+        androidDb.getDatabaseDao().insertAlbum(createAlbum("multi_a1").copy(description = "Album with padding " + "a".repeat(300)))
+        androidDb.getDatabaseDao().insertPlaylist(createPlaylist("multi_p1").copy(description = "Playlist with padding " + "p".repeat(300)))
+        androidDb.getDatabaseDao().insertPodcast(createPodcast("multi_pod1").copy(description = "Podcast with padding " + "d".repeat(300)))
+        androidDb.getDatabaseDao().insertArtist(createArtist("multi_art1").copy(name = "Artist with padding " + "r".repeat(300)))
+        androidDb.getDatabaseDao().insertFavoriteTombstone(
+            FavoriteSyncTombstoneEntity(
+                type = FavoriteSyncType.SONG,
+                id = "deleted_song_1",
+                isFavorite = false,
+                updatedAt = 12345L,
+            ),
+        )
+
+        // All 6 items together are ~3000 bytes. With maxBytes = 1200, it must recursively split.
+        // Old implementation had (1+1)/2 = 1 for all categories, leading to infinite recursion.
+        val bundles = androidSyncStore.exportBundles(maxBytes = 1200)
+        assertTrue(bundles.size >= 2, "Should split across multiple batches")
+
+        var totalSongs = 0
+        var totalAlbums = 0
+        var totalPlaylists = 0
+        var totalPodcasts = 0
+        var totalArtists = 0
+        var totalTombstones = 0
+
+        for (b in bundles) {
+            val bytes = favoritesSyncJson.encodeToString(FavoritesSyncBundle.serializer(), b).encodeToByteArray().size
+            assertTrue(bytes <= 1200, "Every batch must be <= maxBytes: $bytes")
+            totalSongs += b.songs.size
+            totalAlbums += b.albums.size
+            totalPlaylists += b.playlists.size
+            totalPodcasts += b.podcasts.size
+            totalArtists += b.artists.size
+            totalTombstones += b.tombstones.size
+            windowsSyncStore.mergeBundle(b)
+        }
+
+        // Verify zero duplicates and zero omissions
+        assertEquals(1, totalSongs)
+        assertEquals(1, totalAlbums)
+        assertEquals(1, totalPlaylists)
+        assertEquals(1, totalPodcasts)
+        assertEquals(1, totalArtists)
+        assertEquals(1, totalTombstones)
+        assertEquals(1, windowsDb.getDatabaseDao().getAllLikedSongs().size)
+        assertEquals(1, windowsDb.getDatabaseDao().getAllLikedAlbums().size)
+        assertEquals(1, windowsDb.getDatabaseDao().getAllLikedPlaylists().size)
+        assertEquals(1, windowsDb.getDatabaseDao().getAllFavoritePodcasts().size)
+        assertEquals(1, windowsDb.getDatabaseDao().getAllFollowedArtists().size)
+    }
+
+    @Test
+    fun regressionTestSingleEntityExceedingMaxBytes() = runBlocking {
+        // 1 Song exceeding maxBytes
+        val hugeThumbnail = "h".repeat(5000)
+        val hugeSong = createSong("huge_song").copy(thumbnails = hugeThumbnail)
+        androidDb.getDatabaseDao().insertSong(hugeSong)
+
+        // A single indivisible entity exceeding maxBytes must not silently bypass the limit
+        val exception = assertFailsWith<OversizedEntitySyncException> {
+            androidSyncStore.exportBundles(maxBytes = 2500)
+        }
+        assertEquals("SONG", exception.entityType)
+        assertEquals("huge_song", exception.entityId)
+        assertTrue(exception.size > 2500)
+        assertEquals(2500, exception.maxBytes)
+    }
+
+    @Test
+    fun regressionTestLargeArtistMetadataAndPlaylistMetadata() = runBlocking {
+        // Artist with large thumbnails (~1500 bytes)
+        val artist = createArtist("art_large").copy(thumbnails = "https://thumb.art/" + "a".repeat(1200))
+        androidDb.getDatabaseDao().insertArtist(artist)
+
+        // Playlist with 150 tracks (~4500 bytes)
+        val trackList = (1..150).map { "track_video_id_$it" }
+        val playlist = createPlaylist("pl_large").copy(
+            tracks = trackList,
+            description = "Playlist with many tracks",
+        )
+        androidDb.getDatabaseDao().insertPlaylist(playlist)
+
+        // Set maxBytes = 2000.
+        // The playlist exceeds maxBytes and its tracks get fragmented across multiple bundles.
+        // The artist fits within a bundle.
+        val bundles = androidSyncStore.exportBundles(maxBytes = 2000)
+        assertTrue(bundles.size >= 3, "Expected at least 3 bundles due to fragmentation, got ${bundles.size}")
+
+        for (b in bundles) {
+            val bytes = favoritesSyncJson.encodeToString(FavoritesSyncBundle.serializer(), b).encodeToByteArray().size
+            assertTrue(bytes <= 2000, "Every fragmented bundle must be <= maxBytes: $bytes")
+            windowsSyncStore.mergeBundle(b)
+        }
+
+        // Verify Windows received the artist
+        val restoredArtist = windowsDb.getDatabaseDao().getAllFollowedArtists().find { it.channelId == "art_large" }
+        assertNotNull(restoredArtist)
+        assertEquals(artist.thumbnails, restoredArtist.thumbnails)
+
+        // Verify Windows received the playlist with all 150 tracks merged completely without loss
+        val restoredPlaylist = windowsDb.getDatabaseDao().getPlaylist("pl_large")
+        assertNotNull(restoredPlaylist)
+        assertEquals(150, restoredPlaylist.tracks?.size)
+        assertEquals(trackList, restoredPlaylist.tracks)
+    }
+
+    @Test
+    fun regressionTestNormalMultiCategoryBatching() = runBlocking {
+        // 5 of each category (30 total items)
+        for (i in 1..5) {
+            androidDb.getDatabaseDao().insertSong(createSong("norm_s_$i"))
+            androidDb.getDatabaseDao().insertAlbum(createAlbum("norm_a_$i"))
+            androidDb.getDatabaseDao().insertPlaylist(createPlaylist("norm_p_$i"))
+            androidDb.getDatabaseDao().insertPodcast(createPodcast("norm_pod_$i"))
+            androidDb.getDatabaseDao().insertArtist(createArtist("norm_art_$i"))
+            androidDb.getDatabaseDao().insertFavoriteTombstone(
+                FavoriteSyncTombstoneEntity(
+                    type = FavoriteSyncType.SONG,
+                    id = "norm_del_$i",
+                    isFavorite = false,
+                    updatedAt = 1000L + i,
+                ),
+            )
+        }
+
+        // chunkSize = 10 -> exactly 3 batches of 10 items
+        val bundles = androidSyncStore.exportBundles(chunkSize = 10, maxBytes = 100_000)
+        assertEquals(3, bundles.size, "30 items with chunkSize=10 should yield exactly 3 batches")
+
+        var totalCount = 0
+        for (b in bundles) {
+            val count = b.songs.size + b.albums.size + b.playlists.size + b.podcasts.size + b.artists.size + b.tombstones.size
+            assertTrue(count <= 10, "Batch count must be <= 10, was $count")
+            totalCount += count
+            windowsSyncStore.mergeBundle(b)
+        }
+        assertEquals(30, totalCount)
+
+        assertEquals(5, windowsDb.getDatabaseDao().getAllLikedSongs().size)
+        assertEquals(5, windowsDb.getDatabaseDao().getAllLikedAlbums().size)
+        assertEquals(5, windowsDb.getDatabaseDao().getAllLikedPlaylists().size)
+        assertEquals(5, windowsDb.getDatabaseDao().getAllFavoritePodcasts().size)
+        assertEquals(5, windowsDb.getDatabaseDao().getAllFollowedArtists().size)
     }
 }

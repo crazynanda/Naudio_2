@@ -40,6 +40,7 @@ sealed interface LoginSyncHostState {
     data class Done(
         val services: List<LoginSyncService>,
         val favoritesResult: FavoritesSyncResult? = null,
+        val timestamp: Long = kotlin.time.Clock.System.now().toEpochMilliseconds(),
     ) : LoginSyncHostState
 
     data class FavoritesSynced(
@@ -61,7 +62,7 @@ sealed interface LoginSyncHostState {
     ) : LoginSyncHostState
 }
 
-class LoginSyncException(
+open class LoginSyncException(
     val reason: Reason,
     val detail: String?,
 ) : Exception(detail) {

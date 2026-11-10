@@ -66,7 +66,7 @@ class LoginSyncServer(
     private var key = ByteArray(0)
 
     @Volatile
-    private var delivered = false
+    private var loginPayloadDelivered = false
 
     private val device by lazy { localDeviceName() }
 
@@ -74,7 +74,7 @@ class LoginSyncServer(
     suspend fun start(): Session {
         stop()
         key = LoginSyncCipher.newKey()
-        delivered = false
+        loginPayloadDelivered = false
         val http =
             embeddedServer(CIO, port = 0, host = "0.0.0.0") {
                 routing {
@@ -101,10 +101,13 @@ class LoginSyncServer(
         call: ApplicationCall,
         kind: String,
     ) {
-        // A spent session answers nothing: its key has done its one job.
-        if (delivered) return call.respond(HttpStatusCode.Gone)
         if ((call.request.contentLength() ?: 0) > LoginSyncWire.MAX_BODY_BYTES) {
-            return reject(call, kind, HttpStatusCode.PayloadTooLarge, "the sign-ins were larger than ${LoginSyncWire.MAX_BODY_BYTES / 1024 / 1024} MB")
+            return reject(call, kind, HttpStatusCode.PayloadTooLarge, "the request was larger than ${LoginSyncWire.MAX_BODY_BYTES / 1024 / 1024} MB")
+        }
+        // Login credentials must remain a one-time operation and cannot be transferred repeatedly.
+        // Favorites synchronization remains available during the active session.
+        if (kind == LoginSyncWire.PAYLOAD && loginPayloadDelivered) {
+            return reject(call, kind, HttpStatusCode.Gone, "login credentials have already been transferred for this session")
         }
         try {
             val plain =
@@ -133,7 +136,7 @@ class LoginSyncServer(
             call.respondBytes(LoginSyncCipher.seal(key, LoginSyncWire.aad(kind, reply = true), reply), ContentType.Application.OctetStream)
             if (kind == LoginSyncWire.PAYLOAD) {
                 // Only once the phone has its answer.
-                delivered = true
+                loginPayloadDelivered = true
                 handler.onDelivered()
             }
         } catch (e: Exception) {

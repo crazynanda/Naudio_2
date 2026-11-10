@@ -128,7 +128,23 @@ actual fun LoginSyncDialog(onDismiss: () -> Unit) {
                     }
 
                     is LoginSyncHostState.Done -> {
-                        Text(text = stringResource(Res.string.login_sync_received, s.services.joinToString { it.label }))
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            Text(text = stringResource(Res.string.login_sync_received, s.services.joinToString { it.label }), textAlign = TextAlign.Center)
+                            val fav = s.favoritesResult
+                            if (fav != null && !fav.isEmpty) {
+                                Text(
+                                    text = stringResource(
+                                        Res.string.login_sync_favorites_synced,
+                                        fav.totalAddedOrUpdated,
+                                        fav.totalRemoved,
+                                    ),
+                                    textAlign = TextAlign.Center,
+                                )
+                            }
+                        }
                     }
 
                     is LoginSyncHostState.FavoritesSynced -> {
