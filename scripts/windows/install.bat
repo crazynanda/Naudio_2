@@ -43,9 +43,10 @@ if %errorlevel% neq 0 (
 REM --- 3. Find the bundled MSIX ----------------------------------------------
 set "MSIX="
 for %%f in ("%~dp0simpmusic-*.msix") do set "MSIX=%%f"
+if not defined MSIX for %%f in ("%~dp0*.msix") do set "MSIX=%%f"
 
 if not defined MSIX (
-    echo [ERROR] No simpmusic-*.msix found in this folder.
+    echo [ERROR] No MSIX package found in this folder.
     pause
     exit /b 1
 )
@@ -72,7 +73,12 @@ if %errorlevel% neq 0 (
 REM --- 4. Launch app ---------------------------------------------------------
 echo.
 echo [3/3] Launching Naudio ...
-start "" "shell:appsFolder\Simpmusic_ejp2bhxmz1qq6!Simpmusic"
+for /f "usebackq tokens=*" %%i in (`powershell -NoProfile -Command "(Get-AppxPackage -Name 'Simpmusic' | Select-Object -First 1).PackageFamilyName"`) do set "PFN=%%i"
+if defined PFN (
+    start "" "shell:appsFolder\%PFN%!Simpmusic"
+) else (
+    start "" "shell:appsFolder\Simpmusic_yhxqqzq5790tp!Simpmusic"
+)
 
 echo.
 echo Naudio installed successfully.
