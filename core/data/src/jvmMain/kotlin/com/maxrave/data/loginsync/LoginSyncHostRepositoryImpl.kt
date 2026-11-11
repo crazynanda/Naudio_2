@@ -123,17 +123,19 @@ internal class LoginSyncHostRepositoryImpl(
         }
     }
 
-    override fun onCancel() {
-        if (!exchangeInProgress && (favoritesCompleted || loginCompleted)) {
-            // A CANCEL received after a successfully completed favorites exchange or login transfer
-            // must not erase the completed state.
-            return
-        }
-        hostBatches = null
-        exchangeInProgress = false
-        if (!favoritesCompleted && !loginCompleted) {
-            cumulativeHostMergeResult = FavoritesSyncResult()
-            _state.value = waiting()
+    override suspend fun onCancel() {
+        favoritesMutex.withLock {
+            if (!exchangeInProgress && (favoritesCompleted || loginCompleted)) {
+                // A CANCEL received after a successfully completed favorites exchange or login transfer
+                // must not erase the completed state.
+                return
+            }
+            hostBatches = null
+            exchangeInProgress = false
+            if (!favoritesCompleted && !loginCompleted) {
+                cumulativeHostMergeResult = FavoritesSyncResult()
+                _state.value = waiting()
+            }
         }
     }
 

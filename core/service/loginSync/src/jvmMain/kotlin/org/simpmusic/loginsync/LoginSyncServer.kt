@@ -41,7 +41,7 @@ class LoginSyncServer(
         fun onHello()
 
         /** The phone backed out before sending. */
-        fun onCancel()
+        suspend fun onCancel()
 
         /** The phone's payload; the return value is sealed back as the reply. Throwing rejects it. */
         suspend fun onPayload(payload: ByteArray): ByteArray
@@ -68,6 +68,7 @@ class LoginSyncServer(
     private var key = ByteArray(0)
 
     private var loginPayloadMutex = Mutex()
+    private var favoritesMutex = Mutex()
 
     @Volatile
     private var loginPayloadDelivered = false
@@ -79,6 +80,7 @@ class LoginSyncServer(
         stop()
         key = LoginSyncCipher.newKey()
         loginPayloadMutex = Mutex()
+        favoritesMutex = Mutex()
         loginPayloadDelivered = false
         val http =
             embeddedServer(CIO, port = 0, host = "0.0.0.0") {
@@ -109,39 +111,68 @@ class LoginSyncServer(
         if ((call.request.contentLength() ?: 0) > LoginSyncWire.MAX_BODY_BYTES) {
             return reject(call, kind, HttpStatusCode.PayloadTooLarge, "the request was larger than ${LoginSyncWire.MAX_BODY_BYTES / 1024 / 1024} MB")
         }
-        // Login credentials must remain a one-time operation and cannot be transferred repeatedly.
-        if (kind == LoginSyncWire.PAYLOAD) {
-            handleLoginPayload(call)
-            return
-        }
 
-        // Favorites synchronization, hello, and cancel remain concurrently available during the active session.
+        when (kind) {
+            LoginSyncWire.PAYLOAD -> handleLoginPayload(call)
+            LoginSyncWire.FAVORITES -> handleFavorites(call)
+            LoginSyncWire.CANCEL -> handleCancel(call)
+            LoginSyncWire.HELLO -> handleHello(call)
+            else -> reject(call, kind, HttpStatusCode.NotFound, "unknown request kind: $kind")
+        }
+    }
+
+    private suspend fun handleHello(call: ApplicationCall) {
+        val kind = LoginSyncWire.HELLO
         try {
             val plain =
                 LoginSyncCipher.open(key, LoginSyncWire.aad(kind, reply = false), call.receive<ByteArray>())
                     ?: return reject(call, kind, HttpStatusCode.Forbidden, "the phone used a different code")
-            val reply =
-                when (kind) {
-                    LoginSyncWire.HELLO -> {
-                        handler.onHello()
-                        LoginSyncWire.json.encodeToString(DeviceName.serializer(), withContext(Dispatchers.IO) { device }).encodeToByteArray()
-                    }
-
-                    LoginSyncWire.FAVORITES -> {
-                        handler.onFavorites(plain)
-                    }
-
-                    else -> {
-                        handler.onCancel()
-                        "{}".encodeToByteArray()
-                    }
-                }
+            handler.onHello()
+            val reply = LoginSyncWire.json.encodeToString(DeviceName.serializer(), withContext(Dispatchers.IO) { device }).encodeToByteArray()
             call.respondBytes(LoginSyncCipher.seal(key, LoginSyncWire.aad(kind, reply = true), reply), ContentType.Application.OctetStream)
         } catch (e: Exception) {
             if (e is CancellationException) throw e
             Logger.e(TAG, "handle $kind", e)
-            handler.onRejected(e.message ?: e.describe())
             call.respond(HttpStatusCode.InternalServerError)
+        }
+    }
+
+    private suspend fun handleFavorites(call: ApplicationCall) {
+        val kind = LoginSyncWire.FAVORITES
+        favoritesMutex.withLock {
+            try {
+                val plain =
+                    LoginSyncCipher.open(key, LoginSyncWire.aad(kind, reply = false), call.receive<ByteArray>())
+                        ?: return reject(call, kind, HttpStatusCode.Forbidden, "the phone used a different code")
+                val reply = handler.onFavorites(plain)
+                call.respondBytes(LoginSyncCipher.seal(key, LoginSyncWire.aad(kind, reply = true), reply), ContentType.Application.OctetStream)
+            } catch (e: Exception) {
+                if (e is CancellationException) throw e
+                Logger.e(TAG, "handle $kind", e)
+                handler.onRejected(e.message ?: e.describe())
+                call.respond(HttpStatusCode.InternalServerError)
+            }
+        }
+    }
+
+    private suspend fun handleCancel(call: ApplicationCall) {
+        val kind = LoginSyncWire.CANCEL
+        // Coordinate with active operations: acquire favoritesMutex first, then loginPayloadMutex
+        favoritesMutex.withLock {
+            loginPayloadMutex.withLock {
+                try {
+                    val plain =
+                        LoginSyncCipher.open(key, LoginSyncWire.aad(kind, reply = false), call.receive<ByteArray>())
+                            ?: return reject(call, kind, HttpStatusCode.Forbidden, "the phone used a different code")
+                    handler.onCancel()
+                    val reply = "{}".encodeToByteArray()
+                    call.respondBytes(LoginSyncCipher.seal(key, LoginSyncWire.aad(kind, reply = true), reply), ContentType.Application.OctetStream)
+                } catch (e: Exception) {
+                    if (e is CancellationException) throw e
+                    Logger.e(TAG, "handle $kind", e)
+                    call.respond(HttpStatusCode.InternalServerError)
+                }
+            }
         }
     }
 

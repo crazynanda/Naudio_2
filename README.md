@@ -134,7 +134,7 @@ Naudio for Windows is distributed as a modern 64-bit application package (MSIX) 
 ### Option A: Standalone Setup (Recommended)
 Download **`Naudio-Setup-x64.exe`** from the [Latest Release](https://github.com/crazynanda/Naudio_2/releases/latest):
 1. Run `Naudio-Setup-x64.exe`.
-2. If Windows SmartScreen displays *"Windows protected your PC"* (common for open-source software without an EV certificate), click **More info** &rarr; **Run anyway**.
+2. If Windows SmartScreen displays *"Windows protected your PC"* (common for newly released or signed applications until Microsoft Defender establishes download reputation over time), click **More info** &rarr; **Run anyway**.
 3. Accept the Administrator prompt so the installer can import the application signing certificate into `LocalMachine\TrustedPeople`.
 4. The wizard will automatically install or update Naudio in place (preserving all your existing favorites, database, and settings) and launch the app.
 

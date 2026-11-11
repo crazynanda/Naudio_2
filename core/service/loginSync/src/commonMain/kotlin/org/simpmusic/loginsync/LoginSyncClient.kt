@@ -126,6 +126,17 @@ class LoginSyncClient {
         }
     }
 
+    /**
+     * Synchronously sends the cancel request and waits for the server to process it.
+     */
+    suspend fun cancelSync() {
+        val code = invite ?: return
+        val target = host ?: return
+        invite = null
+        host = null
+        call(code, target, LoginSyncWire.CANCEL, EMPTY)
+    }
+
     private suspend fun call(
         code: LoginSyncInvite,
         target: String,

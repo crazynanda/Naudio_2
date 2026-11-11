@@ -50,7 +50,7 @@ Source: "..\..\composeApp\icon\circle_app_icon.ico"; DestDir: "{app}"; Flags: ig
 Filename: "{sys}\explorer.exe"; Parameters: "shell:appsFolder\{code:GetInstalledAumid}"; Description: "{cm:LaunchProgram,Naudio}"; Flags: nowait postinstall skipifsilent
 
 [UninstallRun]
-Filename: "powershell.exe"; Parameters: "-NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ""Get-AppxPackage -Name 'Simpmusic' | Remove-AppxPackage -ErrorAction SilentlyContinue"""; Flags: runhidden; RunOnceId: "UninstallNaudioMsixPackage"
+Filename: "powershell.exe"; Parameters: "-NoProfile -NonInteractive -ExecutionPolicy Bypass -Command ""$pfn = 'Simpmusic_yhxqqzq5790tp'; $pub = 'CN=Naudio'; Get-AppxPackage -Name 'Simpmusic' | Where-Object {{ $_.Publisher -eq $pub -and $_.PackageFamilyName -eq $pfn } | Remove-AppxPackage -ErrorAction SilentlyContinue; try {{ Get-AppxPackage -Name 'Simpmusic' -AllUsers -ErrorAction SilentlyContinue | Where-Object {{ $_.Publisher -eq $pub -and $_.PackageFamilyName -eq $pfn } | ForEach-Object {{ Remove-AppxPackage -AllUsers -Package $_.PackageFullName -ErrorAction SilentlyContinue } } catch {{}}"""; Flags: runhidden; RunOnceId: "UninstallNaudioMsixPackage"
 
 [Code]
 var
@@ -133,25 +133,33 @@ begin
     // -ForceUpdateFromAnyVersion ensures in-place upgrade preserving user data
     PsCommand :=
       '$ErrorActionPreference = ''Stop''; ' +
+      '$targetPfn = ''Simpmusic_yhxqqzq5790tp''; ' +
+      '$targetPub = ''CN=Naudio''; ' +
       'try { ' +
       '  Add-AppxPackage -Path ''' + MsixFile + ''' -ForceApplicationShutdown -ForceUpdateFromAnyVersion; ' +
-      '  $pfn = (Get-AppxPackage -Name ''Simpmusic'' | Select-Object -First 1).PackageFamilyName; ' +
-      '  if ($pfn) { [System.IO.File]::WriteAllText(''' + AumidLog + ''', ($pfn + ''!Simpmusic'')); } ' +
-      '  exit 0; ' +
       '} catch { ' +
-      '  $firstErr = $_.Exception.Message; ' +
-      '  try { ' +
-      '    Get-AppxPackage -Name ''Simpmusic'' | Remove-AppxPackage -ErrorAction SilentlyContinue; ' +
-      '    Add-AppxPackage -Path ''' + MsixFile + ''' -ForceApplicationShutdown; ' +
-      '    $pfn = (Get-AppxPackage -Name ''Simpmusic'' | Select-Object -First 1).PackageFamilyName; ' +
-      '    if ($pfn) { [System.IO.File]::WriteAllText(''' + AumidLog + ''', ($pfn + ''!Simpmusic'')); } ' +
-      '    exit 0; ' +
-      '  } catch { ' +
-      '    $msg = ''In-place update failed: '' + $firstErr + ''`nRe-installation failed: '' + $_.Exception.Message; ' +
-      '    [System.IO.File]::WriteAllText(''' + LogFile + ''', $msg); ' +
-      '    exit 1; ' +
+      '  $err = $_.Exception.Message; ' +
+      '  $existing = Get-AppxPackage -Name ''Simpmusic'' | Select-Object -First 1; ' +
+      '  $msg = ''Add-AppxPackage failed: '' + $err; ' +
+      '  if ($existing) { ' +
+      '    $msg += ''`n[INFO] Existing installation preserved: '' + $existing.PackageFullName; ' +
+      '    if ($existing.Publisher -ne $targetPub) { ' +
+      '      $msg += ''`n[INFO] Publisher mismatch: existing has '' + $existing.Publisher + '' while installer packages '' + $targetPub; ' +
+      '    } ' +
       '  } ' +
-      '}';
+      '  [System.IO.File]::WriteAllText(''' + LogFile + ''', $msg); ' +
+      '  exit 1; ' +
+      '}; ' +
+      '$installed = Get-AppxPackage -Name ''Simpmusic'' | Where-Object { $_.Publisher -eq $targetPub -and $_.PackageFamilyName -eq $targetPfn } | Sort-Object -Property { [version]$_.Version } -Descending | Select-Object -First 1; ' +
+      'if (-not $installed) { ' +
+      '  [System.IO.File]::WriteAllText(''' + LogFile + ''', ''Verification failed: Naudio package was not found after installation.''); ' +
+      '  exit 1; ' +
+      '}; ' +
+      'try { ' +
+      '  Get-AppxPackage -Name ''Simpmusic'' | Where-Object { $_.PackageFamilyName -ne $targetPfn } | Remove-AppxPackage -ErrorAction SilentlyContinue; ' +
+      '} catch {}; ' +
+      '[System.IO.File]::WriteAllText(''' + AumidLog + ''', ($installed.PackageFamilyName + ''!Simpmusic'')); ' +
+      'exit 0;';
 
     ResultCode := -1;
     if not Exec('powershell.exe', '-NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "' + PsCommand + '"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode) or (ResultCode <> 0) then

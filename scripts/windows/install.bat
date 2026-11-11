@@ -54,18 +54,42 @@ if not defined MSIX (
 echo.
 echo [2/3] Installing/updating MSIX: "%MSIX%"
 REM -ForceUpdateFromAnyVersion overwrites an existing install in place (keeps app
-REM data) even when the version is identical, so no manual uninstall is needed.
-REM If that still fails (e.g. signing publisher changed), fall back to removing
-REM the old package and doing a clean install.
+REM data) even when the version is identical.
+REM Never remove existing packages on error; old working installations are retained.
 powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-    "try { Add-AppxPackage -Path '%MSIX%' -ForceApplicationShutdown -ForceUpdateFromAnyVersion -ErrorAction Stop; exit 0 } catch { Write-Host 'In-place update failed; removing existing Naudio and reinstalling...'; Get-AppxPackage -Name 'Simpmusic' | Remove-AppxPackage -ErrorAction SilentlyContinue; try { Add-AppxPackage -Path '%MSIX%' -ForceApplicationShutdown -ErrorAction Stop; exit 0 } catch { Write-Host $_; exit 1 } }"
+    "$ErrorActionPreference = 'Stop'; " ^
+    "$targetPfn = 'Simpmusic_yhxqqzq5790tp'; " ^
+    "$targetPub = 'CN=Naudio'; " ^
+    "try { " ^
+    "  Add-AppxPackage -Path '%MSIX%' -ForceApplicationShutdown -ForceUpdateFromAnyVersion; " ^
+    "} catch { " ^
+    "  Write-Host '[ERROR] Add-AppxPackage failed:' $_.Exception.Message; " ^
+    "  $existing = Get-AppxPackage -Name 'Simpmusic' | Select-Object -First 1; " ^
+    "  if ($existing) { " ^
+    "    Write-Host ('[INFO] Existing installation preserved: ' + $existing.PackageFullName); " ^
+    "    if ($existing.Publisher -ne $targetPub) { " ^
+    "      Write-Host ('[INFO] Publisher mismatch: existing has ' + $existing.Publisher + ' while package has ' + $targetPub); " ^
+    "    } " ^
+    "  } " ^
+    "  exit 1; " ^
+    "}; " ^
+    "$installed = Get-AppxPackage -Name 'Simpmusic' | Where-Object { $_.Publisher -eq $targetPub -and $_.PackageFamilyName -eq $targetPfn } | Sort-Object -Property { [version]$_.Version } -Descending | Select-Object -First 1; " ^
+    "if (-not $installed) { " ^
+    "  Write-Host '[ERROR] Verification failed: Naudio package was not found after installation.'; " ^
+    "  exit 1; " ^
+    "}; " ^
+    "try { " ^
+    "  Get-AppxPackage -Name 'Simpmusic' | Where-Object { $_.PackageFamilyName -ne $targetPfn } | Remove-AppxPackage -ErrorAction SilentlyContinue; " ^
+    "} catch {}; " ^
+    "exit 0"
 
 if %errorlevel% neq 0 (
     echo.
-    echo [ERROR] Add-AppxPackage failed. Common fixes:
+    echo [ERROR] Naudio installation failed. Any previous installation was left untouched.
+    echo Common fixes:
     echo   - Enable 'Install apps from any source, including loose files'
     echo     ^(Settings -^> Privacy ^& security -^> For developers^)
-    echo   - Restart Windows and run install.bat again
+    echo   - Check Windows Event Viewer -^> Applications and Services Logs -^> Microsoft -^> Windows -^> AppxPackagingOM
     pause
     exit /b 1
 )
@@ -73,7 +97,7 @@ if %errorlevel% neq 0 (
 REM --- 4. Launch app ---------------------------------------------------------
 echo.
 echo [3/3] Launching Naudio ...
-for /f "usebackq tokens=*" %%i in (`powershell -NoProfile -Command "(Get-AppxPackage -Name 'Simpmusic' | Select-Object -First 1).PackageFamilyName"`) do set "PFN=%%i"
+for /f "usebackq tokens=*" %%i in (`powershell -NoProfile -Command "(Get-AppxPackage -Name 'Simpmusic' | Where-Object { $_.Publisher -eq 'CN=Naudio' -and $_.PackageFamilyName -eq 'Simpmusic_yhxqqzq5790tp' } | Sort-Object -Property { [version]$_.Version } -Descending | Select-Object -First 1).PackageFamilyName"`) do set "PFN=%%i"
 if defined PFN (
     start "" "shell:appsFolder\%PFN%!Simpmusic"
 ) else (

@@ -20,7 +20,7 @@ class LoginSyncFavoritesTest {
         val server = LoginSyncServer(
             object : LoginSyncServer.Handler {
                 override fun onHello() {}
-                override fun onCancel() {}
+                override suspend fun onCancel() {}
                 override suspend fun onPayload(payload: ByteArray): ByteArray = "logins_ok".encodeToByteArray()
                 override suspend fun onFavorites(payload: ByteArray): ByteArray {
                     serverReceived = payload.decodeToString()
@@ -59,7 +59,7 @@ class LoginSyncFavoritesTest {
         val server = LoginSyncServer(
             object : LoginSyncServer.Handler {
                 override fun onHello() {}
-                override fun onCancel() {}
+                override suspend fun onCancel() {}
                 override suspend fun onPayload(payload: ByteArray): ByteArray = "ok".encodeToByteArray()
                 override suspend fun onFavorites(payload: ByteArray): ByteArray = "ok".encodeToByteArray()
                 override fun onDelivered() {}
@@ -93,7 +93,7 @@ class LoginSyncFavoritesTest {
         val server = LoginSyncServer(
             object : LoginSyncServer.Handler {
                 override fun onHello() { events += "hello" }
-                override fun onCancel() { events += "cancel" }
+                override suspend fun onCancel() { events += "cancel" }
                 override suspend fun onPayload(payload: ByteArray): ByteArray {
                     events += "payload:${payload.decodeToString()}"
                     return "ack_logins".encodeToByteArray()
@@ -157,7 +157,7 @@ class LoginSyncFavoritesTest {
         val server = LoginSyncServer(
             object : LoginSyncServer.Handler {
                 override fun onHello() {}
-                override fun onCancel() {}
+                override suspend fun onCancel() {}
                 override suspend fun onPayload(payload: ByteArray): ByteArray = "logins".encodeToByteArray()
                 override suspend fun onFavorites(payload: ByteArray): ByteArray {
                     favCount++
@@ -200,7 +200,7 @@ class LoginSyncFavoritesTest {
         val server = LoginSyncServer(
             object : LoginSyncServer.Handler {
                 override fun onHello() {}
-                override fun onCancel() {}
+                override suspend fun onCancel() {}
                 override suspend fun onPayload(payload: ByteArray): ByteArray = "ok_login".encodeToByteArray()
                 override suspend fun onFavorites(payload: ByteArray): ByteArray = "ok_fav".encodeToByteArray()
                 override fun onDelivered() { loginsDelivered = true }
@@ -241,7 +241,7 @@ class LoginSyncFavoritesTest {
         val server = LoginSyncServer(
             object : LoginSyncServer.Handler {
                 override fun onHello() {}
-                override fun onCancel() {}
+                override suspend fun onCancel() {}
                 override suspend fun onPayload(payload: ByteArray): ByteArray {
                     payloadCount.incrementAndGet()
                     delay(100) // Ensure concurrent overlap
@@ -301,7 +301,7 @@ class LoginSyncFavoritesTest {
         val server = LoginSyncServer(
             object : LoginSyncServer.Handler {
                 override fun onHello() {}
-                override fun onCancel() {}
+                override suspend fun onCancel() {}
                 override suspend fun onPayload(payload: ByteArray): ByteArray {
                     attempts++
                     if (attempts == 1) {
@@ -350,7 +350,7 @@ class LoginSyncFavoritesTest {
         val server = LoginSyncServer(
             object : LoginSyncServer.Handler {
                 override fun onHello() {}
-                override fun onCancel() {}
+                override suspend fun onCancel() {}
                 override suspend fun onPayload(payload: ByteArray): ByteArray {
                     loginStarted.complete(Unit)
                     canCompleteLogin.await()

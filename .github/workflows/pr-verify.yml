@@ -1,0 +1,134 @@
+name: PR Verification
+
+on:
+  pull_request:
+    branches:
+      - main
+      - dev
+  push:
+    branches:
+      - feature/favorites-sync
+
+jobs:
+  verify-builds-and-tests:
+    name: Verify Builds and Tests (Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: 'recursive'
+
+      - name: Check git diff formatting
+        run: git diff --check
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: 21
+          distribution: 'microsoft'
+          cache: 'gradle'
+
+      - name: Configure local build properties
+        run: |
+          echo "isFullBuild=true" >> ./gradle.properties
+          echo "SENTRY_DSN=${{ secrets.SENTRY_DSN }}" > ./local.properties
+          echo "SENTRY_AUTH_TOKEN=${{ secrets.SENTRY_AUTH_TOKEN }}" >> ./local.properties
+          echo "LASTFM_API_KEY=${{ secrets.LASTFM_API_KEY }}" >> ./local.properties
+          echo "LASTFM_SECRET=${{ secrets.LASTFM_SECRET }}" >> ./local.properties
+
+      - name: Run Gradle tests and compilation checks
+        run: |
+          ./gradlew \
+            :loginSync:jvmTest \
+            :data:jvmTest \
+            :composeApp:compileKotlinJvm \
+            :desktopApp:compileKotlinJvm \
+            :androidApp:compileDebugKotlin \
+            --no-configuration-cache
+
+  verify-windows-installer:
+    name: Verify Windows Installer Compilation & Packaging
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: 'recursive'
+
+      - name: Read app version from libs.versions.toml
+        id: version
+        run: |
+          $ver = (Select-String -Path gradle/libs.versions.toml -Pattern '^version-name\s*=\s*"([^"]+)"').Matches.Groups[1].Value
+          if (-not $ver) {
+            Write-Error "Failed to extract version-name from gradle/libs.versions.toml"
+            exit 1
+          }
+          Write-Host "App version: $ver"
+          "version=$ver" >> $env:GITHUB_OUTPUT
+
+      - name: Install Inno Setup
+        run: |
+          choco install innosetup --version=6.7.1 -y --no-progress
+          "C:\Program Files (x86)\Inno Setup 6" >> $env:GITHUB_PATH
+
+      - name: Stage test package assets for installer verification
+        run: |
+          New-Item -ItemType Directory -Path "test-stage" -Force | Out-Null
+          # Create self-signed test cert matching CN=Naudio
+          $cert = New-SelfSignedCertificate -Subject "CN=Naudio" -CertStoreLocation "Cert:\CurrentUser\My" -Type CodeSigningCert
+          $certBytes = $cert.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Cert)
+          [System.IO.File]::WriteAllBytes("test-stage/simpmusic.crt", $certBytes)
+          # Create dummy test MSIX file
+          [System.IO.File]::WriteAllBytes("test-stage/simpmusic-2.3.4.x64.msix", [byte[]](1..1024))
+          Write-Host "Staged test assets in test-stage/"
+          Get-ChildItem test-stage/
+
+      - name: Compile Inno Setup EXE installer (Naudio-Setup-x64.exe)
+        run: |
+          $appVer = "${{ steps.version.outputs.version }}"
+          $sourceDir = (Resolve-Path "test-stage").Path
+          New-Item -ItemType Directory -Path "dist" -Force | Out-Null
+          $outputDir = (Resolve-Path "dist").Path
+
+          Write-Host "Compiling scripts/windows/naudio-installer.iss..."
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DAppVersion="$appVer" /DSourceDir="$sourceDir" /DOutputDir="$outputDir" "scripts/windows/naudio-installer.iss"
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "ISCC failed with exit code $LASTEXITCODE"
+            exit 1
+          }
+
+          $exe = Get-Item "dist/Naudio-Setup-x64.exe"
+          if (-not $exe -or $exe.Length -eq 0) {
+            Write-Error "Naudio-Setup-x64.exe is missing or empty!"
+            exit 1
+          }
+          Write-Host "Verified Naudio-Setup-x64.exe existence: $($exe.FullName) ($($exe.Length) bytes)"
+
+      - name: Verify fallback ZIP installer packaging and contents
+        run: |
+          New-Item -ItemType Directory -Path "installers" -Force | Out-Null
+          $zipPath = (Resolve-Path "installers").Path + "\Naudio-Windows-Installer.zip"
+          Compress-Archive -Path "scripts/windows/install.bat", "test-stage/simpmusic.crt", "test-stage/simpmusic-2.3.4.x64.msix" -DestinationPath $zipPath -Force
+
+          $zipItem = Get-Item $zipPath
+          if (-not $zipItem -or $zipItem.Length -eq 0) {
+            Write-Error "Naudio-Windows-Installer.zip is missing or empty!"
+            exit 1
+          }
+          Write-Host "Verified Naudio-Windows-Installer.zip existence: $($zipItem.FullName) ($($zipItem.Length) bytes)"
+
+          # Validate zip contents
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $archive = [System.IO.Compression.ZipFile]::OpenRead($zipPath)
+          $entries = $archive.Entries | ForEach-Object { $_.Name }
+          $archive.Dispose()
+
+          Write-Host "ZIP entries: $($entries -join ', ')"
+          if (-not ($entries -contains "install.bat")) { Write-Error "install.bat missing from ZIP!"; exit 1 }
+          if (-not ($entries -contains "simpmusic.crt")) { Write-Error "simpmusic.crt missing from ZIP!"; exit 1 }
+          if (-not ($entries -match 'simpmusic-.*\.msix')) { Write-Error "MSIX missing from ZIP!"; exit 1 }
+          Write-Host "ZIP contents validation passed!"

@@ -54,7 +54,7 @@ class LoginSyncTest {
                             events += "hello"
                         }
 
-                        override fun onCancel() {
+                        override suspend fun onCancel() {
                             events += "cancel"
                         }
 
