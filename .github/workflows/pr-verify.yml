@@ -78,12 +78,13 @@ jobs:
       - name: Stage test package assets for installer verification
         run: |
           New-Item -ItemType Directory -Path "test-stage" -Force | Out-Null
-          # Create self-signed test cert matching CN=Naudio
-          $cert = New-SelfSignedCertificate -Subject "CN=Naudio" -CertStoreLocation "Cert:\CurrentUser\My" -Type CodeSigningCert
-          $certBytes = $cert.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Cert)
-          [System.IO.File]::WriteAllBytes("test-stage/simpmusic.crt", $certBytes)
-          # Create dummy test MSIX file
-          [System.IO.File]::WriteAllBytes("test-stage/simpmusic-2.3.4.x64.msix", [byte[]](1..1024))
+          # Create self-signed test cert matching CN=Naudio using .NET CertificateRequest
+          $rsa = [System.Security.Cryptography.RSA]::Create(2048)
+          $req = [System.Security.Cryptography.X509Certificates.CertificateRequest]::new("CN=Naudio", $rsa, [System.Security.Cryptography.HashAlgorithmName]::SHA256, [System.Security.Cryptography.RSASignaturePadding]::Pkcs1)
+          $cert = $req.CreateSelfSigned([System.DateTimeOffset]::Now.AddDays(-1), [System.DateTimeOffset]::Now.AddYears(1))
+          [System.IO.File]::WriteAllBytes("test-stage/simpmusic.crt", $cert.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Cert))
+          # Create dummy test MSIX file (1024 zero bytes)
+          [System.IO.File]::WriteAllBytes("test-stage/simpmusic-2.3.4.x64.msix", [byte[]]::new(1024))
           Write-Host "Staged test assets in test-stage/"
           Get-ChildItem test-stage/
 
