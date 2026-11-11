@@ -30,12 +30,18 @@ internal class LoginSyncHostRepositoryImpl(
     private val store: LoginSyncStore,
     private val favoriteSyncStore: FavoriteSyncStore,
     private val allowLoopbackFallback: Boolean = false,
+    internal var onBeforeCancelLock: (suspend () -> Unit)? = null,
+    internal var onCancelCompleted: (() -> Unit)? = null,
 ) : LoginSyncHostRepository,
     LoginSyncServer.Handler {
     private val _state = MutableStateFlow<LoginSyncHostState>(LoginSyncHostState.Starting)
     override val state: StateFlow<LoginSyncHostState> = _state.asStateFlow()
 
-    private val server = LoginSyncServer(this)
+    private val server =
+        LoginSyncServer(
+            handler = this,
+            onBeforeCancelLock = { onBeforeCancelLock?.invoke() },
+        )
 
     // Owns stop(): it must finish even when the caller's scope is being cancelled.
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -128,6 +134,7 @@ internal class LoginSyncHostRepositoryImpl(
             if (!exchangeInProgress && (favoritesCompleted || loginCompleted)) {
                 // A CANCEL received after a successfully completed favorites exchange or login transfer
                 // must not erase the completed state.
+                onCancelCompleted?.invoke()
                 return
             }
             hostBatches = null
@@ -136,6 +143,7 @@ internal class LoginSyncHostRepositoryImpl(
                 cumulativeHostMergeResult = FavoritesSyncResult()
                 _state.value = waiting()
             }
+            onCancelCompleted?.invoke()
         }
     }
 

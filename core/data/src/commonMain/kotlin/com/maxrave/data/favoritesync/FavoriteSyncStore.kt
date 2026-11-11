@@ -14,7 +14,7 @@ class OversizedEntitySyncException(
     message: String = "Entity '$entityId' of type '$entityType' ($size bytes) exceeds the maximum synchronization size of $maxBytes bytes",
 ) : LoginSyncException(Reason.FAILED, message)
 
-internal class FavoriteSyncStore(
+internal open class FavoriteSyncStore(
     private val databaseDao: DatabaseDao,
 ) {
     suspend fun recordChange(
@@ -62,7 +62,7 @@ internal class FavoriteSyncStore(
         )
     }
 
-    suspend fun exportBundles(
+    open suspend fun exportBundles(
         chunkSize: Int = 500,
         maxBytes: Int = 3_500_000,
     ): List<FavoritesSyncBundle> {
@@ -308,6 +308,6 @@ internal class FavoriteSyncStore(
         return Pair("UNKNOWN", "unknown")
     }
 
-    suspend fun mergeBundle(incoming: FavoritesSyncBundle): FavoritesSyncResult =
+    open suspend fun mergeBundle(incoming: FavoritesSyncBundle): FavoritesSyncResult =
         databaseDao.mergeFavoritesBundle(incoming)
 }

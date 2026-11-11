@@ -35,6 +35,8 @@ private const val TAG = "LoginSyncServer"
  */
 class LoginSyncServer(
     private val handler: Handler,
+    internal var onBeforeCancelLock: (suspend () -> Unit)? = null,
+    internal var onFavoritesProcessing: (suspend () -> Unit)? = null,
 ) {
     interface Handler {
         /** A phone holding this session's key said hello. */
@@ -145,6 +147,7 @@ class LoginSyncServer(
                     LoginSyncCipher.open(key, LoginSyncWire.aad(kind, reply = false), call.receive<ByteArray>())
                         ?: return reject(call, kind, HttpStatusCode.Forbidden, "the phone used a different code")
                 val reply = handler.onFavorites(plain)
+                onFavoritesProcessing?.invoke()
                 call.respondBytes(LoginSyncCipher.seal(key, LoginSyncWire.aad(kind, reply = true), reply), ContentType.Application.OctetStream)
             } catch (e: Exception) {
                 if (e is CancellationException) throw e
@@ -157,6 +160,7 @@ class LoginSyncServer(
 
     private suspend fun handleCancel(call: ApplicationCall) {
         val kind = LoginSyncWire.CANCEL
+        onBeforeCancelLock?.invoke()
         // Coordinate with active operations: acquire favoritesMutex first, then loginPayloadMutex
         favoritesMutex.withLock {
             loginPayloadMutex.withLock {

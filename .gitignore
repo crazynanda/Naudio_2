@@ -60,3 +60,4 @@ sentry.properties
 
 # Diagnostic logs exported from the app
 /error-logs/
+.commandcode/

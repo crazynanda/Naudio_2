@@ -17,19 +17,16 @@ import com.maxrave.domain.repository.CommonRepository
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import org.simpmusic.loginsync.LoginSyncClient
 import org.simpmusic.loginsync.LoginSyncInvite
 import java.io.File
 import java.lang.reflect.Proxy
 import java.nio.file.Files
-import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.test.AfterTest
 import kotlin.test.BeforeTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
@@ -56,9 +53,18 @@ class LoginSyncHostRepositoryConcurrencyTest {
     private lateinit var syncStore: FavoriteSyncStore
     private lateinit var localDataSource: LocalDataSource
     private lateinit var repository: LoginSyncHostRepositoryImpl
-    private val restoreGateStarted = CompletableDeferred<Unit>()
-    private val canCompleteRestore = CompletableDeferred<Unit>()
+
+    private var restoreGateStarted = CompletableDeferred<Unit>()
+    private var canCompleteRestore = CompletableDeferred<Unit>()
     private var gateRestore = false
+
+    private var mergeGateStarted = CompletableDeferred<Unit>()
+    private var canCompleteMerge = CompletableDeferred<Unit>()
+    private var gateMerge = false
+
+    private var exportGateStarted = CompletableDeferred<Unit>()
+    private var canCompleteExport = CompletableDeferred<Unit>()
+    private var gateExport = false
 
     @BeforeTest
     fun setUp() {
@@ -68,7 +74,24 @@ class LoginSyncHostRepositoryConcurrencyTest {
             .setDriver(BundledSQLiteDriver())
             .addTypeConverter(Converters())
             .build()
-        syncStore = FavoriteSyncStore(database.getDatabaseDao())
+
+        syncStore = object : FavoriteSyncStore(database.getDatabaseDao()) {
+            override suspend fun mergeBundle(incoming: FavoritesSyncBundle): FavoritesSyncResult {
+                if (gateMerge) {
+                    mergeGateStarted.complete(Unit)
+                    canCompleteMerge.await()
+                }
+                return super.mergeBundle(incoming)
+            }
+
+            override suspend fun exportBundles(chunkSize: Int, maxBytes: Int): List<FavoritesSyncBundle> {
+                if (gateExport) {
+                    exportGateStarted.complete(Unit)
+                    canCompleteExport.await()
+                }
+                return super.exportBundles(chunkSize, maxBytes)
+            }
+        }
 
         val fakeDataStore = fakeProxy<DataStoreManager>()
         val fakeCommonRepo = fakeProxy<CommonRepository>()
@@ -106,6 +129,12 @@ class LoginSyncHostRepositoryConcurrencyTest {
      */
     @Test
     fun cancelArrivesWhileFavoritesBatchIsMerging() = runBlocking {
+        gateMerge = true
+        mergeGateStarted = CompletableDeferred()
+        canCompleteMerge = CompletableDeferred()
+        val cancelReachedServer = CompletableDeferred<Unit>()
+        repository.onBeforeCancelLock = { cancelReachedServer.complete(Unit) }
+
         repository.start()
         val waitingState = repository.state.value as LoginSyncHostState.Waiting
         val invite = assertNotNull(LoginSyncInvite.parse(waitingState.invite))
@@ -115,7 +144,7 @@ class LoginSyncHostRepositoryConcurrencyTest {
         favClient.connect(invite)
         cancelClient.connect(invite)
 
-        // Add 50 songs in database to simulate non-trivial sync
+        // Incoming bundle to merge
         val incomingSongs = (1..50).map {
             FavoriteSongDto(videoId = "vid_$it", title = "Song $it", favoriteAtEpochMs = 1000L + it)
         }
@@ -130,11 +159,20 @@ class LoginSyncHostRepositoryConcurrencyTest {
             favClient.sendFavorites(payload)
         }
 
-        // Concurrently send CANCEL
+        // Wait until repository has acquired lock and entered mergeBundle
+        mergeGateStarted.await()
+
+        // Concurrently send CANCEL while merge is active
         val cancelTask = async(Dispatchers.IO) {
-            delay(10) // Small delay to let favorites hit the server
             cancelClient.cancelSync()
         }
+
+        // Prove CANCEL has actually reached server and is suspended waiting on favoritesMutex
+        cancelReachedServer.await()
+        assertTrue(repository.state.value is LoginSyncHostState.Connected, "Repository must stay connected while in-flight merge proceeds")
+
+        // Release the merge gate
+        canCompleteMerge.complete(Unit)
 
         val replyBytes = favTask.await()
         assertTrue(replyBytes.isNotEmpty())
@@ -153,6 +191,12 @@ class LoginSyncHostRepositoryConcurrencyTest {
      */
     @Test
     fun cancelArrivesBetweenFavoritesBatchPreparationAndReplyCompletion() = runBlocking {
+        gateExport = true
+        exportGateStarted = CompletableDeferred()
+        canCompleteExport = CompletableDeferred()
+        val cancelReachedServer = CompletableDeferred<Unit>()
+        repository.onBeforeCancelLock = { cancelReachedServer.complete(Unit) }
+
         repository.start()
         val waitingState = repository.state.value as LoginSyncHostState.Waiting
         val invite = assertNotNull(LoginSyncInvite.parse(waitingState.invite))
@@ -172,9 +216,20 @@ class LoginSyncHostRepositoryConcurrencyTest {
         val favTask = async(Dispatchers.IO) {
             favClient.sendFavorites(payload)
         }
+
+        // Wait until host snapshot export is reached
+        exportGateStarted.await()
+
         val cancelTask = async(Dispatchers.IO) {
             cancelClient.cancelSync()
         }
+
+        // Prove CANCEL has reached server and is suspended waiting for lock
+        cancelReachedServer.await()
+        assertTrue(repository.state.value is LoginSyncHostState.Connected)
+
+        // Release export
+        canCompleteExport.complete(Unit)
 
         val reply = favTask.await()
         assertTrue(reply.isNotEmpty())
@@ -189,6 +244,11 @@ class LoginSyncHostRepositoryConcurrencyTest {
     @Test
     fun cancelArrivesWhileLoginPayloadIsBeingRestored() = runBlocking {
         gateRestore = true
+        restoreGateStarted = CompletableDeferred()
+        canCompleteRestore = CompletableDeferred()
+        val cancelReachedServer = CompletableDeferred<Unit>()
+        repository.onBeforeCancelLock = { cancelReachedServer.complete(Unit) }
+
         repository.start()
         val waitingState = repository.state.value as LoginSyncHostState.Waiting
         val invite = assertNotNull(LoginSyncInvite.parse(waitingState.invite))
@@ -215,9 +275,9 @@ class LoginSyncHostRepositoryConcurrencyTest {
             cancelClient.cancelSync()
         }
 
-        delay(50)
-        // Verify repository is still in Connected state, not reset to Waiting
-        assertTrue(repository.state.value is LoginSyncHostState.Connected)
+        // Prove CANCEL reached server and is suspended waiting on lock
+        cancelReachedServer.await()
+        assertTrue(repository.state.value is LoginSyncHostState.Connected, "Repository must remain connected during restore")
 
         // Release the restore gate
         canCompleteRestore.complete(Unit)
@@ -361,6 +421,9 @@ class LoginSyncHostRepositoryConcurrencyTest {
      */
     @Test
     fun completedExchangeRemainsCompletedAfterDisconnect() = runBlocking {
+        val cancelProcessed = CompletableDeferred<Unit>()
+        repository.onCancelCompleted = { cancelProcessed.complete(Unit) }
+
         repository.start()
         val waitingState = repository.state.value as LoginSyncHostState.Waiting
         val invite = assertNotNull(LoginSyncInvite.parse(waitingState.invite))
@@ -380,7 +443,8 @@ class LoginSyncHostRepositoryConcurrencyTest {
 
         // Disconnect using standard disconnect()
         client.disconnect()
-        delay(50)
+        // Wait explicitly until server has processed the cancel and state transition
+        cancelProcessed.await()
 
         assertTrue(repository.state.value is LoginSyncHostState.FavoritesSynced)
     }

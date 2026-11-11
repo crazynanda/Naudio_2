@@ -3,10 +3,8 @@ package org.simpmusic.loginsync
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import java.util.concurrent.atomic.AtomicBoolean
-import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -22,11 +20,12 @@ class LoginSyncCancellationConcurrencyTest {
     fun cancelArrivesWhileFavoritesBatchIsMerging() = runBlocking {
         val favoritesStarted = CompletableDeferred<Unit>()
         val canCompleteFavorites = CompletableDeferred<Unit>()
+        val cancelReachedServer = CompletableDeferred<Unit>()
         val cancelExecuted = AtomicBoolean(false)
         val favoritesCompleted = AtomicBoolean(false)
 
         val server = LoginSyncServer(
-            object : LoginSyncServer.Handler {
+            handler = object : LoginSyncServer.Handler {
                 override fun onHello() {}
                 override suspend fun onCancel() {
                     cancelExecuted.set(true)
@@ -41,6 +40,9 @@ class LoginSyncCancellationConcurrencyTest {
                 override fun onDelivered() {}
                 override fun onRejected(reason: String) {}
             },
+            onBeforeCancelLock = {
+                cancelReachedServer.complete(Unit)
+            },
         )
 
         val session = server.start()
@@ -54,7 +56,7 @@ class LoginSyncCancellationConcurrencyTest {
                 favClient.sendFavorites("""{"batch":0}""".encodeToByteArray()).decodeToString()
             }
 
-            // Wait until server has entered onFavorites
+            // Wait until server has entered onFavorites (favoritesMutex acquired)
             favoritesStarted.await()
 
             // Concurrently send CANCEL while favorites processing is ongoing
@@ -62,8 +64,8 @@ class LoginSyncCancellationConcurrencyTest {
                 cancelClient.cancelSync()
             }
 
-            // Give CANCEL request time to arrive at the server
-            delay(50)
+            // Explicitly prove CANCEL has arrived at the server and is waiting for favoritesMutex
+            cancelReachedServer.await()
 
             // CANCEL must be blocked by favoritesMutex and must NOT have executed yet
             assertFalse(cancelExecuted.get(), "CANCEL must wait for in-flight favorites operation")
@@ -91,10 +93,12 @@ class LoginSyncCancellationConcurrencyTest {
     @Test
     fun cancelArrivesBetweenFavoritesBatchPreparationAndReplyCompletion() = runBlocking {
         val favoritesPrepDone = CompletableDeferred<Unit>()
+        val canCompleteReply = CompletableDeferred<Unit>()
+        val cancelReachedServer = CompletableDeferred<Unit>()
         val cancelExecuted = AtomicBoolean(false)
 
         val server = LoginSyncServer(
-            object : LoginSyncServer.Handler {
+            handler = object : LoginSyncServer.Handler {
                 override fun onHello() {}
                 override suspend fun onCancel() {
                     cancelExecuted.set(true)
@@ -102,12 +106,16 @@ class LoginSyncCancellationConcurrencyTest {
                 override suspend fun onPayload(payload: ByteArray): ByteArray = "{}".encodeToByteArray()
                 override suspend fun onFavorites(payload: ByteArray): ByteArray {
                     favoritesPrepDone.complete(Unit)
-                    // Small delay to simulate transmission duration while mutex is held
-                    delay(30)
                     return """{"batch_prep":"complete"}""".encodeToByteArray()
                 }
                 override fun onDelivered() {}
                 override fun onRejected(reason: String) {}
+            },
+            onBeforeCancelLock = {
+                cancelReachedServer.complete(Unit)
+            },
+            onFavoritesProcessing = {
+                canCompleteReply.await()
             },
         )
 
@@ -128,11 +136,18 @@ class LoginSyncCancellationConcurrencyTest {
                 cancelClient.cancelSync()
             }
 
+            // Explicitly prove CANCEL has reached the server and is suspended waiting on favoritesMutex
+            cancelReachedServer.await()
+            assertFalse(cancelExecuted.get(), "CANCEL must wait while favorites reply is in-flight")
+
+            // Release reply transmission
+            canCompleteReply.complete(Unit)
+
             val favReply = favTask.await()
             assertEquals("""{"batch_prep":"complete"}""", favReply)
 
             cancelTask.await()
-            assertTrue(cancelExecuted.get())
+            assertTrue(cancelExecuted.get(), "CANCEL executed after favorites reply completed")
         } finally {
             server.stop()
         }
@@ -146,11 +161,12 @@ class LoginSyncCancellationConcurrencyTest {
     fun cancelArrivesWhileLoginPayloadIsBeingRestored() = runBlocking {
         val loginStarted = CompletableDeferred<Unit>()
         val canCompleteLogin = CompletableDeferred<Unit>()
+        val cancelReachedServer = CompletableDeferred<Unit>()
         val cancelExecuted = AtomicBoolean(false)
         val loginDelivered = AtomicBoolean(false)
 
         val server = LoginSyncServer(
-            object : LoginSyncServer.Handler {
+            handler = object : LoginSyncServer.Handler {
                 override fun onHello() {}
                 override suspend fun onCancel() {
                     cancelExecuted.set(true)
@@ -165,6 +181,9 @@ class LoginSyncCancellationConcurrencyTest {
                     loginDelivered.set(true)
                 }
                 override fun onRejected(reason: String) {}
+            },
+            onBeforeCancelLock = {
+                cancelReachedServer.complete(Unit)
             },
         )
 
@@ -185,7 +204,8 @@ class LoginSyncCancellationConcurrencyTest {
                 cancelClient.cancelSync()
             }
 
-            delay(50)
+            // Explicitly prove CANCEL has reached the server and is suspended waiting on loginPayloadMutex
+            cancelReachedServer.await()
             assertFalse(cancelExecuted.get(), "CANCEL must wait for in-flight login payload")
             assertFalse(loginDelivered.get(), "Login not yet delivered")
 
@@ -209,7 +229,7 @@ class LoginSyncCancellationConcurrencyTest {
     fun cancelArrivesAfterSuccessfulFavoritesCompletion() = runBlocking {
         val events = mutableListOf<String>()
         val server = LoginSyncServer(
-            object : LoginSyncServer.Handler {
+            handler = object : LoginSyncServer.Handler {
                 override fun onHello() { events += "hello" }
                 override suspend fun onCancel() { events += "cancel" }
                 override suspend fun onPayload(payload: ByteArray): ByteArray = "{}".encodeToByteArray()
@@ -244,7 +264,7 @@ class LoginSyncCancellationConcurrencyTest {
     fun cancelArrivesAfterSuccessfulLoginDelivery() = runBlocking {
         val events = mutableListOf<String>()
         val server = LoginSyncServer(
-            object : LoginSyncServer.Handler {
+            handler = object : LoginSyncServer.Handler {
                 override fun onHello() { events += "hello" }
                 override suspend fun onCancel() { events += "cancel" }
                 override suspend fun onPayload(payload: ByteArray): ByteArray {
