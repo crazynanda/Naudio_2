@@ -90,7 +90,9 @@ internal open class LoginSyncStore(
         if (login.dataSyncId.isNotEmpty()) dataStore.setDataSyncId(login.dataSyncId)
         dataStore.setCookie(login.cookie, login.pageId, login.authUser)
         dataStore.setLoggedIn(true)
-        dataStore.setCombineLocalAndYouTubeLiked(true)
+        if (dataStore.getString(DataStoreManager.KEY_COMBINE_LOCAL_AND_YOUTUBE_LIKED).first().isNullOrEmpty()) {
+            dataStore.setCombineLocalAndYouTubeLiked(true)
+        }
         Logger.i("Auth", "YouTube: signed in through Login Sync, ${login.accounts.size} account(s)")
         try {
             songRepository?.syncAccountFavorites()

@@ -1591,7 +1591,9 @@ class SettingsViewModel(
                     }
                     dataStoreManager.setLoggedIn(true)
                     dataStoreManager.setCookie(cookie, accountInfoList.first().pageId, accountInfoList.first().authUser)
-                    dataStoreManager.setCombineLocalAndYouTubeLiked(true)
+                    if (dataStoreManager.getString(DataStoreManager.KEY_COMBINE_LOCAL_AND_YOUTUBE_LIKED).first().isNullOrEmpty()) {
+                        dataStoreManager.setCombineLocalAndYouTubeLiked(true)
+                    }
                     Logger.i("Auth", "YouTube: signed in, ${accountInfoList.size} account(s) on this cookie")
                     getAllGoogleAccount()
                     getLoggedIn()
@@ -1642,7 +1644,9 @@ class SettingsViewModel(
                 }
                 dataStoreManager.setCookie(acc.cache ?: "", acc.pageId, acc.authUser)
                 dataStoreManager.setLoggedIn(true)
-                dataStoreManager.setCombineLocalAndYouTubeLiked(true)
+                if (dataStoreManager.getString(DataStoreManager.KEY_COMBINE_LOCAL_AND_YOUTUBE_LIKED).first().isNullOrEmpty()) {
+                    dataStoreManager.setCombineLocalAndYouTubeLiked(true)
+                }
                 Logger.i("Auth", "YouTube: switched account")
                 delay(500)
                 getAllGoogleAccount()
@@ -1661,7 +1665,6 @@ class SettingsViewModel(
                 }
                 dataStoreManager.putString("AccountName", "")
                 dataStoreManager.putString("AccountThumbUrl", "")
-                dataStoreManager.putString("last_synced_account_email", "")
                 dataStoreManager.setLoggedIn(false)
                 dataStoreManager.setCookie("", null)
                 Logger.i("Auth", "YouTube: signed out")
@@ -1669,7 +1672,6 @@ class SettingsViewModel(
                 // here rather than from the Settings row — same teardown as setSpotifyLogIn and
                 // logOutDiscord. Only this branch: acc != null is switching account, not logout.
                 dataStoreManager.setSyncFollowToYouTube(false)
-                dataStoreManager.setCombineLocalAndYouTubeLiked(false)
                 delay(500)
                 getAllGoogleAccount()
                 getLoggedIn()
@@ -1684,12 +1686,10 @@ class SettingsViewModel(
             }
             dataStoreManager.putString("AccountName", "")
             dataStoreManager.putString("AccountThumbUrl", "")
-            dataStoreManager.putString("last_synced_account_email", "")
             dataStoreManager.setLoggedIn(false)
             dataStoreManager.setCookie("", null)
             Logger.i("Auth", "YouTube: signed out of all accounts")
             dataStoreManager.setSyncFollowToYouTube(false)
-            dataStoreManager.setCombineLocalAndYouTubeLiked(false)
             delay(500)
             getAllGoogleAccount()
             getLoggedIn()

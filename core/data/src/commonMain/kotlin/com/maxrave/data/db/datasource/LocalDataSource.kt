@@ -308,6 +308,12 @@ internal class LocalDataSource(
         databaseDao.updateSongLikedWithTombstone(liked, videoId, favoriteAt, tombstone)
     }
 
+    suspend fun updateLikedWithoutTombstone(
+        liked: Int,
+        videoId: String,
+        favoriteAt: LocalDateTime? = if (liked == 1) now() else null,
+    ) = databaseDao.updateLiked(liked, videoId, favoriteAt)
+
     suspend fun updateDurationSeconds(
         durationSeconds: Int,
         videoId: String,
@@ -322,6 +328,8 @@ internal class LocalDataSource(
     suspend fun getFavoriteTombstone(type: String, id: String) = databaseDao.getFavoriteTombstone(type, id)
 
     suspend fun insertFavoriteTombstone(tombstone: FavoriteSyncTombstoneEntity) = databaseDao.insertFavoriteTombstone(tombstone)
+
+    suspend fun deleteFavoriteTombstone(type: String, id: String) = databaseDao.deleteFavoriteTombstone(type, id)
 
     suspend fun updateSongInLibrary(
         inLibrary: LocalDateTime,

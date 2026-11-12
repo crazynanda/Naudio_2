@@ -76,7 +76,7 @@ class AccountFavoritesSyncTest {
         tempDir.deleteRecursively()
     }
 
-    private suspend fun setGoogleAccount(email: String, name: String = "Test User") {
+    private suspend fun setGoogleAccount(email: String, name: String = "Test User", pageId: String? = null) {
         localDataSource.insertGoogleAccount(
             GoogleAccountEntity(
                 email = email,
@@ -85,6 +85,7 @@ class AccountFavoritesSyncTest {
                 isUsed = true,
                 cache = "valid_cookie_$email",
                 authUser = 0,
+                pageId = pageId,
             ),
         )
     }
@@ -343,6 +344,7 @@ class AccountFavoritesSyncTest {
 
         // Android user unlikes "song_2" remotely
         fakeYt.remoteTracks.remove("song_2")
+        kotlinx.coroutines.delay(20)
 
         val updateResult = repo.syncAccountFavorites(force = true)
         assertTrue(updateResult.isSuccess)
@@ -659,6 +661,217 @@ class AccountFavoritesSyncTest {
         assertEquals(3, localDataSource.getAllLikedSongs().size)
     }
 
+    @Test
+    fun accountSwitch_preservesUnsynchronizedFavoritesAndRestoresOnReturn() = runBlocking {
+        // Step 1: User A is logged in and syncs 2 songs
+        setGoogleAccount("accountA@gmail.com")
+        val fakeYt = FakeAccountYouTube().apply {
+            remoteTracks.addAll(listOf("song_A1", "song_A2"))
+        }
+        val dataStore = TestDataStoreManager(
+            loggedInVal = DataStoreManager.TRUE,
+            cookieVal = "cookie_A",
+            combineLocalAndYouTubeLikedVal = DataStoreManager.TRUE,
+        ).create()
+        val repo = SongRepositoryImpl(
+            dataStoreManager = dataStore,
+            localDataSource = localDataSource,
+            youTube = fakeYt,
+        )
+
+        repo.syncAccountFavorites()
+        assertEquals(2, localDataSource.getAllLikedSongs().size)
+
+        // User A adds a song offline (unsynchronized local favorite)
+        insertTestSong("unsynced_A_local", isLiked = true)
+        localDataSource.updateLiked(1, "unsynced_A_local")
+        assertEquals(3, localDataSource.getAllLikedSongs().size)
+
+        // Step 2: User switches to Account B
+        localDataSource.deleteGoogleAccount("accountA@gmail.com")
+        setGoogleAccount("accountB@gmail.com")
+        fakeYt.remoteTracks.clear()
+        fakeYt.remoteTracks.addAll(listOf("song_B1", "song_B2"))
+
+        repo.syncAccountFavorites()
+
+        // Account B database has only Account B's songs
+        val bLiked = localDataSource.getAllLikedSongs().map { it.videoId }.toSet()
+        assertEquals(setOf("song_B1", "song_B2"), bLiked)
+        assertFalse(bLiked.contains("unsynced_A_local"))
+
+        // Step 3: User switches BACK to Account A
+        localDataSource.deleteGoogleAccount("accountB@gmail.com")
+        setGoogleAccount("accountA@gmail.com")
+        fakeYt.remoteTracks.clear()
+        fakeYt.remoteTracks.addAll(listOf("song_A1", "song_A2"))
+
+        repo.syncAccountFavorites()
+
+        // Account A's unsynchronized favorite MUST be restored and preserved!
+        val restoredALiked = localDataSource.getAllLikedSongs().map { it.videoId }.toSet()
+        assertTrue(restoredALiked.contains("unsynced_A_local"), "Unsynchronized local favorites must be preserved and restored across account switches")
+        assertTrue(restoredALiked.contains("song_A1"))
+        assertTrue(restoredALiked.contains("song_A2"))
+    }
+
+    @Test
+    fun brandChannelAccountIsolation() = runBlocking {
+        // User logged in to personal account (pageId = null)
+        setGoogleAccount("multi@gmail.com", pageId = null)
+        val fakeYt = FakeAccountYouTube().apply {
+            remoteTracks.addAll(listOf("personal_song_1", "personal_song_2"))
+        }
+        val dataStore = TestDataStoreManager(
+            loggedInVal = DataStoreManager.TRUE,
+            cookieVal = "cookie_multi",
+            combineLocalAndYouTubeLikedVal = DataStoreManager.TRUE,
+        ).create()
+        val repo = SongRepositoryImpl(
+            dataStoreManager = dataStore,
+            localDataSource = localDataSource,
+            youTube = fakeYt,
+        )
+
+        repo.syncAccountFavorites()
+        assertEquals(2, localDataSource.getAllLikedSongs().size)
+
+        // Switch to Brand Channel under the same email (pageId = "brand_channel_99")
+        localDataSource.deleteGoogleAccount("multi@gmail.com")
+        setGoogleAccount("multi@gmail.com", pageId = "brand_channel_99")
+        fakeYt.remoteTracks.clear()
+        fakeYt.remoteTracks.addAll(listOf("brand_song_1"))
+
+        repo.syncAccountFavorites()
+
+        // Must isolate brand channel favorites from personal favorites
+        val brandLiked = localDataSource.getAllLikedSongs().map { it.videoId }.toSet()
+        assertEquals(setOf("brand_song_1"), brandLiked, "Brand channel favorites must be isolated from personal channel")
+        assertFalse(brandLiked.contains("personal_song_1"))
+    }
+
+    @Test
+    fun initialLogin_preservesPreExistingLocalFavorites() = runBlocking {
+        // Pre-existing local favorites before logging in
+        insertTestSong("pre_login_fav_1", isLiked = true)
+        insertTestSong("pre_login_fav_2", isLiked = true)
+        localDataSource.updateLiked(1, "pre_login_fav_1")
+        localDataSource.updateLiked(1, "pre_login_fav_2")
+        assertEquals(2, localDataSource.getAllLikedSongs().size)
+
+        // Initial login to Account A (lastSyncedAccount is empty)
+        setGoogleAccount("newuser@gmail.com")
+        val fakeYt = FakeAccountYouTube().apply {
+            remoteTracks.add("remote_song_1")
+        }
+        val dataStore = TestDataStoreManager(
+            loggedInVal = DataStoreManager.TRUE,
+            cookieVal = "cookie_new",
+            combineLocalAndYouTubeLikedVal = DataStoreManager.TRUE,
+        ).create()
+        val repo = SongRepositoryImpl(
+            dataStoreManager = dataStore,
+            localDataSource = localDataSource,
+            youTube = fakeYt,
+        )
+
+        val result = repo.syncAccountFavorites()
+        assertTrue(result.isSuccess)
+
+        // Pre-existing local favorites must NOT be deleted!
+        val currentLiked = localDataSource.getAllLikedSongs().map { it.videoId }.toSet()
+        assertEquals(3, currentLiked.size, "Initial login must combine pre-existing local favorites with remote")
+        assertTrue(currentLiked.contains("pre_login_fav_1"))
+        assertTrue(currentLiked.contains("pre_login_fav_2"))
+        assertTrue(currentLiked.contains("remote_song_1"))
+
+        // And pre-existing local favorites should be uploaded to YouTube
+        assertTrue(fakeYt.addToLikedCalls.contains("pre_login_fav_1"))
+        assertTrue(fakeYt.addToLikedCalls.contains("pre_login_fav_2"))
+    }
+
+    @Test
+    fun successfulRemoteUnlike_clearsTombstone() = runBlocking {
+        setGoogleAccount("user@gmail.com")
+        val fakeYt = FakeAccountYouTube().apply {
+            remoteTracks.addAll(listOf("song_unlike_1", "song_unlike_2"))
+        }
+        val dataStore = TestDataStoreManager(
+            loggedInVal = DataStoreManager.TRUE,
+            cookieVal = "cookie_abc",
+            combineLocalAndYouTubeLikedVal = DataStoreManager.TRUE,
+        ).create()
+        val repo = SongRepositoryImpl(
+            dataStoreManager = dataStore,
+            localDataSource = localDataSource,
+            youTube = fakeYt,
+        )
+
+        // Initial sync
+        repo.syncAccountFavorites()
+        assertEquals(2, localDataSource.getAllLikedSongs().size)
+
+        // User unlikes "song_unlike_1" locally while offline
+        localDataSource.updateLiked(0, "song_unlike_1")
+        val tombBefore = localDataSource.getFavoriteTombstone(com.maxrave.domain.data.entities.FavoriteSyncType.SONG, "song_unlike_1")
+        assertTrue(tombBefore != null && !tombBefore.isFavorite)
+
+        // Sync runs and calls removeFromLiked on YouTube
+        val syncResult = repo.syncAccountFavorites(force = true)
+        assertTrue(syncResult.isSuccess)
+        assertTrue(fakeYt.removeFromLikedCalls.contains("song_unlike_1"))
+
+        // Tombstone should be cleanly deleted upon successful remote unlike
+        val tombAfter = localDataSource.getFavoriteTombstone(com.maxrave.domain.data.entities.FavoriteSyncType.SONG, "song_unlike_1")
+        assertTrue(tombAfter == null, "Successful remote unlike must delete the tombstone")
+    }
+
+    @Test
+    fun failedRemoteUnlike_advancesTombstoneWithoutLocalResurrection() = runBlocking {
+        setGoogleAccount("user@gmail.com")
+        val fakeYt = FakeAccountYouTube().apply {
+            remoteTracks.addAll(listOf("song_fail_unlike"))
+        }
+        val dataStore = TestDataStoreManager(
+            loggedInVal = DataStoreManager.TRUE,
+            cookieVal = "cookie_abc",
+            combineLocalAndYouTubeLikedVal = DataStoreManager.TRUE,
+        ).create()
+        val repo = SongRepositoryImpl(
+            dataStoreManager = dataStore,
+            localDataSource = localDataSource,
+            youTube = fakeYt,
+        )
+
+        // Initial sync
+        repo.syncAccountFavorites()
+        assertEquals(1, localDataSource.getAllLikedSongs().size)
+
+        // User unlikes song locally
+        localDataSource.updateLiked(0, "song_fail_unlike")
+
+        // YouTube throws an error on removeFromLiked
+        fakeYt.removeFromLikedError = IOException("500 Internal Server Error")
+
+        // Sync runs and remote unlike fails
+        val syncResult = repo.syncAccountFavorites(force = true)
+        assertTrue(syncResult.isSuccess)
+        fakeYt.removeFromLikedError = null // reset for next sync
+
+        // Local song MUST stay unliked (not resurrected!)
+        val songAfter = localDataSource.getSong("song_fail_unlike")
+        assertEquals(false, songAfter?.liked, "Local song must remain unliked even when remote unlike fails")
+
+        // And tombstone must have been advanced
+        val tomb = localDataSource.getFavoriteTombstone(com.maxrave.domain.data.entities.FavoriteSyncType.SONG, "song_fail_unlike")
+        assertTrue(tomb != null && !tomb.isFavorite, "Tombstone must be kept and advanced so song isn't resurrected on next sync")
+
+        // On next sync, song is still not resurrected
+        repo.syncAccountFavorites(force = true)
+        val songAfterNextSync = localDataSource.getSong("song_fail_unlike")
+        assertEquals(false, songAfterNextSync?.liked, "Song must not be resurrected on subsequent syncs")
+    }
+
     private suspend fun insertTestSong(videoId: String, isLiked: Boolean = false) {
         val song = SongEntity(
             videoId = videoId,
@@ -683,6 +896,7 @@ class AccountFavoritesSyncTest {
         val addToLikedCalls: MutableList<String> = Collections.synchronizedList(mutableListOf<String>())
         val removeFromLikedCalls: MutableList<String> = Collections.synchronizedList(mutableListOf<String>())
         var shouldThrow: Throwable? = null
+        var removeFromLikedError: Throwable? = null
 
         override suspend fun customQuery(
             browseId: String?,
@@ -723,6 +937,7 @@ class AccountFavoritesSyncTest {
         }
 
         override suspend fun removeFromLiked(mediaId: String): Result<Int> {
+            removeFromLikedError?.let { return Result.failure(it) }
             shouldThrow?.let { return Result.failure(it) }
             removeFromLikedCalls.add(mediaId)
             remoteTracks.remove(mediaId)
@@ -745,6 +960,7 @@ class AccountFavoritesSyncTest {
                     "setCombineLocalAndYouTubeLiked" -> {
                         val bool = args?.get(0) as? Boolean ?: false
                         combineLocalAndYouTubeLikedVal = if (bool) DataStoreManager.TRUE else DataStoreManager.FALSE
+                        stringMap[DataStoreManager.KEY_COMBINE_LOCAL_AND_YOUTUBE_LIKED] = combineLocalAndYouTubeLikedVal
                         Unit
                     }
                     "setLoggedIn" -> {
