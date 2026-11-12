@@ -1740,6 +1740,9 @@ interface DatabaseDao {
     @Query("SELECT * FROM song WHERE liked = 1")
     suspend fun getAllLikedSongs(): List<SongEntity>
 
+    @Query("UPDATE song SET liked = 0, favoriteAt = NULL WHERE liked = 1")
+    suspend fun clearAllLikedSongs(): Int
+
     @Query("SELECT * FROM album WHERE liked = 1")
     suspend fun getAllLikedAlbums(): List<AlbumEntity>
 

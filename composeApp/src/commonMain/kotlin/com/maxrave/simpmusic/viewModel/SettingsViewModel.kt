@@ -425,6 +425,11 @@ class SettingsViewModel(
         viewModelScope.launch {
             dataStoreManager.setCombineLocalAndYouTubeLiked(combine)
             getCombineLocalAndYouTubeLiked()
+            if (combine) {
+                launch(Dispatchers.IO) {
+                    songRepository.syncAccountFavorites()
+                }
+            }
         }
     }
 
@@ -1586,9 +1591,13 @@ class SettingsViewModel(
                     }
                     dataStoreManager.setLoggedIn(true)
                     dataStoreManager.setCookie(cookie, accountInfoList.first().pageId, accountInfoList.first().authUser)
+                    dataStoreManager.setCombineLocalAndYouTubeLiked(true)
                     Logger.i("Auth", "YouTube: signed in, ${accountInfoList.size} account(s) on this cookie")
                     getAllGoogleAccount()
                     getLoggedIn()
+                    viewModelScope.launch(Dispatchers.IO) {
+                        songRepository.syncAccountFavorites()
+                    }
                     true
                 } ?: run {
                 Logger.w("Auth", "YouTube: sign-in failed, YouTube returned no account for this cookie")
@@ -1633,10 +1642,14 @@ class SettingsViewModel(
                 }
                 dataStoreManager.setCookie(acc.cache ?: "", acc.pageId, acc.authUser)
                 dataStoreManager.setLoggedIn(true)
+                dataStoreManager.setCombineLocalAndYouTubeLiked(true)
                 Logger.i("Auth", "YouTube: switched account")
                 delay(500)
                 getAllGoogleAccount()
                 getLoggedIn()
+                viewModelScope.launch(Dispatchers.IO) {
+                    songRepository.syncAccountFavorites()
+                }
             } else {
                 googleAccounts.value.data?.forEach {
                     accountRepository
@@ -1648,6 +1661,7 @@ class SettingsViewModel(
                 }
                 dataStoreManager.putString("AccountName", "")
                 dataStoreManager.putString("AccountThumbUrl", "")
+                dataStoreManager.putString("last_synced_account_email", "")
                 dataStoreManager.setLoggedIn(false)
                 dataStoreManager.setCookie("", null)
                 Logger.i("Auth", "YouTube: signed out")
@@ -1670,6 +1684,7 @@ class SettingsViewModel(
             }
             dataStoreManager.putString("AccountName", "")
             dataStoreManager.putString("AccountThumbUrl", "")
+            dataStoreManager.putString("last_synced_account_email", "")
             dataStoreManager.setLoggedIn(false)
             dataStoreManager.setCookie("", null)
             Logger.i("Auth", "YouTube: signed out of all accounts")

@@ -31,7 +31,9 @@ import com.maxrave.simpmusic.ui.screen.home.analytics.monthFullNameResource
 import com.maxrave.simpmusic.ui.screen.library.LibraryDynamicPlaylistType
 import com.maxrave.simpmusic.viewModel.base.BaseViewModel
 import kotlinx.collections.immutable.toImmutableList
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.IO
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -171,6 +173,15 @@ class LibraryViewModel(
         }
         viewModelScope.launch {
             commonRepository.getLibraryOverview().collect { _libraryOverview.value = it }
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            if (dataStoreManager.loggedIn.first() == DataStoreManager.TRUE) {
+                try {
+                    songRepository.syncAccountFavorites()
+                } catch (e: Exception) {
+                    com.maxrave.logger.Logger.w("LibraryViewModel", "Library favorites sync failed: ${e.message}")
+                }
+            }
         }
     }
 

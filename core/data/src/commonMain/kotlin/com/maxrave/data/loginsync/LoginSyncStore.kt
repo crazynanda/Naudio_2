@@ -7,6 +7,7 @@ import com.maxrave.domain.data.model.loginsync.LoginSyncService
 import com.maxrave.domain.manager.DataStoreManager
 import com.maxrave.domain.manager.DataStoreManager.Values.TRUE
 import com.maxrave.domain.repository.CommonRepository
+import com.maxrave.domain.repository.SongRepository
 import com.maxrave.logger.Logger
 import kotlinx.coroutines.flow.first
 
@@ -15,6 +16,7 @@ internal open class LoginSyncStore(
     private val dataStore: DataStoreManager,
     private val localDataSource: LocalDataSource,
     private val commonRepository: CommonRepository,
+    private val songRepository: SongRepository? = null,
 ) {
     open suspend fun signedIn(): List<LoginSyncService> =
         buildList {
@@ -88,7 +90,13 @@ internal open class LoginSyncStore(
         if (login.dataSyncId.isNotEmpty()) dataStore.setDataSyncId(login.dataSyncId)
         dataStore.setCookie(login.cookie, login.pageId, login.authUser)
         dataStore.setLoggedIn(true)
+        dataStore.setCombineLocalAndYouTubeLiked(true)
         Logger.i("Auth", "YouTube: signed in through Login Sync, ${login.accounts.size} account(s)")
+        try {
+            songRepository?.syncAccountFavorites()
+        } catch (e: Exception) {
+            Logger.w("Auth", "syncAccountFavorites after LoginSync failed: ${e.message}")
+        }
     }
 }
 

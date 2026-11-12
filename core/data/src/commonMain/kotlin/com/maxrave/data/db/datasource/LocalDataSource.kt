@@ -313,6 +313,16 @@ internal class LocalDataSource(
         videoId: String,
     ) = databaseDao.updateDurationSeconds(durationSeconds, videoId)
 
+    suspend fun getAllLikedSongs() = databaseDao.getAllLikedSongs()
+
+    suspend fun clearAllLikedSongs() = databaseDao.clearAllLikedSongs()
+
+    suspend fun getAllFavoriteTombstones() = databaseDao.getAllFavoriteTombstones()
+
+    suspend fun getFavoriteTombstone(type: String, id: String) = databaseDao.getFavoriteTombstone(type, id)
+
+    suspend fun insertFavoriteTombstone(tombstone: FavoriteSyncTombstoneEntity) = databaseDao.insertFavoriteTombstone(tombstone)
+
     suspend fun updateSongInLibrary(
         inLibrary: LocalDateTime,
         videoId: String,

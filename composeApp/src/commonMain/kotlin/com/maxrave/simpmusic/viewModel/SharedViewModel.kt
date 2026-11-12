@@ -288,6 +288,15 @@ class SharedViewModel(
                 )
             }
             dataStoreManager.openApp()
+            launch(Dispatchers.IO) {
+                if (dataStoreManager.loggedIn.first() == DataStoreManager.TRUE) {
+                    try {
+                        songRepository.syncAccountFavorites()
+                    } catch (e: Exception) {
+                        Logger.w(tag, "Startup favorites sync failed: ${e.message}")
+                    }
+                }
+            }
             val timeLineJob =
                 launch {
                     nowPlayingState

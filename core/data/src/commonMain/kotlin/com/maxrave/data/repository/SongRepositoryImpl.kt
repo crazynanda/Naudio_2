@@ -4,10 +4,13 @@ import com.maxrave.common.MERGING_DATA_TYPE
 import com.maxrave.data.db.datasource.LocalDataSource
 import com.maxrave.data.extension.getFullDataFromDB
 import com.maxrave.data.mapping.toListTrack
+import com.maxrave.data.mapping.toTrack
 import com.maxrave.data.mapping.toYouTubeComment
 import com.maxrave.data.mapping.toYouTubeCommentsPage
 import com.maxrave.data.mapping.toSongItemForDownload
 import com.maxrave.data.mapping.toWatchEndpoint
+import com.maxrave.domain.data.entities.FavoriteSyncTombstoneEntity
+import com.maxrave.domain.data.entities.FavoriteSyncType
 import com.maxrave.domain.data.entities.QueueEntity
 import com.maxrave.domain.data.entities.DownloadState
 import com.maxrave.domain.data.entities.SongEntity
@@ -17,8 +20,15 @@ import com.maxrave.domain.data.model.browse.album.Track
 import com.maxrave.domain.data.model.comments.YouTubeComment
 import com.maxrave.domain.data.model.comments.YouTubeCommentsPage
 import com.maxrave.domain.data.model.download.DownloadProgress
+import com.maxrave.domain.data.model.favoritesync.FavoritesSyncResult
 import com.maxrave.domain.data.model.streams.YouTubeWatchEndpoint
 import com.maxrave.domain.extension.now
+import com.maxrave.domain.utils.toSongEntity
+import com.maxrave.kotlinytmusicscraper.models.MusicShelfRenderer
+import com.maxrave.kotlinytmusicscraper.models.getContinuation
+import com.maxrave.kotlinytmusicscraper.models.response.BrowseResponse
+import com.maxrave.kotlinytmusicscraper.pages.PlaylistPage
+import kotlin.time.Clock
 import com.maxrave.domain.manager.DataStoreManager
 import com.maxrave.domain.manager.DataStoreManager.Values.TRUE
 import com.maxrave.domain.mediaservice.handler.DownloadHandler
@@ -59,6 +69,8 @@ import kotlin.math.pow
 
 private const val TAG = "SongRepositoryImpl"
 private const val COMMENTS_TAG = "Comments"
+private const val KEY_LAST_FAVORITES_SYNC_TIME = "last_favorites_sync_time"
+private const val KEY_LAST_SYNCED_ACCOUNT = "last_synced_account_email"
 
 internal class SongRepositoryImpl(
     private val dataStoreManager: DataStoreManager,
@@ -66,6 +78,7 @@ internal class SongRepositoryImpl(
     private val youTube: YouTube,
     downloadHandler: DownloadHandler? = null,
     private val youtubeLikeSyncMutex: Mutex = Mutex(),
+    private val accountFavoritesSyncMutex: Mutex = Mutex(),
 ) : SongRepository {
     override fun getAllSongs(limit: Int): Flow<List<SongEntity>> =
         flow {
@@ -849,6 +862,203 @@ internal class SongRepositoryImpl(
                     }
             }
         }
+
+    internal suspend fun fetchRemoteLikedSongs(): Result<List<Track>> = withContext(Dispatchers.IO) {
+        val initialResult = youTube.customQuery(browseId = "VLLM", setLogin = true)
+        if (initialResult.isFailure) {
+            val err = initialResult.exceptionOrNull() ?: Exception("Failed to browse VLLM")
+            Logger.w(TAG, "fetchRemoteLikedSongs failed: ${err.message}")
+            return@withContext Result.failure(err)
+        }
+        val response = initialResult.getOrThrow()
+        val tracks = mutableListOf<Track>()
+
+        val initialContents: List<MusicShelfRenderer.Content>? =
+            response.contents?.singleColumnBrowseResultsRenderer?.tabs?.firstOrNull()
+                ?.tabRenderer?.content?.sectionListRenderer?.contents?.firstOrNull()
+                ?.musicPlaylistShelfRenderer?.contents
+                ?: response.contents?.twoColumnBrowseResultsRenderer?.secondaryContents
+                    ?.sectionListRenderer?.contents?.firstOrNull()
+                    ?.musicPlaylistShelfRenderer?.contents
+
+        initialContents?.forEach { content ->
+            content.musicResponsiveListItemRenderer?.let { renderer ->
+                PlaylistPage.fromMusicResponsiveListItemRenderer(renderer)?.toTrack()?.let { tracks.add(it) }
+            }
+        }
+
+        var continuation = response.getPlaylistContinuation()
+            ?: response.contents?.singleColumnBrowseResultsRenderer?.tabs?.firstOrNull()
+                ?.tabRenderer?.content?.sectionListRenderer?.contents?.firstOrNull()
+                ?.musicPlaylistShelfRenderer?.continuations?.getContinuation()
+
+        while (continuation != null) {
+            val continueResult = youTube.customQuery(
+                browseId = null,
+                continuation = continuation,
+                setLogin = true,
+            )
+            if (continueResult.isFailure) {
+                val err = continueResult.exceptionOrNull() ?: Exception("Pagination failed for continuation $continuation")
+                Logger.w(TAG, "fetchRemoteLikedSongs: continuation error: ${err.message}")
+                return@withContext Result.failure(err)
+            }
+            val continueResponse = continueResult.getOrThrow()
+            val continuationItems = continueResponse.onResponseReceivedActions
+                ?.firstOrNull()
+                ?.appendContinuationItemsAction
+                ?.continuationItems
+                ?: continueResponse.continuationContents?.musicPlaylistShelfContinuation?.contents?.map {
+                    BrowseResponse.OnResponseReceivedActions.AppendContinuationItemsAction.ContinuationItem(
+                        musicResponsiveListItemRenderer = it.musicResponsiveListItemRenderer,
+                        continuationItemRenderer = null,
+                    )
+                }
+                ?: emptyList()
+
+            for (item in continuationItems) {
+                item.musicResponsiveListItemRenderer?.let { renderer ->
+                    PlaylistPage.fromMusicResponsiveListItemRenderer(renderer)?.toTrack()?.let { tracks.add(it) }
+                }
+            }
+
+            continuation = continueResponse.getPlaylistContinuation()
+                ?: continueResponse.continuationContents?.musicPlaylistShelfContinuation?.continuations?.getContinuation()
+        }
+
+        Logger.i(TAG, "fetchRemoteLikedSongs: fetched ${tracks.size} remote liked tracks")
+        Result.success(tracks)
+    }
+
+    override suspend fun syncAccountFavorites(force: Boolean): Result<FavoritesSyncResult> = withContext(Dispatchers.IO) {
+        if (dataStoreManager.loggedIn.first() != TRUE) {
+            Logger.d(TAG, "syncAccountFavorites skipped: not logged in")
+            return@withContext Result.success(FavoritesSyncResult())
+        }
+        val cookie = dataStoreManager.cookie.first()
+        if (cookie.isBlank()) {
+            Logger.d(TAG, "syncAccountFavorites skipped: cookie is blank")
+            return@withContext Result.success(FavoritesSyncResult())
+        }
+
+        val activeAccount = localDataSource.getUsedGoogleAccount()
+        val activeEmail = activeAccount?.email.orEmpty()
+
+        accountFavoritesSyncMutex.withLock {
+            if (dataStoreManager.loggedIn.first() != TRUE || dataStoreManager.cookie.first().isBlank()) {
+                return@withLock Result.success(FavoritesSyncResult())
+            }
+
+            // Check if user switched accounts since last sync
+            val lastSyncedAccount = dataStoreManager.getString(KEY_LAST_SYNCED_ACCOUNT).first().orEmpty()
+            if (lastSyncedAccount.isNotEmpty() && activeEmail.isNotEmpty() && lastSyncedAccount != activeEmail) {
+                Logger.i(TAG, "Account switched from $lastSyncedAccount to $activeEmail — isolating favorites")
+                localDataSource.clearAllLikedSongs()
+                dataStoreManager.putString(KEY_LAST_FAVORITES_SYNC_TIME, "0")
+                dataStoreManager.putString(KEY_LAST_SYNCED_ACCOUNT, activeEmail)
+            }
+
+            val lastSyncTimestamp = dataStoreManager.getString(KEY_LAST_FAVORITES_SYNC_TIME).first()?.toLongOrNull() ?: 0L
+            val nowMs = Clock.System.now().toEpochMilliseconds()
+            // Throttle rapid redundant syncs if already ran within last 3 seconds for the same account (unless forced)
+            if (!force && nowMs - lastSyncTimestamp < 3000L && lastSyncedAccount == activeEmail && lastSyncTimestamp > 0L) {
+                Logger.d(TAG, "Favorites sync ran recently (${nowMs - lastSyncTimestamp} ms ago) for $activeEmail, skipping")
+                return@withLock Result.success(FavoritesSyncResult())
+            }
+
+            // Fetch remote liked songs with pagination
+            val remoteResult = fetchRemoteLikedSongs()
+            if (remoteResult.isFailure) {
+                val err = remoteResult.exceptionOrNull() ?: Exception("Remote fetch failed")
+                Logger.w(TAG, "syncAccountFavorites aborted: ${err.message}")
+                return@withLock Result.failure(err)
+            }
+            val remoteTracks = remoteResult.getOrThrow()
+            val remoteVideoIds = remoteTracks.map { it.videoId }.toSet()
+
+            // Verify account did not change during in-flight network request
+            val currentAccount = localDataSource.getUsedGoogleAccount()
+            if (currentAccount?.email.orEmpty() != activeEmail) {
+                Logger.w(TAG, "Aborting favorites sync: account changed from $activeEmail to ${currentAccount?.email}")
+                return@withLock Result.failure(CancellationException("Account changed during favorites sync"))
+            }
+
+            var songsAddedOrUpdated = 0
+            var songsRemoved = 0
+
+            val localLikedSongs = localDataSource.getAllLikedSongs()
+            val localTombstones = localDataSource.getAllFavoriteTombstones().associateBy { "${it.type}:${it.id}" }
+
+            // 1. Process remote tracks into local DB
+            for (track in remoteTracks) {
+                val key = "${FavoriteSyncType.SONG}:${track.videoId}"
+                val tomb = localTombstones[key]
+                if (tomb != null && !tomb.isFavorite && tomb.updatedAt > lastSyncTimestamp) {
+                    // Local user explicitly unliked while offline or since last sync
+                    // Propagate removal to YouTube if combine is active
+                    if (dataStoreManager.combineLocalAndYouTubeLiked.first() == TRUE) {
+                        try {
+                            youTube.removeFromLiked(track.videoId)
+                        } catch (e: Exception) {
+                            Logger.w(TAG, "Failed to propagate local unlike to YouTube for ${track.videoId}: ${e.message}")
+                        }
+                    }
+                    continue
+                }
+
+                val existing = localDataSource.getSong(track.videoId)
+                if (existing == null) {
+                    localDataSource.insertSong(track.toSongEntity().copy(liked = true, favoriteAt = now()))
+                    localDataSource.updateLiked(liked = 1, videoId = track.videoId)
+                    songsAddedOrUpdated++
+                } else if (!existing.liked) {
+                    localDataSource.updateLiked(liked = 1, videoId = track.videoId)
+                    songsAddedOrUpdated++
+                }
+            }
+
+            // 2. Process local songs absent from remote LM
+            for (localSong in localLikedSongs) {
+                if (localSong.videoId !in remoteVideoIds) {
+                    if (lastSyncTimestamp > 0L) {
+                        val key = "${FavoriteSyncType.SONG}:${localSong.videoId}"
+                        val tomb = localTombstones[key]
+                        val localFavEpoch = tomb?.updatedAt ?: localSong.favoriteAt?.toInstant(TimeZone.currentSystemDefault())?.toEpochMilliseconds() ?: 0L
+                        if (localFavEpoch > lastSyncTimestamp || (tomb != null && tomb.isFavorite && tomb.updatedAt >= lastSyncTimestamp)) {
+                            // Added locally while offline or since last sync -> push to YouTube
+                            if (dataStoreManager.combineLocalAndYouTubeLiked.first() == TRUE) {
+                                try {
+                                    youTube.addToLiked(localSong.videoId)
+                                } catch (e: Exception) {
+                                    Logger.w(TAG, "Failed to propagate local like to YouTube for ${localSong.videoId}: ${e.message}")
+                                }
+                            }
+                        } else {
+                            // Was present in previous sync, now removed remotely -> unlike locally
+                            localDataSource.updateLiked(liked = 0, videoId = localSong.videoId, favoriteAt = null)
+                            songsRemoved++
+                        }
+                    } else {
+                        // First sync with pre-existing local favorites: push to remote if combine is active
+                        if (dataStoreManager.combineLocalAndYouTubeLiked.first() == TRUE) {
+                            try {
+                                youTube.addToLiked(localSong.videoId)
+                            } catch (e: Exception) {
+                                Logger.w(TAG, "Failed to upload pre-existing local like for ${localSong.videoId}: ${e.message}")
+                            }
+                        }
+                    }
+                }
+            }
+
+            val finishMs = Clock.System.now().toEpochMilliseconds()
+            dataStoreManager.putString(KEY_LAST_FAVORITES_SYNC_TIME, finishMs.toString())
+            dataStoreManager.putString(KEY_LAST_SYNCED_ACCOUNT, activeEmail)
+
+            Logger.i(TAG, "syncAccountFavorites complete: +$songsAddedOrUpdated, -$songsRemoved (total remote: ${remoteTracks.size})")
+            Result.success(FavoritesSyncResult(songsAddedOrUpdated = songsAddedOrUpdated, songsRemoved = songsRemoved))
+        }
+    }
 }
 
 private const val SMART_DOWNLOADS_WINDOW_DAYS = 30

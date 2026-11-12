@@ -873,7 +873,7 @@ open class YouTube {
      * @param setLogin if true, the function will set the cookie and authentication header
      * @return a [Result]<[BrowseResponse]> object
      */
-    suspend fun customQuery(
+    open suspend fun customQuery(
         browseId: String?,
         params: String? = null,
         continuation: String? = null,

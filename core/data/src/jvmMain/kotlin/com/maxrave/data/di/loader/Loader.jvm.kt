@@ -16,7 +16,7 @@ actual fun loadLoginSyncModule() {
     loadKoinModules(
         module {
             single { FavoriteSyncStore(get()) }
-            single { LoginSyncStore(get(), get(), get()) }
+            single { LoginSyncStore(get(), get(), get(), getOrNull()) }
             single<LoginSyncHostRepository> { LoginSyncHostRepositoryImpl(get(), get()) }
         },
     )
