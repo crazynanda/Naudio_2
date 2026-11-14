@@ -73,8 +73,8 @@ import kotlin.math.pow
 
 private const val TAG = "SongRepositoryImpl"
 private const val COMMENTS_TAG = "Comments"
-private const val KEY_LAST_FAVORITES_SYNC_TIME = "last_favorites_sync_time"
-private const val KEY_LAST_SYNCED_ACCOUNT = "last_synced_account_id"
+internal const val KEY_LAST_FAVORITES_SYNC_TIME = "last_favorites_sync_time"
+internal const val KEY_LAST_SYNCED_ACCOUNT = "last_synced_account_id"
 private const val KEY_LEGACY_LAST_SYNCED_ACCOUNT = "last_synced_account_email"
 private const val KEY_ACCOUNT_FAV_BACKUP_PREFIX = "account_fav_cache_"
 
@@ -1135,7 +1135,7 @@ internal class SongRepositoryImpl(
             for (track in remoteTracks) {
                 val key = "${FavoriteSyncType.SONG}:${track.videoId}"
                 val tomb = localTombstones[key]
-                if (tomb != null && !tomb.isFavorite && tomb.updatedAt > lastSyncTimestamp) {
+                if (tomb != null && !tomb.isFavorite) {
                     // Local user explicitly unliked while offline or since last sync
                     if (dataStoreManager.combineLocalAndYouTubeLiked.first() == TRUE) {
                         try {
@@ -1189,7 +1189,7 @@ internal class SongRepositoryImpl(
                         val key = "${FavoriteSyncType.SONG}:${localSong.videoId}"
                         val tomb = localTombstones[key]
                         val localFavEpoch = tomb?.updatedAt ?: localSong.favoriteAt?.toInstant(TimeZone.currentSystemDefault())?.toEpochMilliseconds() ?: 0L
-                        if (localFavEpoch > lastSyncTimestamp || (tomb != null && tomb.isFavorite && tomb.updatedAt > lastSyncTimestamp)) {
+                        if ((tomb != null && tomb.isFavorite) || localFavEpoch > lastSyncTimestamp) {
                             // Added locally while offline or since last sync -> push to YouTube
                             if (dataStoreManager.combineLocalAndYouTubeLiked.first() == TRUE) {
                                 try {

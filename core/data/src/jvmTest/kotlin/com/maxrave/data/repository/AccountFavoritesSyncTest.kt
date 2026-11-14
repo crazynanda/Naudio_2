@@ -866,10 +866,110 @@ class AccountFavoritesSyncTest {
         val tomb = localDataSource.getFavoriteTombstone(com.maxrave.domain.data.entities.FavoriteSyncType.SONG, "song_fail_unlike")
         assertTrue(tomb != null && !tomb.isFavorite, "Tombstone must be kept and advanced so song isn't resurrected on next sync")
 
-        // On next sync, song is still not resurrected
+        // On next sync, song is still not resurrected and remote unlike succeeds
         repo.syncAccountFavorites(force = true)
         val songAfterNextSync = localDataSource.getSong("song_fail_unlike")
         assertEquals(false, songAfterNextSync?.liked, "Song must not be resurrected on subsequent syncs")
+        assertTrue(fakeYt.removeFromLikedCalls.contains("song_fail_unlike"), "Remote unlike must be retried on subsequent sync")
+        val tombAfterNextSync = localDataSource.getFavoriteTombstone(com.maxrave.domain.data.entities.FavoriteSyncType.SONG, "song_fail_unlike")
+        assertTrue(tombAfterNextSync == null, "Tombstone must be cleared once remote unlike succeeds")
+    }
+
+    @Test
+    fun failedRemoteLike_preservesPendingTombstoneAndDoesNotUnlikeOnSubsequentSync() = runBlocking {
+        setGoogleAccount("user@gmail.com")
+        val fakeYt = FakeAccountYouTube().apply {
+            remoteTracks.addAll(listOf("remote_track_1"))
+        }
+        val dataStore = TestDataStoreManager(
+            loggedInVal = DataStoreManager.TRUE,
+            cookieVal = "cookie_abc",
+            combineLocalAndYouTubeLikedVal = DataStoreManager.TRUE,
+        ).create()
+        val repo = SongRepositoryImpl(
+            dataStoreManager = dataStore,
+            localDataSource = localDataSource,
+            youTube = fakeYt,
+        )
+
+        // Initial sync
+        repo.syncAccountFavorites()
+        assertEquals(1, localDataSource.getAllLikedSongs().size)
+
+        // User likes new song locally while offline
+        insertTestSong("offline_liked_song", isLiked = false)
+        localDataSource.updateLiked(1, "offline_liked_song")
+        assertEquals(2, localDataSource.getAllLikedSongs().size)
+
+        // YouTube throws error when pushing to remote
+        fakeYt.addToLikedError = IOException("503 Service Unavailable")
+
+        // Sync runs, remote upload fails
+        val syncResult = repo.syncAccountFavorites(force = true)
+        assertTrue(syncResult.isSuccess)
+        fakeYt.addToLikedError = null // recover
+
+        // Song must STILL be liked locally!
+        val songAfterFail = localDataSource.getSong("offline_liked_song")
+        assertEquals(true, songAfterFail?.liked, "Failed remote upload must NEVER delete or unlike local favorite")
+
+        // Tombstone must be preserved with isFavorite = true
+        val tomb = localDataSource.getFavoriteTombstone(com.maxrave.domain.data.entities.FavoriteSyncType.SONG, "offline_liked_song")
+        assertTrue(tomb != null && tomb.isFavorite, "Pending upload tombstone must be retained")
+
+        // On subsequent sync, upload retries and succeeds
+        val retryResult = repo.syncAccountFavorites(force = true)
+        assertTrue(retryResult.isSuccess)
+        assertTrue(fakeYt.addToLikedCalls.contains("offline_liked_song"))
+
+        // Tombstone is cleared upon success, and song remains liked
+        val tombAfterSuccess = localDataSource.getFavoriteTombstone(com.maxrave.domain.data.entities.FavoriteSyncType.SONG, "offline_liked_song")
+        assertTrue(tombAfterSuccess == null, "Successful upload must clear pending tombstone")
+        val songAfterSuccess = localDataSource.getSong("offline_liked_song")
+        assertEquals(true, songAfterSuccess?.liked)
+    }
+
+    @Test
+    fun sameMillisecondUnlike_isPropagatedWithoutRace() = runBlocking {
+        setGoogleAccount("user@gmail.com")
+        val fakeYt = FakeAccountYouTube().apply {
+            remoteTracks.addAll(listOf("race_song"))
+        }
+        val dataStore = TestDataStoreManager(
+            loggedInVal = DataStoreManager.TRUE,
+            cookieVal = "cookie_abc",
+            combineLocalAndYouTubeLikedVal = DataStoreManager.TRUE,
+        ).create()
+        val repo = SongRepositoryImpl(
+            dataStoreManager = dataStore,
+            localDataSource = localDataSource,
+            youTube = fakeYt,
+        )
+
+        // Initial sync
+        repo.syncAccountFavorites()
+        val lastSyncStr = dataStore.getString(KEY_LAST_FAVORITES_SYNC_TIME).first() ?: "0"
+        val lastSyncMs = lastSyncStr.toLong()
+
+        // User unlikes song with exact same millisecond timestamp as lastSync
+        localDataSource.updateLiked(0, "race_song")
+        localDataSource.insertFavoriteTombstone(
+            com.maxrave.domain.data.entities.FavoriteSyncTombstoneEntity(
+                type = com.maxrave.domain.data.entities.FavoriteSyncType.SONG,
+                id = "race_song",
+                isFavorite = false,
+                updatedAt = lastSyncMs,
+            )
+        )
+
+        // Sync runs
+        val syncResult = repo.syncAccountFavorites(force = true)
+        assertTrue(syncResult.isSuccess)
+        assertTrue(fakeYt.removeFromLikedCalls.contains("race_song"), "Tombstone matching lastSync timestamp must still propagate unlike")
+
+        val tombAfter = localDataSource.getFavoriteTombstone(com.maxrave.domain.data.entities.FavoriteSyncType.SONG, "race_song")
+        assertTrue(tombAfter == null, "Tombstone must be cleared on successful remote unlike")
+        assertEquals(false, localDataSource.getSong("race_song")?.liked)
     }
 
     private suspend fun insertTestSong(videoId: String, isLiked: Boolean = false) {
@@ -896,6 +996,7 @@ class AccountFavoritesSyncTest {
         val addToLikedCalls: MutableList<String> = Collections.synchronizedList(mutableListOf<String>())
         val removeFromLikedCalls: MutableList<String> = Collections.synchronizedList(mutableListOf<String>())
         var shouldThrow: Throwable? = null
+        var addToLikedError: Throwable? = null
         var removeFromLikedError: Throwable? = null
 
         override suspend fun customQuery(
@@ -928,6 +1029,7 @@ class AccountFavoritesSyncTest {
         }
 
         override suspend fun addToLiked(mediaId: String): Result<Int> {
+            addToLikedError?.let { return Result.failure(it) }
             shouldThrow?.let { return Result.failure(it) }
             addToLikedCalls.add(mediaId)
             if (!remoteTracks.contains(mediaId)) {
