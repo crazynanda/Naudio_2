@@ -2,7 +2,7 @@
 ; Produces Naudio-Setup-x64.exe bundling the signed x64 MSIX and certificate.
 
 #ifndef AppVersion
-  #define AppVersion "2.3.4"
+  #define AppVersion "2.3.5"
 #endif
 
 #ifndef SourceDir

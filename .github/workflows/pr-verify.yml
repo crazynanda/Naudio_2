@@ -80,6 +80,7 @@ jobs:
 
       - name: Stage dummy test package assets for compiler and packaging validation
         run: |
+          $appVer = "${{ steps.version.outputs.version }}"
           New-Item -ItemType Directory -Path "test-stage" -Force | Out-Null
           # Create self-signed test cert matching CN=Naudio using .NET CertificateRequest
           $rsa = [System.Security.Cryptography.RSA]::Create(2048)
@@ -87,7 +88,7 @@ jobs:
           $cert = $req.CreateSelfSigned([System.DateTimeOffset]::Now.AddDays(-1), [System.DateTimeOffset]::Now.AddYears(1))
           [System.IO.File]::WriteAllBytes("test-stage/simpmusic.crt", $cert.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Cert))
           # Create dummy test MSIX file (1024 zero bytes)
-          [System.IO.File]::WriteAllBytes("test-stage/simpmusic-2.3.4.x64.msix", [byte[]]::new(1024))
+          [System.IO.File]::WriteAllBytes("test-stage/simpmusic-$appVer.x64.msix", [byte[]]::new(1024))
           Write-Host "Staged test assets in test-stage/"
           Get-ChildItem test-stage/
 
@@ -114,9 +115,10 @@ jobs:
 
       - name: Verify fallback ZIP installer packaging and contents
         run: |
+          $appVer = "${{ steps.version.outputs.version }}"
           New-Item -ItemType Directory -Path "installers" -Force | Out-Null
           $zipPath = (Resolve-Path "installers").Path + "\Naudio-Windows-Installer.zip"
-          Compress-Archive -Path "scripts/windows/install.bat", "test-stage/simpmusic.crt", "test-stage/simpmusic-2.3.4.x64.msix" -DestinationPath $zipPath -Force
+          Compress-Archive -Path "scripts/windows/install.bat", "test-stage/simpmusic.crt", "test-stage/simpmusic-$appVer.x64.msix" -DestinationPath $zipPath -Force
 
           $zipItem = Get-Item $zipPath
           if (-not $zipItem -or $zipItem.Length -eq 0) {

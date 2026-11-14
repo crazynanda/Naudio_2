@@ -4,10 +4,10 @@ name: Windows Desktop Release
   workflow_dispatch:
     inputs:
       release_tag:
-        description: 'Target GitHub Release tag (e.g. v2.3.4)'
+        description: 'Target GitHub Release tag (e.g. v2.3.5)'
         required: true
         type: string
-        default: 'v2.3.4'
+        default: 'v2.3.5'
       publish_to_release:
         description: 'Publish Windows installer to GitHub Release'
         required: true
