@@ -47,6 +47,15 @@ import com.maxrave.kotlinytmusicscraper.models.WatchEndpoint
 import com.maxrave.kotlinytmusicscraper.models.response.LikeStatus
 import com.maxrave.kotlinytmusicscraper.pages.NextPage
 import com.maxrave.kotlinytmusicscraper.parser.getPlaylistContinuation
+import com.maxrave.kotlinytmusicscraper.parser.getContinuePlaylistContinuation
+import com.maxrave.data.parser.findSongColumns
+import com.maxrave.data.parser.parseDurationSeconds
+import com.maxrave.data.parser.parseSongAlbumAt
+import com.maxrave.data.parser.parseSongArtistsAt
+import com.maxrave.data.parser.toListThumbnail
+import com.maxrave.domain.data.model.searchResult.songs.Album
+import com.maxrave.domain.utils.LIVE_RESULT_TYPE
+import com.maxrave.kotlinytmusicscraper.models.MusicResponsiveListItemRenderer
 import com.maxrave.logger.Logger
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -911,6 +920,56 @@ internal class SongRepositoryImpl(
             }
         }
 
+    internal fun parseRemoteTrack(renderer: MusicResponsiveListItemRenderer): Track? {
+        val songItem = PlaylistPage.fromMusicResponsiveListItemRenderer(renderer)
+        if (songItem != null && songItem.id.isNotEmpty()) {
+            return songItem.toTrack()
+        }
+
+        // Fallback: robust extraction using SongRunParser
+        val videoId = renderer.videoId
+            ?: renderer.navigationEndpoint?.watchEndpoint?.videoId
+            ?: renderer.navigationEndpoint?.watchPlaylistEndpoint?.videoId
+            ?: renderer.overlay?.musicItemThumbnailOverlayRenderer?.content
+                ?.musicPlayButtonRenderer?.playNavigationEndpoint?.watchEndpoint?.videoId
+            ?: return null
+        if (videoId.isEmpty()) return null
+
+        val columns = findSongColumns(renderer)
+        val title = renderer.flexColumns.getOrNull(columns.titleIndex ?: 0)
+            ?.musicResponsiveListItemFlexColumnRenderer?.text?.runs?.firstOrNull()?.text
+            ?: renderer.flexColumns.firstOrNull()?.musicResponsiveListItemFlexColumnRenderer?.text?.runs?.firstOrNull()?.text
+            ?: ""
+        val album = parseSongAlbumAt(renderer, columns.albumIndex)
+            ?: renderer.menu?.menuRenderer?.items
+                ?.find { it.menuNavigationItemRenderer?.icon?.iconType == "ALBUM" }
+                ?.menuNavigationItemRenderer?.navigationEndpoint?.browseEndpoint?.browseId
+                ?.let { Album(id = it, name = "") }
+        val artists = parseSongArtistsAt(renderer, columns.artistIndex)
+        val durationText = renderer.fixedColumns?.firstOrNull()
+            ?.musicResponsiveListItemFlexColumnRenderer?.text?.runs?.firstOrNull()?.text
+        val thumbnails = renderer.thumbnail?.musicThumbnailRenderer?.thumbnail?.thumbnails?.toListThumbnail() ?: emptyList()
+        val isExplicit = renderer.badges?.any { it.musicInlineBadgeRenderer?.icon?.iconType == "MUSIC_EXPLICIT_BADGE" } == true
+
+        return Track(
+            album = album,
+            artists = artists,
+            duration = durationText.orEmpty(),
+            durationSeconds = parseDurationSeconds(durationText),
+            isAvailable = false,
+            isExplicit = isExplicit,
+            likeStatus = "LIKE",
+            thumbnails = thumbnails,
+            title = title,
+            videoId = videoId,
+            videoType = renderer.musicVideoType,
+            category = null,
+            feedbackTokens = null,
+            resultType = if (renderer.isLive) LIVE_RESULT_TYPE else null,
+            year = null,
+        )
+    }
+
     internal suspend fun fetchRemoteLikedSongs(): Result<List<Track>> = withContext(Dispatchers.IO) {
         val initialResult = youTube.customQuery(browseId = "VLLM", setLogin = true)
         if (initialResult.isFailure) {
@@ -919,7 +978,8 @@ internal class SongRepositoryImpl(
             return@withContext Result.failure(err)
         }
         val response = initialResult.getOrThrow()
-        val tracks = mutableListOf<Track>()
+        val rawTracks = mutableListOf<Track>()
+        var unparseableCount = 0
 
         val initialContents: List<MusicShelfRenderer.Content>? =
             response.contents?.singleColumnBrowseResultsRenderer?.tabs?.firstOrNull()
@@ -931,7 +991,13 @@ internal class SongRepositoryImpl(
 
         initialContents?.forEach { content ->
             content.musicResponsiveListItemRenderer?.let { renderer ->
-                PlaylistPage.fromMusicResponsiveListItemRenderer(renderer)?.toTrack()?.let { tracks.add(it) }
+                val track = parseRemoteTrack(renderer)
+                if (track != null) {
+                    rawTracks.add(track)
+                } else {
+                    unparseableCount++
+                    Logger.w(TAG, "fetchRemoteLikedSongs: dropped unparseable item on initial page (videoId=${renderer.videoId})")
+                }
             }
         }
 
@@ -939,8 +1005,16 @@ internal class SongRepositoryImpl(
             ?: response.contents?.singleColumnBrowseResultsRenderer?.tabs?.firstOrNull()
                 ?.tabRenderer?.content?.sectionListRenderer?.contents?.firstOrNull()
                 ?.musicPlaylistShelfRenderer?.continuations?.getContinuation()
+            ?: response.contents?.twoColumnBrowseResultsRenderer?.secondaryContents
+                ?.sectionListRenderer?.contents?.firstOrNull()
+                ?.musicPlaylistShelfRenderer?.continuations?.getContinuation()
 
-        while (continuation != null) {
+        val visitedContinuations = mutableSetOf<String>()
+        var pageCount = 1
+
+        while (continuation != null && continuation !in visitedContinuations) {
+            visitedContinuations.add(continuation)
+            pageCount++
             val continueResult = youTube.customQuery(
                 browseId = null,
                 continuation = continuation,
@@ -948,14 +1022,12 @@ internal class SongRepositoryImpl(
             )
             if (continueResult.isFailure) {
                 val err = continueResult.exceptionOrNull() ?: Exception("Pagination failed for continuation $continuation")
-                Logger.w(TAG, "fetchRemoteLikedSongs: continuation error: ${err.message}")
+                Logger.w(TAG, "fetchRemoteLikedSongs: continuation error on page $pageCount: ${err.message}")
                 return@withContext Result.failure(err)
             }
             val continueResponse = continueResult.getOrThrow()
             val continuationItems = continueResponse.onResponseReceivedActions
-                ?.firstOrNull()
-                ?.appendContinuationItemsAction
-                ?.continuationItems
+                ?.firstNotNullOfOrNull { it.appendContinuationItemsAction?.continuationItems }
                 ?: continueResponse.continuationContents?.musicPlaylistShelfContinuation?.contents?.map {
                     BrowseResponse.OnResponseReceivedActions.AppendContinuationItemsAction.ContinuationItem(
                         musicResponsiveListItemRenderer = it.musicResponsiveListItemRenderer,
@@ -965,17 +1037,44 @@ internal class SongRepositoryImpl(
                 ?: emptyList()
 
             for (item in continuationItems) {
-                item.musicResponsiveListItemRenderer?.let { renderer ->
-                    PlaylistPage.fromMusicResponsiveListItemRenderer(renderer)?.toTrack()?.let { tracks.add(it) }
+                val renderer = item.musicResponsiveListItemRenderer
+                if (renderer != null) {
+                    val track = parseRemoteTrack(renderer)
+                    if (track != null) {
+                        rawTracks.add(track)
+                    } else {
+                        unparseableCount++
+                        Logger.w(TAG, "fetchRemoteLikedSongs: dropped unparseable item on page $pageCount (videoId=${renderer.videoId})")
+                    }
                 }
             }
 
             continuation = continueResponse.getPlaylistContinuation()
+                ?: continueResponse.getContinuePlaylistContinuation()
+                ?: continueResponse.onResponseReceivedActions
+                    ?.firstNotNullOfOrNull { it.appendContinuationItemsAction?.continuationItems }
+                    ?.firstNotNullOfOrNull { it.continuationItemRenderer?.continuationEndpoint?.continuationCommand?.token }
                 ?: continueResponse.continuationContents?.musicPlaylistShelfContinuation?.continuations?.getContinuation()
         }
 
-        Logger.i(TAG, "fetchRemoteLikedSongs: fetched ${tracks.size} remote liked tracks")
-        Result.success(tracks)
+        // Deduplicate while preserving remote order
+        val uniqueTracks = mutableListOf<Track>()
+        val seenVideoIds = mutableSetOf<String>()
+        var duplicateCount = 0
+        for (track in rawTracks) {
+            if (seenVideoIds.add(track.videoId)) {
+                uniqueTracks.add(track)
+            } else {
+                duplicateCount++
+            }
+        }
+
+        Logger.i(
+            TAG,
+            "fetchRemoteLikedSongs: fetched ${rawTracks.size} remote tracks across $pageCount pages " +
+                "(${uniqueTracks.size} unique, $duplicateCount duplicates, $unparseableCount unparseable)",
+        )
+        Result.success(uniqueTracks)
     }
 
     private suspend fun backupAccountFavorites(
@@ -1126,10 +1225,17 @@ internal class SongRepositoryImpl(
 
             var songsAddedOrUpdated = 0
             var songsRemoved = 0
+            var importFailures = 0
 
             val localLikedSongs = localDataSource.getAllLikedSongs()
             val localTombstones = localDataSource.getAllFavoriteTombstones().associateBy { "${it.type}:${it.id}" }
             val syncCycleEpoch = Clock.System.now().toEpochMilliseconds()
+
+            Logger.i(
+                TAG,
+                "syncAccountFavorites starting: ${remoteTracks.size} remote tracks (${remoteVideoIds.size} unique IDs), " +
+                    "${localLikedSongs.size} local favorites, ${localTombstones.size} tombstones",
+            )
 
             // 1. Process remote tracks into local DB
             for (track in remoteTracks) {
@@ -1169,16 +1275,23 @@ internal class SongRepositoryImpl(
                     continue
                 }
 
-                val existing = localDataSource.getSong(track.videoId)
-                if (existing == null) {
-                    localDataSource.insertSong(track.toSongEntity().copy(liked = true, favoriteAt = now()))
-                    localDataSource.updateLikedWithoutTombstone(liked = 1, videoId = track.videoId)
-                    localDataSource.deleteFavoriteTombstone(FavoriteSyncType.SONG, track.videoId)
-                    songsAddedOrUpdated++
-                } else if (!existing.liked) {
-                    localDataSource.updateLikedWithoutTombstone(liked = 1, videoId = track.videoId)
-                    localDataSource.deleteFavoriteTombstone(FavoriteSyncType.SONG, track.videoId)
-                    songsAddedOrUpdated++
+                try {
+                    val existing = localDataSource.getSong(track.videoId)
+                    if (existing == null) {
+                        localDataSource.insertSong(track.toSongEntity().copy(liked = true, favoriteAt = now()))
+                        localDataSource.updateLikedWithoutTombstone(liked = 1, videoId = track.videoId)
+                        localDataSource.deleteFavoriteTombstone(FavoriteSyncType.SONG, track.videoId)
+                        songsAddedOrUpdated++
+                    } else {
+                        if (!existing.liked) {
+                            localDataSource.updateLikedWithoutTombstone(liked = 1, videoId = track.videoId)
+                            songsAddedOrUpdated++
+                        }
+                        localDataSource.deleteFavoriteTombstone(FavoriteSyncType.SONG, track.videoId)
+                    }
+                } catch (e: Exception) {
+                    importFailures++
+                    Logger.e(TAG, "Failed to import remote track ${track.videoId} (${track.title}): ${e.message}", e)
                 }
             }
 
@@ -1261,7 +1374,12 @@ internal class SongRepositoryImpl(
             dataStoreManager.putString(KEY_LAST_FAVORITES_SYNC_TIME, finishMs.toString())
             dataStoreManager.putString(KEY_LAST_SYNCED_ACCOUNT, activeAccountId)
 
-            Logger.i(TAG, "syncAccountFavorites complete: +$songsAddedOrUpdated, -$songsRemoved (total remote: ${remoteTracks.size})")
+            val finalLocalLiked = localDataSource.getAllLikedSongs()
+            Logger.i(
+                TAG,
+                "syncAccountFavorites complete: +$songsAddedOrUpdated, -$songsRemoved, $importFailures import failures. " +
+                    "Final local favorites: ${finalLocalLiked.size} (remote: ${remoteTracks.size})",
+            )
             Result.success(FavoritesSyncResult(songsAddedOrUpdated = songsAddedOrUpdated, songsRemoved = songsRemoved))
         }
     }

@@ -5,6 +5,7 @@ import androidx.sqlite.driver.bundled.BundledSQLiteDriver
 import com.maxrave.data.db.Converters
 import com.maxrave.data.db.MusicDatabase
 import com.maxrave.data.db.datasource.LocalDataSource
+import com.maxrave.data.extension.getFullDataFromDB
 import com.maxrave.domain.data.entities.DownloadState
 import com.maxrave.domain.data.entities.GoogleAccountEntity
 import com.maxrave.domain.data.entities.SongEntity
@@ -189,10 +190,82 @@ class AccountFavoritesSyncTest {
         )
     }
 
-    private fun createContinuationBrowseResponse(videoIds: List<String>, nextContinuationToken: String? = null): BrowseResponse {
-        val contents = videoIds.map { vid ->
+    private fun createInitialBrowseResponseWithRenderers(
+        renderers: List<MusicResponsiveListItemRenderer>,
+        continuationToken: String? = null,
+    ): BrowseResponse {
+        val contents = renderers.map { renderer ->
             MusicShelfRenderer.Content(
-                musicResponsiveListItemRenderer = createTestRenderer(vid, "Title $vid"),
+                musicResponsiveListItemRenderer = renderer,
+                musicMultiRowListItemRenderer = null,
+                continuationItemRenderer = null,
+            )
+        }
+        val continuations = continuationToken?.let { token ->
+            listOf(
+                Continuation(
+                    nextContinuationData = Continuation.NextContinuationData(
+                        continuation = token,
+                    ),
+                    reloadContinuationData = null,
+                ),
+            )
+        }
+        return BrowseResponse(
+            contents = BrowseResponse.Contents(
+                singleColumnBrowseResultsRenderer = Tabs(
+                    listOf(
+                        Tabs.Tab(
+                            tabRenderer = Tabs.Tab.TabRenderer(
+                                title = null,
+                                content = Tabs.Tab.TabRenderer.Content(
+                                    sectionListRenderer = SectionListRenderer(
+                                        header = null,
+                                        contents = listOf(
+                                            SectionListRenderer.Content(
+                                                musicCarouselShelfRenderer = null,
+                                                musicShelfRenderer = null,
+                                                musicCardShelfRenderer = null,
+                                                musicPlaylistShelfRenderer = MusicPlaylistShelfRenderer(
+                                                    playlistId = "VLLM",
+                                                    contents = contents,
+                                                    collapsedItemCount = 0,
+                                                    continuations = continuations,
+                                                ),
+                                                musicDescriptionShelfRenderer = null,
+                                                musicResponsiveHeaderRenderer = null,
+                                                musicEditablePlaylistDetailHeaderRenderer = null,
+                                                gridRenderer = null,
+                                            ),
+                                        ),
+                                        continuations = null,
+                                    ),
+                                    musicQueueRenderer = null,
+                                ),
+                                endpoint = null,
+                            ),
+                        ),
+                    ),
+                ),
+                twoColumnBrowseResultsRenderer = null,
+                sectionListRenderer = null,
+            ),
+            continuationContents = null,
+            header = null,
+            microformat = null,
+            responseContext = ResponseContext(serviceTrackingParams = null),
+            background = null,
+            onResponseReceivedActions = null,
+        )
+    }
+
+    private fun createContinuationBrowseResponseWithRenderers(
+        renderers: List<MusicResponsiveListItemRenderer>,
+        nextContinuationToken: String? = null,
+    ): BrowseResponse {
+        val contents = renderers.map { renderer ->
+            MusicShelfRenderer.Content(
+                musicResponsiveListItemRenderer = renderer,
                 musicMultiRowListItemRenderer = null,
                 continuationItemRenderer = null,
             )
@@ -224,6 +297,10 @@ class AccountFavoritesSyncTest {
             background = null,
             onResponseReceivedActions = null,
         )
+    }
+
+    private fun createContinuationBrowseResponse(videoIds: List<String>, nextContinuationToken: String? = null): BrowseResponse {
+        return createContinuationBrowseResponseWithRenderers(videoIds.map { createTestRenderer(it, "Title $it") }, nextContinuationToken)
     }
 
     @Test
@@ -972,6 +1049,285 @@ class AccountFavoritesSyncTest {
         assertEquals(false, localDataSource.getSong("race_song")?.liked)
     }
 
+    @Test
+    fun singleTrackWithNullBrowseIdInAlbumColumn_isSuccessfullyImported() = runBlocking {
+        setGoogleAccount("user@gmail.com")
+        // Create a single track whose flexColumns[2] has a run with no browseId (standard YouTube single/video)
+        val singleRenderer = MusicResponsiveListItemRenderer(
+            badges = null,
+            fixedColumns = null,
+            flexColumns = listOf(
+                MusicResponsiveListItemRenderer.FlexColumn(
+                    MusicResponsiveListItemRenderer.FlexColumn.MusicResponsiveListItemFlexColumnRenderer(
+                        Runs(listOf(Run("Single Hit", null))),
+                    ),
+                ),
+                MusicResponsiveListItemRenderer.FlexColumn(
+                    MusicResponsiveListItemRenderer.FlexColumn.MusicResponsiveListItemFlexColumnRenderer(
+                        Runs(listOf(Run("Solo Artist", null))),
+                    ),
+                ),
+                MusicResponsiveListItemRenderer.FlexColumn(
+                    MusicResponsiveListItemRenderer.FlexColumn.MusicResponsiveListItemFlexColumnRenderer(
+                        Runs(listOf(Run("Single", null))), // No browseId!
+                    ),
+                ),
+            ),
+            thumbnail = ThumbnailRenderer(
+                musicThumbnailRenderer = ThumbnailRenderer.MusicThumbnailRenderer(
+                    thumbnail = Thumbnails(listOf(Thumbnail("https://img.test/single.jpg", 120, 120))),
+                    thumbnailCrop = null,
+                    thumbnailScale = null,
+                ),
+                musicAnimatedThumbnailRenderer = null,
+                croppedSquareThumbnailRenderer = null,
+            ),
+            menu = null,
+            playlistItemData = MusicResponsiveListItemRenderer.PlaylistItemData(playlistSetVideoId = null, videoId = "single_track_1"),
+            overlay = null,
+            navigationEndpoint = NavigationEndpoint(
+                watchEndpoint = WatchEndpoint(videoId = "single_track_1"),
+            ),
+        )
+
+        val fakeYt = FakeAccountYouTube().apply {
+            customRenderersPages = listOf(listOf(singleRenderer))
+        }
+        val dataStore = TestDataStoreManager(
+            loggedInVal = DataStoreManager.TRUE,
+            cookieVal = "cookie_abc",
+        ).create()
+        val repo = SongRepositoryImpl(
+            dataStoreManager = dataStore,
+            localDataSource = localDataSource,
+            youTube = fakeYt,
+        )
+
+        val result = repo.syncAccountFavorites()
+        assertTrue(result.isSuccess)
+        val liked = localDataSource.getAllLikedSongs()
+        assertEquals(1, liked.size, "Single with null browseId in album column must NOT be discarded")
+        assertEquals("single_track_1", liked.first().videoId)
+        assertEquals(true, liked.first().liked)
+    }
+
+    @Test
+    fun tracksWithMissingThumbnailOrEmptyArtist_areSuccessfullyImported() = runBlocking {
+        setGoogleAccount("user@gmail.com")
+        // Track 1: Missing thumbnail
+        val noThumbRenderer = MusicResponsiveListItemRenderer(
+            badges = null,
+            fixedColumns = null,
+            flexColumns = listOf(
+                MusicResponsiveListItemRenderer.FlexColumn(
+                    MusicResponsiveListItemRenderer.FlexColumn.MusicResponsiveListItemFlexColumnRenderer(
+                        Runs(listOf(Run("No Thumb Song", null))),
+                    ),
+                ),
+                MusicResponsiveListItemRenderer.FlexColumn(
+                    MusicResponsiveListItemRenderer.FlexColumn.MusicResponsiveListItemFlexColumnRenderer(
+                        Runs(listOf(Run("Some Artist", null))),
+                    ),
+                ),
+            ),
+            thumbnail = null,
+            menu = null,
+            playlistItemData = MusicResponsiveListItemRenderer.PlaylistItemData(playlistSetVideoId = null, videoId = "no_thumb_song"),
+            overlay = null,
+            navigationEndpoint = NavigationEndpoint(watchEndpoint = WatchEndpoint(videoId = "no_thumb_song")),
+        )
+        // Track 2: Empty artists
+        val noArtistRenderer = MusicResponsiveListItemRenderer(
+            badges = null,
+            fixedColumns = null,
+            flexColumns = listOf(
+                MusicResponsiveListItemRenderer.FlexColumn(
+                    MusicResponsiveListItemRenderer.FlexColumn.MusicResponsiveListItemFlexColumnRenderer(
+                        Runs(listOf(Run("No Artist Song", null))),
+                    ),
+                ),
+                MusicResponsiveListItemRenderer.FlexColumn(
+                    MusicResponsiveListItemRenderer.FlexColumn.MusicResponsiveListItemFlexColumnRenderer(
+                        Runs(emptyList()),
+                    ),
+                ),
+            ),
+            thumbnail = ThumbnailRenderer(
+                musicThumbnailRenderer = ThumbnailRenderer.MusicThumbnailRenderer(
+                    thumbnail = Thumbnails(listOf(Thumbnail("https://img.test/art.jpg", 120, 120))),
+                    thumbnailCrop = null,
+                    thumbnailScale = null,
+                ),
+                musicAnimatedThumbnailRenderer = null,
+                croppedSquareThumbnailRenderer = null,
+            ),
+            menu = null,
+            playlistItemData = MusicResponsiveListItemRenderer.PlaylistItemData(playlistSetVideoId = null, videoId = "no_artist_song"),
+            overlay = null,
+            navigationEndpoint = NavigationEndpoint(watchEndpoint = WatchEndpoint(videoId = "no_artist_song")),
+        )
+
+        val fakeYt = FakeAccountYouTube().apply {
+            customRenderersPages = listOf(listOf(noThumbRenderer, noArtistRenderer))
+        }
+        val dataStore = TestDataStoreManager(
+            loggedInVal = DataStoreManager.TRUE,
+            cookieVal = "cookie_abc",
+        ).create()
+        val repo = SongRepositoryImpl(
+            dataStoreManager = dataStore,
+            localDataSource = localDataSource,
+            youTube = fakeYt,
+        )
+
+        val result = repo.syncAccountFavorites()
+        assertTrue(result.isSuccess)
+        val liked = localDataSource.getAllLikedSongs()
+        assertEquals(2, liked.size, "Tracks with missing thumbnail or empty artists must be imported")
+        val ids = liked.map { it.videoId }.toSet()
+        assertTrue("no_thumb_song" in ids)
+        assertTrue("no_artist_song" in ids)
+    }
+
+    @Test
+    fun unavailableTrackWithoutDirectWatchEndpoint_isSuccessfullyImported() = runBlocking {
+        setGoogleAccount("user@gmail.com")
+        // Greyed-out track: videoId on playlistItemData, but navigationEndpoint on title is null
+        val unavailRenderer = MusicResponsiveListItemRenderer(
+            badges = null,
+            fixedColumns = null,
+            flexColumns = listOf(
+                MusicResponsiveListItemRenderer.FlexColumn(
+                    MusicResponsiveListItemRenderer.FlexColumn.MusicResponsiveListItemFlexColumnRenderer(
+                        Runs(listOf(Run("Greyed-out Track", null))),
+                    ),
+                ),
+                MusicResponsiveListItemRenderer.FlexColumn(
+                    MusicResponsiveListItemRenderer.FlexColumn.MusicResponsiveListItemFlexColumnRenderer(
+                        Runs(listOf(Run("Artist Unavailable", null))),
+                    ),
+                ),
+            ),
+            thumbnail = null,
+            menu = null,
+            playlistItemData = MusicResponsiveListItemRenderer.PlaylistItemData(playlistSetVideoId = null, videoId = "unavail_song_1"),
+            overlay = null,
+            navigationEndpoint = null,
+        )
+
+        val fakeYt = FakeAccountYouTube().apply {
+            customRenderersPages = listOf(listOf(unavailRenderer))
+        }
+        val dataStore = TestDataStoreManager(
+            loggedInVal = DataStoreManager.TRUE,
+            cookieVal = "cookie_abc",
+        ).create()
+        val repo = SongRepositoryImpl(
+            dataStoreManager = dataStore,
+            localDataSource = localDataSource,
+            youTube = fakeYt,
+        )
+
+        val result = repo.syncAccountFavorites()
+        assertTrue(result.isSuccess)
+        val liked = localDataSource.getAllLikedSongs()
+        assertEquals(1, liked.size, "Unavailable track with videoId on playlistItemData must be imported")
+        assertEquals("unavail_song_1", liked.first().videoId)
+    }
+
+    @Test
+    fun multiPagePagination_importsAll611TracksWithDeterministicPagingAndDuplicates() = runBlocking {
+        setGoogleAccount("user@gmail.com")
+        // Build 611 unique track renderers, including 4 singles with null browseId in album column
+        val totalUnique = 611
+        val allRenderers = mutableListOf<MusicResponsiveListItemRenderer>()
+        for (i in 1..totalUnique) {
+            val vid = "vid_${i.toString().padStart(4, '0')}"
+            val isSingle = (i in 1..4) // 4 singles without album browseId
+            val flexCols = mutableListOf(
+                MusicResponsiveListItemRenderer.FlexColumn(
+                    MusicResponsiveListItemRenderer.FlexColumn.MusicResponsiveListItemFlexColumnRenderer(
+                        Runs(listOf(Run("Track $i", null))),
+                    ),
+                ),
+                MusicResponsiveListItemRenderer.FlexColumn(
+                    MusicResponsiveListItemRenderer.FlexColumn.MusicResponsiveListItemFlexColumnRenderer(
+                        Runs(listOf(Run("Artist $i", null))),
+                    ),
+                ),
+            )
+            if (isSingle) {
+                flexCols.add(
+                    MusicResponsiveListItemRenderer.FlexColumn(
+                        MusicResponsiveListItemRenderer.FlexColumn.MusicResponsiveListItemFlexColumnRenderer(
+                            Runs(listOf(Run("Single", null))),
+                        ),
+                    ),
+                )
+            }
+            allRenderers.add(
+                MusicResponsiveListItemRenderer(
+                    badges = null,
+                    fixedColumns = null,
+                    flexColumns = flexCols,
+                    thumbnail = ThumbnailRenderer(
+                        musicThumbnailRenderer = ThumbnailRenderer.MusicThumbnailRenderer(
+                            thumbnail = Thumbnails(listOf(Thumbnail("https://img.test/$vid.jpg", 120, 120))),
+                            thumbnailCrop = null,
+                            thumbnailScale = null,
+                        ),
+                        musicAnimatedThumbnailRenderer = null,
+                        croppedSquareThumbnailRenderer = null,
+                    ),
+                    menu = null,
+                    playlistItemData = MusicResponsiveListItemRenderer.PlaylistItemData(playlistSetVideoId = null, videoId = vid),
+                    overlay = null,
+                    navigationEndpoint = NavigationEndpoint(watchEndpoint = WatchEndpoint(videoId = vid)),
+                )
+            )
+        }
+
+        // Add 5 duplicate items across page boundaries (simulating remote duplicates)
+        val duplicatedList = mutableListOf<MusicResponsiveListItemRenderer>()
+        duplicatedList.addAll(allRenderers.take(300))
+        duplicatedList.addAll(allRenderers.take(5)) // duplicates
+        duplicatedList.addAll(allRenderers.drop(300))
+
+        // Split into chunks of 100 for 7 pages
+        val pages = duplicatedList.chunked(100)
+        assertEquals(7, pages.size)
+
+        val fakeYt = FakeAccountYouTube().apply {
+            customRenderersPages = pages
+        }
+        val dataStore = TestDataStoreManager(
+            loggedInVal = DataStoreManager.TRUE,
+            cookieVal = "cookie_abc",
+        ).create()
+        val repo = SongRepositoryImpl(
+            dataStoreManager = dataStore,
+            localDataSource = localDataSource,
+            youTube = fakeYt,
+        )
+
+        val syncResult = repo.syncAccountFavorites(force = true)
+        assertTrue(syncResult.isSuccess)
+
+        // All 611 unique favorites must be present
+        val allLikedInDb = localDataSource.getAllLikedSongs()
+        assertEquals(611, allLikedInDb.size, "All 611 unique tracks including the 4 singles must be imported")
+
+        val countFlow = localDataSource.countLikedSongs().first()
+        assertEquals(611, countFlow)
+
+        // Verify deterministic pagination in getLikedSongs via getFullDataFromDB
+        val pagedLiked = getFullDataFromDB { limit, offset ->
+            localDataSource.getLikedSongs(limit, offset)
+        }
+        assertEquals(611, pagedLiked.size, "Deterministic ORDER BY must return all 611 tracks without dropping rows across offset windows")
+        assertEquals(611, pagedLiked.map { it.videoId }.toSet().size, "All paged songs must be unique")
+    }
+
     private suspend fun insertTestSong(videoId: String, isLiked: Boolean = false) {
         val song = SongEntity(
             videoId = videoId,
@@ -993,6 +1349,7 @@ class AccountFavoritesSyncTest {
     private inner class FakeAccountYouTube : YouTube() {
         val remoteTracks: MutableList<String> = Collections.synchronizedList(mutableListOf<String>())
         var remotePages: List<List<String>>? = null
+        var customRenderersPages: List<List<MusicResponsiveListItemRenderer>>? = null
         val addToLikedCalls: MutableList<String> = Collections.synchronizedList(mutableListOf<String>())
         val removeFromLikedCalls: MutableList<String> = Collections.synchronizedList(mutableListOf<String>())
         var shouldThrow: Throwable? = null
@@ -1007,6 +1364,20 @@ class AccountFavoritesSyncTest {
             setLogin: Boolean,
         ): Result<BrowseResponse> {
             shouldThrow?.let { return Result.failure(it) }
+
+            val customPages = customRenderersPages
+            if (customPages != null) {
+                if (browseId == "VLLM") {
+                    val page1 = customPages.getOrNull(0) ?: emptyList()
+                    val nextToken = if (customPages.size > 1) "custom_page_token_1" else null
+                    return Result.success(createInitialBrowseResponseWithRenderers(page1, nextToken))
+                } else if (continuation != null) {
+                    val pageIndex = continuation.removePrefix("custom_page_token_").toIntOrNull() ?: 1
+                    val pageItems = customPages.getOrNull(pageIndex) ?: emptyList()
+                    val nextToken = if (pageIndex + 1 < customPages.size) "custom_page_token_${pageIndex + 1}" else null
+                    return Result.success(createContinuationBrowseResponseWithRenderers(pageItems, nextToken))
+                }
+            }
 
             val pages = remotePages
             if (pages != null) {

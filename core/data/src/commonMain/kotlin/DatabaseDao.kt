@@ -266,7 +266,7 @@ interface DatabaseDao {
     @Query("SELECT * FROM song ORDER BY inLibrary DESC LIMIT :limit OFFSET 0")
     suspend fun getAllSongs(limit: Int): List<SongEntity>
 
-    @Query("SELECT * FROM song WHERE liked = 1 ORDER BY favoriteAt DESC LIMIT :limit OFFSET :offset")
+    @Query("SELECT * FROM song WHERE liked = 1 ORDER BY favoriteAt DESC, inLibrary DESC, videoId ASC LIMIT :limit OFFSET :offset")
     suspend fun getLikedSongs(
         limit: Int,
         offset: Int,
