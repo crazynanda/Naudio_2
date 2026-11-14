@@ -49,6 +49,7 @@ import simpmusic.composeapp.generated.resources.login_sync_android_title
 import simpmusic.composeapp.generated.resources.login_sync_desktop_instructions
 import simpmusic.composeapp.generated.resources.login_sync_desktop_title
 import simpmusic.composeapp.generated.resources.login_sync_expired
+import simpmusic.composeapp.generated.resources.login_sync_favorites_synced
 import simpmusic.composeapp.generated.resources.login_sync_new_code
 import simpmusic.composeapp.generated.resources.login_sync_no_network
 import simpmusic.composeapp.generated.resources.login_sync_phone_connected
@@ -70,7 +71,8 @@ actual fun LoginSyncDialog(onDismiss: () -> Unit) {
         state is LoginSyncHostState.Expired ||
             state is LoginSyncHostState.NoNetwork ||
             state is LoginSyncHostState.Failed ||
-            state is LoginSyncHostState.Rejected
+            state is LoginSyncHostState.Rejected ||
+            state is LoginSyncHostState.FavoritesSynced
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(text = stringResource(Res.string.login_sync_desktop_title), style = typo().titleSmall) },
@@ -126,7 +128,34 @@ actual fun LoginSyncDialog(onDismiss: () -> Unit) {
                     }
 
                     is LoginSyncHostState.Done -> {
-                        Text(text = stringResource(Res.string.login_sync_received, s.services.joinToString { it.label }))
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            Text(text = stringResource(Res.string.login_sync_received, s.services.joinToString { it.label }), textAlign = TextAlign.Center)
+                            val fav = s.favoritesResult
+                            if (fav != null && !fav.isEmpty) {
+                                Text(
+                                    text = stringResource(
+                                        Res.string.login_sync_favorites_synced,
+                                        fav.totalAddedOrUpdated,
+                                        fav.totalRemoved,
+                                    ),
+                                    textAlign = TextAlign.Center,
+                                )
+                            }
+                        }
+                    }
+
+                    is LoginSyncHostState.FavoritesSynced -> {
+                        Text(
+                            text = stringResource(
+                                Res.string.login_sync_favorites_synced,
+                                s.result.totalAddedOrUpdated,
+                                s.result.totalRemoved,
+                            ),
+                            textAlign = TextAlign.Center,
+                        )
                     }
 
                     LoginSyncHostState.Expired -> {
@@ -149,7 +178,7 @@ actual fun LoginSyncDialog(onDismiss: () -> Unit) {
         },
         confirmButton = {
             TextButton(onClick = onDismiss) {
-                Text(text = stringResource(if (state is LoginSyncHostState.Done) Res.string.ok else Res.string.cancel))
+                Text(text = stringResource(if (state is LoginSyncHostState.Done || state is LoginSyncHostState.FavoritesSynced) Res.string.ok else Res.string.cancel))
             }
         },
         dismissButton =

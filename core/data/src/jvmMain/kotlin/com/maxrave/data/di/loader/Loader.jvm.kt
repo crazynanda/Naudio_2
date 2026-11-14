@@ -1,5 +1,6 @@
 package com.maxrave.data.di.loader
 
+import com.maxrave.data.favoritesync.FavoriteSyncStore
 import com.simpmusic.media_jvm.di.loadDesktopPlayerModule
 import com.maxrave.data.loginsync.LoginSyncHostRepositoryImpl
 import com.maxrave.data.loginsync.LoginSyncStore
@@ -14,8 +15,9 @@ actual fun loadMediaService() {
 actual fun loadLoginSyncModule() {
     loadKoinModules(
         module {
-            single { LoginSyncStore(get(), get(), get()) }
-            single<LoginSyncHostRepository> { LoginSyncHostRepositoryImpl(get()) }
+            single { FavoriteSyncStore(get()) }
+            single { LoginSyncStore(get(), get(), get(), getOrNull()) }
+            single<LoginSyncHostRepository> { LoginSyncHostRepositoryImpl(get(), get()) }
         },
     )
 }

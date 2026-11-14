@@ -2,6 +2,7 @@ package com.maxrave.simpmusic.viewModel
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.maxrave.domain.data.model.favoritesync.FavoritesSyncResult
 import com.maxrave.domain.data.model.loginsync.DesktopInfo
 import com.maxrave.domain.data.model.loginsync.LoginSyncException
 import com.maxrave.domain.data.model.loginsync.LoginSyncService
@@ -45,6 +46,7 @@ class LoginSyncSenderViewModel(
         data class Done(
             val desktop: DesktopInfo,
             val services: List<LoginSyncService>,
+            val favoritesResult: FavoritesSyncResult? = null,
         ) : Step
 
         data class Failed(
@@ -57,6 +59,7 @@ class LoginSyncSenderViewModel(
         val step: Step = Step.Loading,
         val signedIn: List<LoginSyncService> = emptyList(),
         val selected: Set<LoginSyncService> = emptySet(),
+        val syncFavorites: Boolean = true,
     )
 
     private val _uiState = MutableStateFlow(UiState())
@@ -73,12 +76,12 @@ class LoginSyncSenderViewModel(
                 UiState(
                     step =
                         when {
-                            signedIn.isEmpty() -> Step.NothingSignedIn
                             hasCamera -> Step.Scanning
                             else -> Step.NeedsCamera(blocked = false)
                         },
                     signedIn = signedIn,
                     selected = signedIn.toSet(),
+                    syncFavorites = true,
                 )
         }
     }
@@ -113,15 +116,41 @@ class LoginSyncSenderViewModel(
     fun toggle(service: LoginSyncService) =
         _uiState.update { it.copy(selected = if (service in it.selected) it.selected - service else it.selected + service) }
 
+    fun toggleFavorites() = _uiState.update { it.copy(syncFavorites = !it.syncFavorites) }
+
     fun send() {
         val choose = _uiState.value.step as? Step.Choose ?: return
         val services = _uiState.value.selected
-        if (services.isEmpty()) return
+        val syncFavs = _uiState.value.syncFavorites
+        if (services.isEmpty() && !syncFavs) return
         step(Step.Sending)
         viewModelScope.launch {
             step(
                 try {
-                    Step.Done(choose.desktop, repository.send(services))
+                    var favResult: FavoritesSyncResult? = null
+                    if (syncFavs) {
+                        favResult = repository.syncFavorites()
+                    }
+                    var sentServices: List<LoginSyncService> = emptyList()
+                    if (services.isNotEmpty()) {
+                        sentServices = repository.send(services)
+                    }
+                    Step.Done(choose.desktop, sentServices, favResult)
+                } catch (e: LoginSyncException) {
+                    Step.Failed(e.reason, e.detail)
+                },
+            )
+        }
+    }
+
+    fun resyncFavorites() {
+        val done = _uiState.value.step as? Step.Done ?: return
+        step(Step.Sending)
+        viewModelScope.launch {
+            step(
+                try {
+                    val favResult = repository.syncFavorites()
+                    Step.Done(done.desktop, done.services, favResult)
                 } catch (e: LoginSyncException) {
                     Step.Failed(e.reason, e.detail)
                 },

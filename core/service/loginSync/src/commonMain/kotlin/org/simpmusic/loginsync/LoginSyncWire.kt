@@ -23,6 +23,7 @@ import kotlin.io.encoding.Base64
 internal object LoginSyncWire {
     const val HELLO = "hello"
     const val PAYLOAD = "logins"
+    const val FAVORITES = "favorites"
     const val CANCEL = "cancel"
 
     // Several Google accounts, each with its full cookie twice over (header form + Netscape file).

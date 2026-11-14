@@ -1,5 +1,7 @@
 package com.maxrave.domain.data.model.loginsync
 
+import com.maxrave.domain.data.model.favoritesync.FavoritesSyncResult
+
 /** A sign-in the phone can hand to the desktop. Only sign-ins travel — never settings or API keys. */
 enum class LoginSyncService(
     val label: String,
@@ -37,6 +39,13 @@ sealed interface LoginSyncHostState {
 
     data class Done(
         val services: List<LoginSyncService>,
+        val favoritesResult: FavoritesSyncResult? = null,
+        val timestamp: Long = kotlin.time.Clock.System.now().toEpochMilliseconds(),
+    ) : LoginSyncHostState
+
+    data class FavoritesSynced(
+        val result: FavoritesSyncResult,
+        val timestamp: Long = kotlin.time.Clock.System.now().toEpochMilliseconds(),
     ) : LoginSyncHostState
 
     data object Expired : LoginSyncHostState
@@ -53,7 +62,7 @@ sealed interface LoginSyncHostState {
     ) : LoginSyncHostState
 }
 
-class LoginSyncException(
+open class LoginSyncException(
     val reason: Reason,
     val detail: String?,
 ) : Exception(detail) {

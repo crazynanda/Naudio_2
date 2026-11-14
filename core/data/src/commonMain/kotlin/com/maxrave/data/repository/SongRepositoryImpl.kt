@@ -3,11 +3,16 @@ package com.maxrave.data.repository
 import com.maxrave.common.MERGING_DATA_TYPE
 import com.maxrave.data.db.datasource.LocalDataSource
 import com.maxrave.data.extension.getFullDataFromDB
+import com.maxrave.data.favoritesync.toLocalDateTimeSystem
 import com.maxrave.data.mapping.toListTrack
+import com.maxrave.data.mapping.toTrack
 import com.maxrave.data.mapping.toYouTubeComment
 import com.maxrave.data.mapping.toYouTubeCommentsPage
 import com.maxrave.data.mapping.toSongItemForDownload
 import com.maxrave.data.mapping.toWatchEndpoint
+import com.maxrave.domain.data.entities.FavoriteSyncTombstoneEntity
+import com.maxrave.domain.data.entities.FavoriteSyncType
+import com.maxrave.domain.data.entities.GoogleAccountEntity
 import com.maxrave.domain.data.entities.QueueEntity
 import com.maxrave.domain.data.entities.DownloadState
 import com.maxrave.domain.data.entities.SongEntity
@@ -17,8 +22,15 @@ import com.maxrave.domain.data.model.browse.album.Track
 import com.maxrave.domain.data.model.comments.YouTubeComment
 import com.maxrave.domain.data.model.comments.YouTubeCommentsPage
 import com.maxrave.domain.data.model.download.DownloadProgress
+import com.maxrave.domain.data.model.favoritesync.FavoritesSyncResult
 import com.maxrave.domain.data.model.streams.YouTubeWatchEndpoint
 import com.maxrave.domain.extension.now
+import com.maxrave.domain.utils.toSongEntity
+import com.maxrave.kotlinytmusicscraper.models.MusicShelfRenderer
+import com.maxrave.kotlinytmusicscraper.models.getContinuation
+import com.maxrave.kotlinytmusicscraper.models.response.BrowseResponse
+import com.maxrave.kotlinytmusicscraper.pages.PlaylistPage
+import kotlin.time.Clock
 import com.maxrave.domain.manager.DataStoreManager
 import com.maxrave.domain.manager.DataStoreManager.Values.TRUE
 import com.maxrave.domain.mediaservice.handler.DownloadHandler
@@ -35,6 +47,15 @@ import com.maxrave.kotlinytmusicscraper.models.WatchEndpoint
 import com.maxrave.kotlinytmusicscraper.models.response.LikeStatus
 import com.maxrave.kotlinytmusicscraper.pages.NextPage
 import com.maxrave.kotlinytmusicscraper.parser.getPlaylistContinuation
+import com.maxrave.kotlinytmusicscraper.parser.getContinuePlaylistContinuation
+import com.maxrave.data.parser.findSongColumns
+import com.maxrave.data.parser.parseDurationSeconds
+import com.maxrave.data.parser.parseSongAlbumAt
+import com.maxrave.data.parser.parseSongArtistsAt
+import com.maxrave.data.parser.toListThumbnail
+import com.maxrave.domain.data.model.searchResult.songs.Album
+import com.maxrave.domain.utils.LIVE_RESULT_TYPE
+import com.maxrave.kotlinytmusicscraper.models.MusicResponsiveListItemRenderer
 import com.maxrave.logger.Logger
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -54,11 +75,59 @@ import kotlinx.datetime.LocalDateTime
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.minus
 import kotlinx.datetime.toInstant
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
 import org.koin.mp.KoinPlatform.getKoin
 import kotlin.math.pow
 
 private const val TAG = "SongRepositoryImpl"
 private const val COMMENTS_TAG = "Comments"
+internal const val KEY_LAST_FAVORITES_SYNC_TIME = "last_favorites_sync_time"
+internal const val KEY_LAST_SYNCED_ACCOUNT = "last_synced_account_id"
+private const val KEY_LEGACY_LAST_SYNCED_ACCOUNT = "last_synced_account_email"
+private const val KEY_ACCOUNT_FAV_BACKUP_PREFIX = "account_fav_cache_"
+
+@Serializable
+internal data class AccountFavoritesSnapshot(
+    val accountId: String,
+    val savedAtEpochMs: Long,
+    val songs: List<AccountSongFavoriteSnapshot>,
+    val tombstones: List<AccountTombstoneSnapshot> = emptyList(),
+)
+
+@Serializable
+internal data class AccountSongFavoriteSnapshot(
+    val videoId: String,
+    val title: String = "",
+    val favoriteAtEpochMs: Long?,
+)
+
+@Serializable
+internal data class AccountTombstoneSnapshot(
+    val type: String,
+    val id: String,
+    val isFavorite: Boolean,
+    val updatedAt: Long,
+)
+
+internal fun getAccountIdentifier(account: GoogleAccountEntity?): String {
+    if (account == null || account.email.isBlank()) return ""
+    val email = account.email.trim().lowercase()
+    val pageId = account.pageId?.trim().orEmpty()
+    return if (pageId.isNotEmpty()) "${email}#${pageId}" else "${email}#"
+}
+
+internal fun isSameAccount(storedAccountId: String, currentAccount: GoogleAccountEntity?): Boolean {
+    if (storedAccountId.isBlank() || currentAccount == null || currentAccount.email.isBlank()) return false
+    val currentId = getAccountIdentifier(currentAccount)
+    if (storedAccountId == currentId) return true
+    // Backward compatibility if previous version stored raw email:
+    val rawEmail = currentAccount.email.trim().lowercase()
+    if (storedAccountId == rawEmail && currentAccount.pageId.isNullOrBlank()) {
+        return true
+    }
+    return false
+}
 
 internal class SongRepositoryImpl(
     private val dataStoreManager: DataStoreManager,
@@ -66,6 +135,7 @@ internal class SongRepositoryImpl(
     private val youTube: YouTube,
     downloadHandler: DownloadHandler? = null,
     private val youtubeLikeSyncMutex: Mutex = Mutex(),
+    private val accountFavoritesSyncMutex: Mutex = Mutex(),
 ) : SongRepository {
     override fun getAllSongs(limit: Int): Flow<List<SongEntity>> =
         flow {
@@ -849,6 +919,470 @@ internal class SongRepositoryImpl(
                     }
             }
         }
+
+    internal fun parseRemoteTrack(renderer: MusicResponsiveListItemRenderer): Track? {
+        val songItem = PlaylistPage.fromMusicResponsiveListItemRenderer(renderer)
+        if (songItem != null && songItem.id.isNotEmpty()) {
+            return songItem.toTrack()
+        }
+
+        // Fallback: robust extraction using SongRunParser
+        val videoId = renderer.videoId
+            ?: renderer.navigationEndpoint?.watchEndpoint?.videoId
+            ?: renderer.navigationEndpoint?.watchPlaylistEndpoint?.videoId
+            ?: renderer.overlay?.musicItemThumbnailOverlayRenderer?.content
+                ?.musicPlayButtonRenderer?.playNavigationEndpoint?.watchEndpoint?.videoId
+            ?: return null
+        if (videoId.isEmpty()) return null
+
+        val columns = findSongColumns(renderer)
+        val title = renderer.flexColumns.getOrNull(columns.titleIndex ?: 0)
+            ?.musicResponsiveListItemFlexColumnRenderer?.text?.runs?.firstOrNull()?.text
+            ?: renderer.flexColumns.firstOrNull()?.musicResponsiveListItemFlexColumnRenderer?.text?.runs?.firstOrNull()?.text
+            ?: ""
+        val album = parseSongAlbumAt(renderer, columns.albumIndex)
+            ?: renderer.menu?.menuRenderer?.items
+                ?.find { it.menuNavigationItemRenderer?.icon?.iconType == "ALBUM" }
+                ?.menuNavigationItemRenderer?.navigationEndpoint?.browseEndpoint?.browseId
+                ?.let { Album(id = it, name = "") }
+        val artists = parseSongArtistsAt(renderer, columns.artistIndex)
+        val durationText = renderer.fixedColumns?.firstOrNull()
+            ?.musicResponsiveListItemFlexColumnRenderer?.text?.runs?.firstOrNull()?.text
+        val thumbnails = renderer.thumbnail?.musicThumbnailRenderer?.thumbnail?.thumbnails?.toListThumbnail() ?: emptyList()
+        val isExplicit = renderer.badges?.any { it.musicInlineBadgeRenderer?.icon?.iconType == "MUSIC_EXPLICIT_BADGE" } == true
+
+        return Track(
+            album = album,
+            artists = artists,
+            duration = durationText.orEmpty(),
+            durationSeconds = parseDurationSeconds(durationText),
+            isAvailable = false,
+            isExplicit = isExplicit,
+            likeStatus = "LIKE",
+            thumbnails = thumbnails,
+            title = title,
+            videoId = videoId,
+            videoType = renderer.musicVideoType,
+            category = null,
+            feedbackTokens = null,
+            resultType = if (renderer.isLive) LIVE_RESULT_TYPE else null,
+            year = null,
+        )
+    }
+
+    internal suspend fun fetchRemoteLikedSongs(): Result<List<Track>> = withContext(Dispatchers.IO) {
+        val initialResult = youTube.customQuery(browseId = "VLLM", setLogin = true)
+        if (initialResult.isFailure) {
+            val err = initialResult.exceptionOrNull() ?: Exception("Failed to browse VLLM")
+            Logger.w(TAG, "fetchRemoteLikedSongs failed: ${err.message}")
+            return@withContext Result.failure(err)
+        }
+        val response = initialResult.getOrThrow()
+        val rawTracks = mutableListOf<Track>()
+        var unparseableCount = 0
+
+        val initialContents: List<MusicShelfRenderer.Content>? =
+            response.contents?.singleColumnBrowseResultsRenderer?.tabs?.firstOrNull()
+                ?.tabRenderer?.content?.sectionListRenderer?.contents?.firstOrNull()
+                ?.musicPlaylistShelfRenderer?.contents
+                ?: response.contents?.twoColumnBrowseResultsRenderer?.secondaryContents
+                    ?.sectionListRenderer?.contents?.firstOrNull()
+                    ?.musicPlaylistShelfRenderer?.contents
+
+        initialContents?.forEach { content ->
+            content.musicResponsiveListItemRenderer?.let { renderer ->
+                val track = parseRemoteTrack(renderer)
+                if (track != null) {
+                    rawTracks.add(track)
+                } else {
+                    unparseableCount++
+                    Logger.w(TAG, "fetchRemoteLikedSongs: dropped unparseable item on initial page (videoId=${renderer.videoId})")
+                }
+            }
+        }
+
+        var continuation = response.getPlaylistContinuation()
+            ?: response.contents?.singleColumnBrowseResultsRenderer?.tabs?.firstOrNull()
+                ?.tabRenderer?.content?.sectionListRenderer?.contents?.firstOrNull()
+                ?.musicPlaylistShelfRenderer?.continuations?.getContinuation()
+            ?: response.contents?.twoColumnBrowseResultsRenderer?.secondaryContents
+                ?.sectionListRenderer?.contents?.firstOrNull()
+                ?.musicPlaylistShelfRenderer?.continuations?.getContinuation()
+
+        val visitedContinuations = mutableSetOf<String>()
+        var pageCount = 1
+
+        while (continuation != null && continuation !in visitedContinuations) {
+            visitedContinuations.add(continuation)
+            pageCount++
+            val continueResult = youTube.customQuery(
+                browseId = null,
+                continuation = continuation,
+                setLogin = true,
+            )
+            if (continueResult.isFailure) {
+                val err = continueResult.exceptionOrNull() ?: Exception("Pagination failed for continuation $continuation")
+                Logger.w(TAG, "fetchRemoteLikedSongs: continuation error on page $pageCount: ${err.message}")
+                return@withContext Result.failure(err)
+            }
+            val continueResponse = continueResult.getOrThrow()
+            val continuationItems = continueResponse.onResponseReceivedActions
+                ?.firstNotNullOfOrNull { it.appendContinuationItemsAction?.continuationItems }
+                ?: continueResponse.continuationContents?.musicPlaylistShelfContinuation?.contents?.map {
+                    BrowseResponse.OnResponseReceivedActions.AppendContinuationItemsAction.ContinuationItem(
+                        musicResponsiveListItemRenderer = it.musicResponsiveListItemRenderer,
+                        continuationItemRenderer = null,
+                    )
+                }
+                ?: emptyList()
+
+            for (item in continuationItems) {
+                val renderer = item.musicResponsiveListItemRenderer
+                if (renderer != null) {
+                    val track = parseRemoteTrack(renderer)
+                    if (track != null) {
+                        rawTracks.add(track)
+                    } else {
+                        unparseableCount++
+                        Logger.w(TAG, "fetchRemoteLikedSongs: dropped unparseable item on page $pageCount (videoId=${renderer.videoId})")
+                    }
+                }
+            }
+
+            continuation = continueResponse.getPlaylistContinuation()
+                ?: continueResponse.getContinuePlaylistContinuation()
+                ?: continueResponse.onResponseReceivedActions
+                    ?.firstNotNullOfOrNull { it.appendContinuationItemsAction?.continuationItems }
+                    ?.firstNotNullOfOrNull { it.continuationItemRenderer?.continuationEndpoint?.continuationCommand?.token }
+                ?: continueResponse.continuationContents?.musicPlaylistShelfContinuation?.continuations?.getContinuation()
+        }
+
+        // Deduplicate while preserving remote order
+        val uniqueTracks = mutableListOf<Track>()
+        val seenVideoIds = mutableSetOf<String>()
+        var duplicateCount = 0
+        for (track in rawTracks) {
+            if (seenVideoIds.add(track.videoId)) {
+                uniqueTracks.add(track)
+            } else {
+                duplicateCount++
+            }
+        }
+
+        Logger.i(
+            TAG,
+            "fetchRemoteLikedSongs: fetched ${rawTracks.size} remote tracks across $pageCount pages " +
+                "(${uniqueTracks.size} unique, $duplicateCount duplicates, $unparseableCount unparseable)",
+        )
+        Result.success(uniqueTracks)
+    }
+
+    private suspend fun backupAccountFavorites(
+        accountId: String,
+        likedSongs: List<SongEntity>,
+        tombstones: List<FavoriteSyncTombstoneEntity>,
+    ) {
+        if (accountId.isBlank()) return
+        try {
+            val snapshot = AccountFavoritesSnapshot(
+                accountId = accountId,
+                savedAtEpochMs = Clock.System.now().toEpochMilliseconds(),
+                songs = likedSongs.map {
+                    AccountSongFavoriteSnapshot(
+                        videoId = it.videoId,
+                        title = it.title,
+                        favoriteAtEpochMs = it.favoriteAt?.toInstant(TimeZone.currentSystemDefault())?.toEpochMilliseconds(),
+                    )
+                },
+                tombstones = tombstones.map {
+                    AccountTombstoneSnapshot(
+                        type = it.type,
+                        id = it.id,
+                        isFavorite = it.isFavorite,
+                        updatedAt = it.updatedAt,
+                    )
+                },
+            )
+            val jsonStr = Json.encodeToString(AccountFavoritesSnapshot.serializer(), snapshot)
+            dataStoreManager.putString(KEY_ACCOUNT_FAV_BACKUP_PREFIX + accountId, jsonStr)
+            Logger.i(TAG, "Backed up ${likedSongs.size} favorites and ${tombstones.size} tombstones for account $accountId")
+        } catch (e: Exception) {
+            Logger.w(TAG, "Failed to backup favorites for account $accountId: ${e.message}")
+        }
+    }
+
+    private suspend fun restoreAccountFavorites(accountId: String) {
+        if (accountId.isBlank()) return
+        try {
+            val jsonStr = dataStoreManager.getString(KEY_ACCOUNT_FAV_BACKUP_PREFIX + accountId).first().orEmpty()
+            if (jsonStr.isBlank()) return
+            val snapshot = Json.decodeFromString(AccountFavoritesSnapshot.serializer(), jsonStr)
+            var restoredCount = 0
+            for (item in snapshot.songs) {
+                val existing = localDataSource.getSong(item.videoId)
+                val favTime = item.favoriteAtEpochMs?.toLocalDateTimeSystem() ?: now()
+                if (existing != null) {
+                    if (!existing.liked) {
+                        localDataSource.updateLiked(1, item.videoId, favTime)
+                        restoredCount++
+                    }
+                } else {
+                    val newSong = SongEntity(
+                        videoId = item.videoId,
+                        duration = "",
+                        durationSeconds = 0,
+                        isAvailable = true,
+                        isExplicit = false,
+                        likeStatus = YouTubeLikeStatus.INDIFFERENT.name,
+                        title = item.title.ifBlank { item.videoId },
+                        videoType = "MUSIC_VIDEO_TYPE_ATV",
+                        category = null,
+                        resultType = null,
+                        liked = true,
+                        favoriteAt = favTime,
+                    )
+                    localDataSource.insertSong(newSong)
+                    localDataSource.updateLiked(1, item.videoId, favTime)
+                    restoredCount++
+                }
+            }
+            for (tomb in snapshot.tombstones) {
+                localDataSource.insertFavoriteTombstone(
+                    FavoriteSyncTombstoneEntity(
+                        type = tomb.type,
+                        id = tomb.id,
+                        isFavorite = tomb.isFavorite,
+                        updatedAt = tomb.updatedAt,
+                    )
+                )
+            }
+            Logger.i(TAG, "Restored $restoredCount favorites from backup for account $accountId")
+        } catch (e: Exception) {
+            Logger.w(TAG, "Failed to restore favorites for account $accountId: ${e.message}")
+        }
+    }
+
+    override suspend fun syncAccountFavorites(force: Boolean): Result<FavoritesSyncResult> = withContext(Dispatchers.IO) {
+        if (dataStoreManager.loggedIn.first() != TRUE) {
+            Logger.d(TAG, "syncAccountFavorites skipped: not logged in")
+            return@withContext Result.success(FavoritesSyncResult())
+        }
+        val cookie = dataStoreManager.cookie.first()
+        if (cookie.isBlank()) {
+            Logger.d(TAG, "syncAccountFavorites skipped: cookie is blank")
+            return@withContext Result.success(FavoritesSyncResult())
+        }
+
+        val activeAccount = localDataSource.getUsedGoogleAccount()
+        val activeAccountId = getAccountIdentifier(activeAccount)
+
+        accountFavoritesSyncMutex.withLock {
+            if (dataStoreManager.loggedIn.first() != TRUE || dataStoreManager.cookie.first().isBlank()) {
+                return@withLock Result.success(FavoritesSyncResult())
+            }
+
+            // Check if user switched accounts since last sync
+            val lastSyncedAccount = dataStoreManager.getString(KEY_LAST_SYNCED_ACCOUNT).first().orEmpty().ifEmpty {
+                dataStoreManager.getString(KEY_LEGACY_LAST_SYNCED_ACCOUNT).first().orEmpty()
+            }
+            if (lastSyncedAccount.isNotEmpty() && activeAccountId.isNotEmpty() && !isSameAccount(lastSyncedAccount, activeAccount)) {
+                Logger.i(TAG, "Account switched from $lastSyncedAccount to $activeAccountId — preserving and isolating favorites")
+                val currentLiked = localDataSource.getAllLikedSongs()
+                val currentTombs = localDataSource.getAllFavoriteTombstones()
+                backupAccountFavorites(lastSyncedAccount, currentLiked, currentTombs)
+
+                localDataSource.clearAllLikedSongs()
+                dataStoreManager.putString(KEY_LAST_FAVORITES_SYNC_TIME, "0")
+                dataStoreManager.putString(KEY_LAST_SYNCED_ACCOUNT, activeAccountId)
+
+                restoreAccountFavorites(activeAccountId)
+            }
+
+            val lastSyncTimestamp = dataStoreManager.getString(KEY_LAST_FAVORITES_SYNC_TIME).first()?.toLongOrNull() ?: 0L
+            val nowMs = Clock.System.now().toEpochMilliseconds()
+            // Throttle rapid redundant syncs if already ran within last 3 seconds for the same account (unless forced)
+            if (!force && nowMs - lastSyncTimestamp < 3000L && isSameAccount(lastSyncedAccount, activeAccount) && lastSyncTimestamp > 0L) {
+                Logger.d(TAG, "Favorites sync ran recently (${nowMs - lastSyncTimestamp} ms ago) for $activeAccountId, skipping")
+                return@withLock Result.success(FavoritesSyncResult())
+            }
+
+            // Fetch remote liked songs with pagination
+            val remoteResult = fetchRemoteLikedSongs()
+            if (remoteResult.isFailure) {
+                val err = remoteResult.exceptionOrNull() ?: Exception("Remote fetch failed")
+                Logger.w(TAG, "syncAccountFavorites aborted: ${err.message}")
+                return@withLock Result.failure(err)
+            }
+            val remoteTracks = remoteResult.getOrThrow()
+            val remoteVideoIds = remoteTracks.map { it.videoId }.toSet()
+
+            // Verify account did not change during in-flight network request
+            val currentAccount = localDataSource.getUsedGoogleAccount()
+            if (getAccountIdentifier(currentAccount) != activeAccountId) {
+                Logger.w(TAG, "Aborting favorites sync: account changed from $activeAccountId to ${getAccountIdentifier(currentAccount)}")
+                return@withLock Result.failure(CancellationException("Account changed during favorites sync"))
+            }
+
+            var songsAddedOrUpdated = 0
+            var songsRemoved = 0
+            var importFailures = 0
+
+            val localLikedSongs = localDataSource.getAllLikedSongs()
+            val localTombstones = localDataSource.getAllFavoriteTombstones().associateBy { "${it.type}:${it.id}" }
+            val syncCycleEpoch = Clock.System.now().toEpochMilliseconds()
+
+            Logger.i(
+                TAG,
+                "syncAccountFavorites starting: ${remoteTracks.size} remote tracks (${remoteVideoIds.size} unique IDs), " +
+                    "${localLikedSongs.size} local favorites, ${localTombstones.size} tombstones",
+            )
+
+            // 1. Process remote tracks into local DB
+            for (track in remoteTracks) {
+                val key = "${FavoriteSyncType.SONG}:${track.videoId}"
+                val tomb = localTombstones[key]
+                if (tomb != null && !tomb.isFavorite) {
+                    // Local user explicitly unliked while offline or since last sync
+                    if (dataStoreManager.combineLocalAndYouTubeLiked.first() == TRUE) {
+                        try {
+                            val res = youTube.removeFromLiked(track.videoId)
+                            if (res.isSuccess && (res.getOrNull() ?: 0) in 200..299) {
+                                localDataSource.deleteFavoriteTombstone(FavoriteSyncType.SONG, track.videoId)
+                            } else {
+                                localDataSource.insertFavoriteTombstone(
+                                    FavoriteSyncTombstoneEntity(
+                                        type = FavoriteSyncType.SONG,
+                                        id = track.videoId,
+                                        isFavorite = false,
+                                        updatedAt = syncCycleEpoch + 1,
+                                    )
+                                )
+                            }
+                        } catch (e: Exception) {
+                            Logger.w(TAG, "Failed to propagate local unlike to YouTube for ${track.videoId}: ${e.message}")
+                            localDataSource.insertFavoriteTombstone(
+                                FavoriteSyncTombstoneEntity(
+                                    type = FavoriteSyncType.SONG,
+                                    id = track.videoId,
+                                    isFavorite = false,
+                                    updatedAt = syncCycleEpoch + 1,
+                                )
+                            )
+                        }
+                    } else {
+                        localDataSource.deleteFavoriteTombstone(FavoriteSyncType.SONG, track.videoId)
+                    }
+                    continue
+                }
+
+                try {
+                    val existing = localDataSource.getSong(track.videoId)
+                    if (existing == null) {
+                        localDataSource.insertSong(track.toSongEntity().copy(liked = true, favoriteAt = now()))
+                        localDataSource.updateLikedWithoutTombstone(liked = 1, videoId = track.videoId)
+                        localDataSource.deleteFavoriteTombstone(FavoriteSyncType.SONG, track.videoId)
+                        songsAddedOrUpdated++
+                    } else {
+                        if (!existing.liked) {
+                            localDataSource.updateLikedWithoutTombstone(liked = 1, videoId = track.videoId)
+                            songsAddedOrUpdated++
+                        }
+                        localDataSource.deleteFavoriteTombstone(FavoriteSyncType.SONG, track.videoId)
+                    }
+                } catch (e: Exception) {
+                    importFailures++
+                    Logger.e(TAG, "Failed to import remote track ${track.videoId} (${track.title}): ${e.message}", e)
+                }
+            }
+
+            // 2. Process local songs absent from remote LM
+            for (localSong in localLikedSongs) {
+                if (localSong.videoId !in remoteVideoIds) {
+                    if (lastSyncTimestamp > 0L) {
+                        val key = "${FavoriteSyncType.SONG}:${localSong.videoId}"
+                        val tomb = localTombstones[key]
+                        val localFavEpoch = tomb?.updatedAt ?: localSong.favoriteAt?.toInstant(TimeZone.currentSystemDefault())?.toEpochMilliseconds() ?: 0L
+                        if ((tomb != null && tomb.isFavorite) || localFavEpoch > lastSyncTimestamp) {
+                            // Added locally while offline or since last sync -> push to YouTube
+                            if (dataStoreManager.combineLocalAndYouTubeLiked.first() == TRUE) {
+                                try {
+                                    val addResult = youTube.addToLiked(localSong.videoId)
+                                    if (addResult.isSuccess && (addResult.getOrNull() ?: 0) in 200..299) {
+                                        localDataSource.deleteFavoriteTombstone(FavoriteSyncType.SONG, localSong.videoId)
+                                    } else {
+                                        localDataSource.insertFavoriteTombstone(
+                                            FavoriteSyncTombstoneEntity(
+                                                type = FavoriteSyncType.SONG,
+                                                id = localSong.videoId,
+                                                isFavorite = true,
+                                                updatedAt = syncCycleEpoch + 1,
+                                            )
+                                        )
+                                    }
+                                } catch (e: Exception) {
+                                    Logger.w(TAG, "Failed to propagate local like to YouTube for ${localSong.videoId}: ${e.message}")
+                                    localDataSource.insertFavoriteTombstone(
+                                        FavoriteSyncTombstoneEntity(
+                                            type = FavoriteSyncType.SONG,
+                                            id = localSong.videoId,
+                                            isFavorite = true,
+                                            updatedAt = syncCycleEpoch + 1,
+                                        )
+                                    )
+                                }
+                            }
+                        } else {
+                            // Was present in previous sync, now removed remotely -> unlike locally
+                            localDataSource.updateLikedWithoutTombstone(liked = 0, videoId = localSong.videoId, favoriteAt = null)
+                            localDataSource.deleteFavoriteTombstone(FavoriteSyncType.SONG, localSong.videoId)
+                            songsRemoved++
+                        }
+                    } else {
+                        // First sync with pre-existing local favorites: push to remote if combine is active
+                        if (dataStoreManager.combineLocalAndYouTubeLiked.first() == TRUE) {
+                            try {
+                                val addResult = youTube.addToLiked(localSong.videoId)
+                                if (addResult.isSuccess && (addResult.getOrNull() ?: 0) in 200..299) {
+                                    localDataSource.deleteFavoriteTombstone(FavoriteSyncType.SONG, localSong.videoId)
+                                } else {
+                                    localDataSource.insertFavoriteTombstone(
+                                        FavoriteSyncTombstoneEntity(
+                                            type = FavoriteSyncType.SONG,
+                                            id = localSong.videoId,
+                                            isFavorite = true,
+                                            updatedAt = syncCycleEpoch + 1,
+                                        )
+                                    )
+                                }
+                            } catch (e: Exception) {
+                                Logger.w(TAG, "Failed to upload pre-existing local like for ${localSong.videoId}: ${e.message}")
+                                localDataSource.insertFavoriteTombstone(
+                                    FavoriteSyncTombstoneEntity(
+                                        type = FavoriteSyncType.SONG,
+                                        id = localSong.videoId,
+                                        isFavorite = true,
+                                        updatedAt = syncCycleEpoch + 1,
+                                    )
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            val finishMs = Clock.System.now().toEpochMilliseconds()
+            dataStoreManager.putString(KEY_LAST_FAVORITES_SYNC_TIME, finishMs.toString())
+            dataStoreManager.putString(KEY_LAST_SYNCED_ACCOUNT, activeAccountId)
+
+            val finalLocalLiked = localDataSource.getAllLikedSongs()
+            Logger.i(
+                TAG,
+                "syncAccountFavorites complete: +$songsAddedOrUpdated, -$songsRemoved, $importFailures import failures. " +
+                    "Final local favorites: ${finalLocalLiked.size} (remote: ${remoteTracks.size})",
+            )
+            Result.success(FavoritesSyncResult(songsAddedOrUpdated = songsAddedOrUpdated, songsRemoved = songsRemoved))
+        }
+    }
 }
 
 private const val SMART_DOWNLOADS_WINDOW_DAYS = 30

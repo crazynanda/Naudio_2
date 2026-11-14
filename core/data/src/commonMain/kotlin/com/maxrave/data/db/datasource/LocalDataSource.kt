@@ -9,6 +9,8 @@ import com.maxrave.domain.data.entities.AutoEqCurveEntity
 import com.maxrave.domain.data.entities.AutoEqEntryEntity
 import com.maxrave.domain.data.entities.AutoEqIndexMetaEntity
 import com.maxrave.domain.data.entities.EpisodeEntity
+import com.maxrave.domain.data.entities.FavoriteSyncTombstoneEntity
+import com.maxrave.domain.data.entities.FavoriteSyncType
 import com.maxrave.domain.data.entities.FollowedArtistSingleAndAlbum
 import com.maxrave.domain.data.entities.GoogleAccountEntity
 import com.maxrave.domain.data.entities.LocalPlaylistEntity
@@ -31,7 +33,10 @@ import com.maxrave.domain.extension.now
 import com.maxrave.domain.utils.FilterState
 import com.maxrave.domain.utils.isLive
 import com.maxrave.logger.Logger
+import kotlin.time.Clock
 import kotlinx.datetime.LocalDateTime
+import kotlinx.datetime.TimeZone
+import kotlinx.datetime.toInstant
 
 /** SQLite caps bind parameters per statement; stay well under it when deleting in bulk. */
 private const val DELETE_BATCH_SIZE = 400
@@ -289,12 +294,42 @@ internal class LocalDataSource(
     suspend fun updateLiked(
         liked: Int,
         videoId: String,
-    ) = databaseDao.updateLiked(liked, videoId)
+        favoriteAt: LocalDateTime? = if (liked == 1) now() else null,
+    ) {
+        val timestamp = favoriteAt?.toInstant(TimeZone.currentSystemDefault())?.toEpochMilliseconds()
+            ?: Clock.System.now().toEpochMilliseconds()
+        val tombstone =
+            FavoriteSyncTombstoneEntity(
+                type = FavoriteSyncType.SONG,
+                id = videoId,
+                isFavorite = (liked == 1),
+                updatedAt = timestamp,
+            )
+        databaseDao.updateSongLikedWithTombstone(liked, videoId, favoriteAt, tombstone)
+    }
+
+    suspend fun updateLikedWithoutTombstone(
+        liked: Int,
+        videoId: String,
+        favoriteAt: LocalDateTime? = if (liked == 1) now() else null,
+    ) = databaseDao.updateLiked(liked, videoId, favoriteAt)
 
     suspend fun updateDurationSeconds(
         durationSeconds: Int,
         videoId: String,
     ) = databaseDao.updateDurationSeconds(durationSeconds, videoId)
+
+    suspend fun getAllLikedSongs() = databaseDao.getAllLikedSongs()
+
+    suspend fun clearAllLikedSongs() = databaseDao.clearAllLikedSongs()
+
+    suspend fun getAllFavoriteTombstones() = databaseDao.getAllFavoriteTombstones()
+
+    suspend fun getFavoriteTombstone(type: String, id: String) = databaseDao.getFavoriteTombstone(type, id)
+
+    suspend fun insertFavoriteTombstone(tombstone: FavoriteSyncTombstoneEntity) = databaseDao.insertFavoriteTombstone(tombstone)
+
+    suspend fun deleteFavoriteTombstone(type: String, id: String) = databaseDao.deleteFavoriteTombstone(type, id)
 
     suspend fun updateSongInLibrary(
         inLibrary: LocalDateTime,
@@ -342,7 +377,19 @@ internal class LocalDataSource(
     suspend fun updateFollowed(
         followed: Int,
         channelId: String,
-    ) = databaseDao.updateFollowed(followed, channelId)
+        followedAt: LocalDateTime? = if (followed == 1) now() else null,
+    ) {
+        val timestamp = followedAt?.toInstant(TimeZone.currentSystemDefault())?.toEpochMilliseconds()
+            ?: Clock.System.now().toEpochMilliseconds()
+        val tombstone =
+            FavoriteSyncTombstoneEntity(
+                type = FavoriteSyncType.ARTIST,
+                id = channelId,
+                isFavorite = (followed == 1),
+                updatedAt = timestamp,
+            )
+        databaseDao.updateFollowedWithTombstone(followed, channelId, followedAt, tombstone)
+    }
 
     suspend fun getArtist(channelId: String) = databaseDao.getArtist(channelId)
 
@@ -366,7 +413,19 @@ internal class LocalDataSource(
     suspend fun updateAlbumLiked(
         liked: Int,
         albumId: String,
-    ) = databaseDao.updateAlbumLiked(liked, albumId)
+        favoriteAt: LocalDateTime? = if (liked == 1) now() else null,
+    ) {
+        val timestamp = favoriteAt?.toInstant(TimeZone.currentSystemDefault())?.toEpochMilliseconds()
+            ?: Clock.System.now().toEpochMilliseconds()
+        val tombstone =
+            FavoriteSyncTombstoneEntity(
+                type = FavoriteSyncType.ALBUM,
+                id = albumId,
+                isFavorite = (liked == 1),
+                updatedAt = timestamp,
+            )
+        databaseDao.updateAlbumLikedWithTombstone(liked, albumId, favoriteAt, tombstone)
+    }
 
     suspend fun getAlbum(albumId: String) = databaseDao.getAlbum(albumId)
 
@@ -401,7 +460,19 @@ internal class LocalDataSource(
     suspend fun updatePlaylistLiked(
         liked: Int,
         playlistId: String,
-    ) = databaseDao.updatePlaylistLiked(liked, playlistId)
+        favoriteAt: LocalDateTime? = if (liked == 1) now() else null,
+    ) {
+        val timestamp = favoriteAt?.toInstant(TimeZone.currentSystemDefault())?.toEpochMilliseconds()
+            ?: Clock.System.now().toEpochMilliseconds()
+        val tombstone =
+            FavoriteSyncTombstoneEntity(
+                type = FavoriteSyncType.PLAYLIST,
+                id = playlistId,
+                isFavorite = (liked == 1),
+                updatedAt = timestamp,
+            )
+        databaseDao.updatePlaylistLikedWithTombstone(liked, playlistId, favoriteAt, tombstone)
+    }
 
     suspend fun getPlaylist(playlistId: String) = databaseDao.getPlaylist(playlistId)
 
@@ -746,17 +817,20 @@ internal class LocalDataSource(
         podcastId: String,
         isFavorite: Boolean,
     ): Boolean {
-        val podcast = databaseDao.getPodcast(podcastId)
-        if (podcast != null) {
-            val updatedPodcast =
-                podcast.copy(
-                    isFavorite = isFavorite,
-                    favoriteTime = if (isFavorite) now() else null,
-                )
-            return databaseDao.insertPodcast(updatedPodcast) > 0
-        } else {
-            return false
-        }
+        val timestamp = Clock.System.now().toEpochMilliseconds()
+        val tombstone =
+            FavoriteSyncTombstoneEntity(
+                type = FavoriteSyncType.PODCAST,
+                id = podcastId,
+                isFavorite = isFavorite,
+                updatedAt = timestamp,
+            )
+        return databaseDao.updatePodcastFavoriteWithTombstone(
+            podcastId = podcastId,
+            isFavorite = isFavorite,
+            favoriteTime = if (isFavorite) now() else null,
+            tombstone = tombstone,
+        )
     }
 
     suspend fun getPodcastEpisodes(

@@ -4,15 +4,15 @@ name: Windows Desktop Release
   workflow_dispatch:
     inputs:
       release_tag:
-        description: 'Target GitHub Release tag (e.g. v2.3.4)'
+        description: 'Target GitHub Release tag (e.g. v2.3.5)'
         required: true
         type: string
-        default: 'v2.3.4'
+        default: 'v2.3.5'
       publish_to_release:
         description: 'Publish Windows installer to GitHub Release'
         required: true
         type: boolean
-        default: true
+        default: false
 
 permissions:
   contents: read
@@ -28,11 +28,17 @@ jobs:
       run:
         shell: bash
     steps:
-      - name: Checkout main with recursive submodules
-        uses: actions/checkout@v6
+      - name: Checkout repository with recursive submodules
+        uses: actions/checkout@v4
         with:
-          ref: main
+          ref: ${{ github.sha }}
           submodules: 'recursive'
+
+      - name: Log checkout ref and commit
+        run: |
+          echo "Checked out commit: $(git rev-parse HEAD)"
+          echo "Expected SHA: ${{ github.sha }}"
+          echo "Ref: ${{ github.ref }}"
 
       - name: Read app version from libs.versions.toml
         id: version
@@ -133,7 +139,7 @@ jobs:
           cp output/simpmusic.crt        "$stage/"
           cp "$msix"                      "$stage/"
           ( cd "$stage" && zip -q -j \
-            "${GITHUB_WORKSPACE}/installers/SimpMusic-Windows-installer.zip" \
+            "${GITHUB_WORKSPACE}/installers/Naudio-Windows-Installer.zip" \
             install.bat simpmusic.crt "$(basename "$msix")" )
           rm -rf "$stage"
           ls -lh installers/
@@ -144,7 +150,7 @@ jobs:
         run: |
           set -euo pipefail
           msix=$(ls output/simpmusic-*.x64.msix | head -1)
-          zip_path="installers/SimpMusic-Windows-installer.zip"
+          zip_path="installers/Naudio-Windows-Installer.zip"
 
           echo "=== 1. Checking Installer ZIP Integrity & Contents ==="
           if [ ! -f "$zip_path" ]; then
@@ -236,25 +242,44 @@ jobs:
           openssl pkcs7 -inform DER -in "$tmp_pkcs7" -print_certs -noout
           echo "✓ MSIX PKCS#7 ASN.1 signature block successfully validated with OpenSSL"
 
-      - name: Upload Windows desktop installer artifact
+      - name: Upload Windows fallback ZIP installer
         uses: actions/upload-artifact@v4
         with:
-          name: naudio-windows-desktop
-          path: installers/SimpMusic-Windows-installer.zip
+          name: naudio-windows-installer-zip
+          path: installers/Naudio-Windows-Installer.zip
           if-no-files-found: error
 
+      - name: Upload standalone Windows MSIX package
+        uses: actions/upload-artifact@v4
+        with:
+          name: naudio-windows-msix
+          path: output/simpmusic-*.x64.msix
+          if-no-files-found: warn
+
   verify-windows-signature:
-    name: Verify MSIX Signature (Microsoft SignTool)
+    name: Verify MSIX Signature & Build Setup EXE
     runs-on: windows-latest
     needs: [build-windows-desktop]
     defaults:
       run:
         shell: pwsh
     steps:
-      - name: Download Windows installer artifact
+      - name: Checkout repository with recursive submodules
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          submodules: 'recursive'
+
+      - name: Log checkout ref and commit
+        run: |
+          Write-Host "Checked out commit: $(git rev-parse HEAD)"
+          Write-Host "Expected SHA: ${{ github.sha }}"
+          Write-Host "Ref: ${{ github.ref }}"
+
+      - name: Download Windows installer ZIP artifact
         uses: actions/download-artifact@v4
         with:
-          name: naudio-windows-desktop
+          name: naudio-windows-installer-zip
           path: installer-artifact
 
       - name: Extract installer ZIP and locate assets
@@ -288,6 +313,7 @@ jobs:
           "extract_dir=$extractDir" >> $env:GITHUB_OUTPUT
           "crt_path=$($crtFile.FullName)" >> $env:GITHUB_OUTPUT
           "msix_path=$($msixFile.FullName)" >> $env:GITHUB_OUTPUT
+          "zip_path=$zipPath" >> $env:GITHUB_OUTPUT
 
       - name: Import certificate to TrustedPeople store
         run: |
@@ -388,6 +414,75 @@ jobs:
 
           Write-Host "✓ MSIX Authenticode signing is verified and cryptographically matches simpmusic.crt."
 
+      - name: Install Inno Setup
+        run: |
+          choco install innosetup --version=6.7.1 -y --no-progress
+          "C:\Program Files (x86)\Inno Setup 6" >> $env:GITHUB_PATH
+
+      - name: Build standalone Windows installer (Naudio-Setup-x64.exe)
+        run: |
+          $appVer = "${{ needs.build-windows-desktop.outputs.app_version }}"
+          $sourceDir = "${{ steps.locate.outputs.extract_dir }}"
+          New-Item -ItemType Directory -Path "dist" -Force | Out-Null
+          $outputDir = (Resolve-Path "dist").Path
+
+          Write-Host "Compiling Inno Setup script with version $appVer from $sourceDir to $outputDir..."
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DAppVersion="$appVer" /DSourceDir="$sourceDir" /DOutputDir="$outputDir" "scripts/windows/naudio-installer.iss"
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "Inno Setup compilation failed with exit code $LASTEXITCODE"
+            exit 1
+          }
+
+          $exe = Get-ChildItem -Path "dist" -Filter "Naudio-Setup-x64.exe"
+          if (-not $exe -or $exe.Length -eq 0) {
+            Write-Error "Naudio-Setup-x64.exe was not created or is empty!"
+            exit 1
+          }
+          Write-Host "Successfully built Naudio-Setup-x64.exe ($($exe.Length) bytes)"
+
+      - name: Generate SHA-256 checksums
+        run: |
+          $checksumFile = "dist/SHA256SUMS.txt"
+          $exePath = (Get-ChildItem -Path "dist" -Filter "Naudio-Setup-x64.exe").FullName
+          $zipPath = "${{ steps.locate.outputs.zip_path }}"
+          $msixPath = "${{ steps.locate.outputs.msix_path }}"
+
+          Write-Host "=== Computing SHA-256 Checksums ==="
+          $files = @($exePath, $zipPath, $msixPath)
+          $lines = @()
+          foreach ($f in $files) {
+            if ($f -and (Test-Path $f)) {
+              $hash = (Get-FileHash -Path $f -Algorithm SHA256).Hash.ToLowerInvariant()
+              $leaf = Split-Path $f -Leaf
+              $line = "$hash  $leaf"
+              Write-Host $line
+              $lines += $line
+            }
+          }
+          $lines | Set-Content -Path $checksumFile -Encoding ASCII
+
+          if ($env:GITHUB_STEP_SUMMARY) {
+            "# Windows Build Artifacts & SHA-256 Checksums" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+            "" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+            '```text' | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+            $lines | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+            '```' | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append
+          }
+
+      - name: Upload standalone Windows installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: naudio-windows-setup-exe
+          path: dist/Naudio-Setup-x64.exe
+          if-no-files-found: error
+
+      - name: Upload SHA-256 checksums artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: naudio-windows-checksums
+          path: dist/SHA256SUMS.txt
+          if-no-files-found: error
+
   publish-windows-release:
     name: Publish to GitHub Release
     runs-on: ubuntu-latest
@@ -420,10 +515,22 @@ jobs:
 
           echo "✓ Release tag '$RELEASE_TAG' matches expected '$EXPECTED_TAG' for app version $APP_VERSION."
 
-      - name: Download Windows installer artifact
+      - name: Download Windows installer ZIP artifact
         uses: actions/download-artifact@v4
         with:
-          name: naudio-windows-desktop
+          name: naudio-windows-installer-zip
+          path: installers/
+
+      - name: Download Naudio Setup EXE artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: naudio-windows-setup-exe
+          path: installers/
+
+      - name: Download SHA-256 checksums artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: naudio-windows-checksums
           path: installers/
 
       - name: Publish to existing GitHub Release
@@ -439,6 +546,10 @@ jobs:
             exit 1
           fi
 
-          echo "Target release exists. Uploading SimpMusic-Windows-installer.zip to release '$RELEASE_TAG' with overwrite/clobber..."
-          gh release upload "$RELEASE_TAG" installers/SimpMusic-Windows-installer.zip --clobber --repo "$GITHUB_REPOSITORY"
-          echo "Successfully uploaded Windows desktop installer to release $RELEASE_TAG."
+          echo "Target release exists. Uploading Windows installers to release '$RELEASE_TAG' with overwrite/clobber..."
+          gh release upload "$RELEASE_TAG" \
+            installers/Naudio-Setup-x64.exe \
+            installers/Naudio-Windows-Installer.zip \
+            installers/SHA256SUMS.txt \
+            --clobber --repo "$GITHUB_REPOSITORY"
+          echo "Successfully uploaded Windows desktop installers to release $RELEASE_TAG."

@@ -54,7 +54,7 @@ class LoginSyncTest {
                             events += "hello"
                         }
 
-                        override fun onCancel() {
+                        override suspend fun onCancel() {
                             events += "cancel"
                         }
 
@@ -77,8 +77,8 @@ class LoginSyncTest {
                 assertEquals("got sign-ins", client.send("sign-ins".encodeToByteArray()).decodeToString())
                 assertEquals(listOf("hello", "delivered"), events)
 
-                // A second phone with the same (now spent) code gets refused, not served.
-                val refused = assertFailsWith<LoginSyncTransportException> { LoginSyncClient().connect(session.invite("127.0.0.1")) }
+                // Login credentials cannot be transferred again for this session.
+                val refused = assertFailsWith<LoginSyncTransportException> { client.send("more sign-ins".encodeToByteArray()) }
                 assertEquals(LoginSyncTransportException.Kind.REFUSED, refused.kind)
             } finally {
                 server.stop()

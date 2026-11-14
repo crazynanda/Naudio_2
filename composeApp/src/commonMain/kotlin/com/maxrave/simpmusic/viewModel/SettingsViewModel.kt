@@ -425,6 +425,11 @@ class SettingsViewModel(
         viewModelScope.launch {
             dataStoreManager.setCombineLocalAndYouTubeLiked(combine)
             getCombineLocalAndYouTubeLiked()
+            if (combine) {
+                launch(Dispatchers.IO) {
+                    songRepository.syncAccountFavorites()
+                }
+            }
         }
     }
 
@@ -1586,9 +1591,15 @@ class SettingsViewModel(
                     }
                     dataStoreManager.setLoggedIn(true)
                     dataStoreManager.setCookie(cookie, accountInfoList.first().pageId, accountInfoList.first().authUser)
+                    if (dataStoreManager.getString(DataStoreManager.KEY_COMBINE_LOCAL_AND_YOUTUBE_LIKED).first().isNullOrEmpty()) {
+                        dataStoreManager.setCombineLocalAndYouTubeLiked(true)
+                    }
                     Logger.i("Auth", "YouTube: signed in, ${accountInfoList.size} account(s) on this cookie")
                     getAllGoogleAccount()
                     getLoggedIn()
+                    viewModelScope.launch(Dispatchers.IO) {
+                        songRepository.syncAccountFavorites()
+                    }
                     true
                 } ?: run {
                 Logger.w("Auth", "YouTube: sign-in failed, YouTube returned no account for this cookie")
@@ -1633,10 +1644,16 @@ class SettingsViewModel(
                 }
                 dataStoreManager.setCookie(acc.cache ?: "", acc.pageId, acc.authUser)
                 dataStoreManager.setLoggedIn(true)
+                if (dataStoreManager.getString(DataStoreManager.KEY_COMBINE_LOCAL_AND_YOUTUBE_LIKED).first().isNullOrEmpty()) {
+                    dataStoreManager.setCombineLocalAndYouTubeLiked(true)
+                }
                 Logger.i("Auth", "YouTube: switched account")
                 delay(500)
                 getAllGoogleAccount()
                 getLoggedIn()
+                viewModelScope.launch(Dispatchers.IO) {
+                    songRepository.syncAccountFavorites()
+                }
             } else {
                 googleAccounts.value.data?.forEach {
                     accountRepository
@@ -1655,7 +1672,6 @@ class SettingsViewModel(
                 // here rather than from the Settings row — same teardown as setSpotifyLogIn and
                 // logOutDiscord. Only this branch: acc != null is switching account, not logout.
                 dataStoreManager.setSyncFollowToYouTube(false)
-                dataStoreManager.setCombineLocalAndYouTubeLiked(false)
                 delay(500)
                 getAllGoogleAccount()
                 getLoggedIn()
@@ -1674,7 +1690,6 @@ class SettingsViewModel(
             dataStoreManager.setCookie("", null)
             Logger.i("Auth", "YouTube: signed out of all accounts")
             dataStoreManager.setSyncFollowToYouTube(false)
-            dataStoreManager.setCombineLocalAndYouTubeLiked(false)
             delay(500)
             getAllGoogleAccount()
             getLoggedIn()

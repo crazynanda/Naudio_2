@@ -151,7 +151,7 @@ jobs:
           path: output/*-mac-*.zip
           if-no-files-found: error
 
-      # Bundle Windows installer = install.bat + simpmusic.crt + msix.
+      # Bundle Windows offline fallback installer = install.bat + simpmusic.crt + msix.
       # Conveyor's default .exe wrapper + .appinstaller fetch URLs from
       # `site.base-url` (GitHub Releases /latest/download/) which 404 for
       # unreleased builds, so we ship our own scripts/windows/install.bat
@@ -162,7 +162,7 @@ jobs:
       # androidx.sqlite-bundled lacks a Windows ARM64 native (see
       # conveyor.conf for full context). ARM Windows users get the x64
       # msix running under Prism emulation, which works correctly.
-      - name: Bundle Windows offline installer
+      - name: Bundle Windows offline installer (ZIP fallback)
         run: |
           set -euo pipefail
           if [ ! -f output/simpmusic.crt ]; then
@@ -180,16 +180,25 @@ jobs:
           cp output/simpmusic.crt        "$stage/"
           cp "$msix"                      "$stage/"
           ( cd "$stage" && zip -q -j \
-            "${GITHUB_WORKSPACE}/installers/SimpMusic-Windows-installer.zip" \
+            "${GITHUB_WORKSPACE}/installers/Naudio-Windows-Installer.zip" \
             install.bat simpmusic.crt "$(basename "$msix")" )
           rm -rf "$stage"
           ls -lh installers/
 
-      - name: Upload Windows offline installer
+      - name: Upload Windows fallback ZIP installer
         uses: actions/upload-artifact@v4
         with:
-          name: desktop-windows
-          path: installers/SimpMusic-Windows-installer.zip
+          name: naudio-windows-installer-zip
+          path: installers/Naudio-Windows-Installer.zip
+
+      - name: Upload Windows MSIX and certificate
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-windows-msix
+          path: |
+            output/simpmusic-*.x64.msix
+            output/simpmusic.crt
+          if-no-files-found: error
 
   wrap-mac-dmg:
     name: Wrap macOS .zip → .dmg (installer UX)
@@ -256,3 +265,63 @@ jobs:
         with:
           name: desktop-mac-dmg
           path: dist/*.dmg
+
+  build-windows-exe:
+    name: Build standalone Windows installer (Naudio-Setup-x64.exe)
+    runs-on: windows-latest
+    needs: build-desktop-packages
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Read app version from libs.versions.toml
+        id: version
+        run: |
+          $ver = (Select-String -Path gradle/libs.versions.toml -Pattern '^version-name\s*=\s*"([^"]+)"').Matches.Groups[1].Value
+          if (-not $ver) {
+            Write-Error "Failed to extract version-name from gradle/libs.versions.toml"
+            exit 1
+          }
+          Write-Host "App version: $ver"
+          "version=$ver" >> $env:GITHUB_OUTPUT
+
+      - name: Download Windows MSIX and certificate
+        uses: actions/download-artifact@v4
+        with:
+          name: desktop-windows-msix
+          path: msix-input
+
+      - name: Install Inno Setup
+        run: |
+          choco install innosetup --version=6.7.1 -y --no-progress
+          "C:\Program Files (x86)\Inno Setup 6" >> $env:GITHUB_PATH
+
+      - name: Compile standalone Windows installer (Naudio-Setup-x64.exe)
+        run: |
+          $appVer = "${{ steps.version.outputs.version }}"
+          $sourceDir = (Resolve-Path "msix-input").Path
+          New-Item -ItemType Directory -Path "dist" -Force | Out-Null
+          $outputDir = (Resolve-Path "dist").Path
+
+          Write-Host "Compiling Inno Setup script with version $appVer..."
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DAppVersion="$appVer" /DSourceDir="$sourceDir" /DOutputDir="$outputDir" "scripts/windows/naudio-installer.iss"
+          if ($LASTEXITCODE -ne 0) {
+            Write-Error "Inno Setup compilation failed with exit code $LASTEXITCODE"
+            exit 1
+          }
+
+          $exe = Get-ChildItem -Path "dist" -Filter "Naudio-Setup-x64.exe"
+          if (-not $exe -or $exe.Length -eq 0) {
+            Write-Error "Naudio-Setup-x64.exe was not created or is empty!"
+            exit 1
+          }
+          Write-Host "Successfully built Naudio-Setup-x64.exe ($($exe.Length) bytes)"
+
+      - name: Upload standalone Windows installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: naudio-windows-setup-exe
+          path: dist/Naudio-Setup-x64.exe
+          if-no-files-found: error
