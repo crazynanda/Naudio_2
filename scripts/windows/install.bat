@@ -38,7 +38,18 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command ^
     "$ErrorActionPreference = 'Stop'; " ^
     "try { " ^
     "  $cert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2('%~dp0simpmusic.crt'); " ^
-    "  $found = Get-ChildItem Cert:\LocalMachine\TrustedPeople -ErrorAction SilentlyContinue | Where-Object { $_.Thumbprint -eq $cert.Thumbprint }; " ^
+    "  $targetThumb = $cert.Thumbprint.ToUpperInvariant(); " ^
+    "  $store = New-Object System.Security.Cryptography.X509Certificates.X509Store('TrustedPeople', 'LocalMachine'); " ^
+    "  $store.Open('ReadOnly'); " ^
+    "  $found = $false; " ^
+    "  foreach ($c in $store.Certificates) { " ^
+    "    if ($c.Thumbprint.ToUpperInvariant() -eq $targetThumb) { $found = $true; break } " ^
+    "  }; " ^
+    "  $store.Close(); " ^
+    "  if (-not $found) { " ^
+    "    $null = & certutil.exe -verifystore 'TrustedPeople' $targetThumb 2>&1; " ^
+    "    if ($LASTEXITCODE -eq 0) { $found = $true } " ^
+    "  }; " ^
     "  if ($found) { exit 0 } else { exit 2 } " ^
     "} catch { exit 1 }"
 set "CERT_STATUS=%errorlevel%"
@@ -58,11 +69,22 @@ if %CERT_STATUS% neq 0 (
         "$ErrorActionPreference = 'Stop'; " ^
         "try { " ^
         "  $cert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2('%~dp0simpmusic.crt'); " ^
-        "  $found = Get-ChildItem Cert:\LocalMachine\TrustedPeople -ErrorAction SilentlyContinue | Where-Object { $_.Thumbprint -eq $cert.Thumbprint }; " ^
+        "  $targetThumb = $cert.Thumbprint.ToUpperInvariant(); " ^
+        "  $store = New-Object System.Security.Cryptography.X509Certificates.X509Store('TrustedPeople', 'LocalMachine'); " ^
+        "  $store.Open('ReadOnly'); " ^
+        "  $found = $false; " ^
+        "  foreach ($c in $store.Certificates) { " ^
+        "    if ($c.Thumbprint.ToUpperInvariant() -eq $targetThumb) { $found = $true; break } " ^
+        "  }; " ^
+        "  $store.Close(); " ^
+        "  if (-not $found) { " ^
+        "    $null = & certutil.exe -verifystore 'TrustedPeople' $targetThumb 2>&1; " ^
+        "    if ($LASTEXITCODE -eq 0) { $found = $true } " ^
+        "  }; " ^
         "  if ($found) { exit 0 } else { exit 1 } " ^
         "} catch { exit 1 }"
     if %errorlevel% neq 0 (
-        echo [ERROR] Failed to trust the Naudio certificate in LocalMachine\TrustedPeople.
+        echo [ERROR] Failed to trust the Naudio certificate in TrustedPeople.
         echo         Administrator permission is required to trust the security certificate.
         pause
         exit /b 1
@@ -131,11 +153,14 @@ if %errorlevel% neq 0 (
 REM --- 3. Launch app in current user session ---------------------------------
 echo.
 echo [3/3] Launching Naudio ...
-for /f "usebackq tokens=*" %%i in (`powershell -NoProfile -Command "(Get-AppxPackage -Name 'Simpmusic' | Where-Object { $_.Publisher -eq 'CN=Naudio' -and $_.PackageFamilyName -eq 'Simpmusic_yhxqqzq5790tp' } | Sort-Object -Property { [version]$_.Version } -Descending | Select-Object -First 1).PackageFamilyName"`) do set "PFN=%%i"
-if defined PFN (
-    start "" "shell:appsFolder\%PFN%!Simpmusic"
-) else (
-    start "" "shell:appsFolder\Simpmusic_yhxqqzq5790tp!Simpmusic"
+for /f "usebackq tokens=*" %%i in (`powershell -NoProfile -Command "$pkg = Get-AppxPackage -Name 'Simpmusic' | Where-Object { $_.Publisher -eq 'CN=Naudio' -and $_.PackageFamilyName -eq 'Simpmusic_yhxqqzq5790tp' } | Sort-Object -Property { [version]$_.Version } -Descending | Select-Object -First 1; if ($pkg) { $appId = (Get-AppxPackageManifest $pkg).Package.Applications.Application.Id; if (-not $appId) { $appId = 'Simpmusic' }; Write-Output ($pkg.PackageFamilyName + '!' + $appId) }"`) do set "AUMID=%%i"
+if not defined AUMID set "AUMID=Simpmusic_yhxqqzq5790tp!Simpmusic"
+
+start "" "shell:appsFolder\%AUMID%"
+if %errorlevel% neq 0 (
+    echo [INFO] Could not launch Naudio automatically.
+    echo        You can start Naudio from the Start Menu or run:
+    echo        shell:appsFolder\%AUMID%
 )
 
 echo.
