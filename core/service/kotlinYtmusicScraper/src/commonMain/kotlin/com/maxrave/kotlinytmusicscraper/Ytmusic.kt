@@ -237,12 +237,15 @@ class Ytmusic {
         contentType(ContentType.Application.Json)
         headers {
             append("X-Goog-Api-Format-Version", "1")
-            append("X-YouTube-Client-Name", "${client.xClientName ?: 1}")
+            append("X-YouTube-Client-Name", "${client.xClientName ?: 67}")
             append("X-YouTube-Client-Version", client.clientVersion)
+            append("X-Goog-AuthUser", authUser.toString())
             append("X-Goog-Authuser", authUser.toString())
             pageId?.let {
+                append("X-Goog-PageId", it)
                 append("X-Goog-Pageid", it)
             }
+            append("Origin", "https://music.youtube.com")
             append("x-origin", "https://music.youtube.com")
             if (client.referer != null && isUsingReferer) {
                 append("Referer", client.referer)
@@ -251,9 +254,11 @@ class Ytmusic {
                 val cookie = customCookie ?: this@Ytmusic.cookie
                 cookie?.let { cookie ->
                     append("Cookie", cookie)
-                    if ("SAPISID" !in cookieMap || "__Secure-3PAPISID" !in cookieMap) return@let
-                    val currentTime = now().toInstant(TimeZone.currentSystemDefault()).epochSeconds / 1000
-                    val sapisidCookie = cookieMap["SAPISID"] ?: cookieMap["__Secure-3PAPISID"]
+                    val sapisidCookie = cookieMap["SAPISID"]
+                        ?: cookieMap["__Secure-3PAPISID"]
+                        ?: cookieMap["__Secure-1PAPISID"]
+                        ?: return@let
+                    val currentTime = now().toInstant(TimeZone.currentSystemDefault()).epochSeconds
                     val sapisidHash = sha1("$currentTime $sapisidCookie https://music.youtube.com")
                     Logger.d(TAG, "SAPI SID Hash: SAPISIDHASH ${currentTime}_$sapisidHash")
                     append("Authorization", "SAPISIDHASH ${currentTime}_$sapisidHash")
@@ -267,9 +272,11 @@ class Ytmusic {
     @OptIn(ExperimentalTime::class)
     internal fun getAuthorizationHeader(): String? =
         cookie?.let { cookie ->
-            if ("SAPISID" !in cookieMap || "__Secure-3PAPISID" !in cookieMap) null
-            val currentTime = now().toInstant(TimeZone.currentSystemDefault()).epochSeconds / 1000
-            val sapisidCookie = cookieMap["SAPISID"] ?: cookieMap["__Secure-3PAPISID"]
+            val sapisidCookie = cookieMap["SAPISID"]
+                ?: cookieMap["__Secure-3PAPISID"]
+                ?: cookieMap["__Secure-1PAPISID"]
+                ?: return@let null
+            val currentTime = now().toInstant(TimeZone.currentSystemDefault()).epochSeconds
             val sapisidHash = sha1("$currentTime $sapisidCookie https://music.youtube.com")
             Logger.d(TAG, "SAPI SID Hash: SAPISIDHASH ${currentTime}_$sapisidHash")
             "SAPISIDHASH ${currentTime}_$sapisidHash"

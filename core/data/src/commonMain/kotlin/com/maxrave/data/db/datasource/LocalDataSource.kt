@@ -27,6 +27,7 @@ import com.maxrave.domain.data.entities.SetVideoIdEntity
 import com.maxrave.domain.data.entities.SongEntity
 import com.maxrave.domain.data.entities.SongInfoEntity
 import com.maxrave.domain.data.entities.TranslatedLyricsEntity
+import com.maxrave.domain.data.entities.YouTubeFavoritePendingEntity
 import com.maxrave.domain.data.entities.YourYouTubePlaylistList
 import com.maxrave.domain.data.player.LiveStreamRegistry
 import com.maxrave.domain.extension.now
@@ -34,6 +35,7 @@ import com.maxrave.domain.utils.FilterState
 import com.maxrave.domain.utils.isLive
 import com.maxrave.logger.Logger
 import kotlin.time.Clock
+import kotlinx.coroutines.flow.Flow
 import kotlinx.datetime.LocalDateTime
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toInstant
@@ -888,6 +890,35 @@ internal class LocalDataSource(
         entries: List<AutoEqEntryEntity>,
         meta: AutoEqIndexMetaEntity,
     ) = databaseDao.replaceAutoEqIndex(entries, meta)
+
+    // ========== YouTube Favorite Pending Queue ==========
+
+    suspend fun insertYouTubeFavoritePending(entity: YouTubeFavoritePendingEntity) =
+        databaseDao.insertYouTubeFavoritePending(entity)
+
+    suspend fun insertYouTubeFavoritePendingList(entities: List<YouTubeFavoritePendingEntity>) =
+        databaseDao.insertYouTubeFavoritePendingList(entities)
+
+    suspend fun deleteYouTubeFavoritePending(accountId: String, videoId: String) =
+        databaseDao.deleteYouTubeFavoritePending(accountId, videoId)
+
+    suspend fun clearYouTubeFavoritePendingForAccount(accountId: String) =
+        databaseDao.clearYouTubeFavoritePendingForAccount(accountId)
+
+    suspend fun getYouTubeFavoritePendingForAccount(accountId: String): List<YouTubeFavoritePendingEntity> =
+        databaseDao.getYouTubeFavoritePendingForAccount(accountId)
+
+    suspend fun getYouTubeFavoritePending(accountId: String, videoId: String): YouTubeFavoritePendingEntity? =
+        databaseDao.getYouTubeFavoritePending(accountId, videoId)
+
+    suspend fun getAllYouTubeFavoritePending(): List<YouTubeFavoritePendingEntity> =
+        databaseDao.getAllYouTubeFavoritePending()
+
+    fun observePendingCountForAccount(accountId: String): Flow<Int> =
+        databaseDao.observePendingCountForAccount(accountId)
+
+    fun observeAllPendingCount(): Flow<Int> =
+        databaseDao.observeAllPendingCount()
 }
 
 /**

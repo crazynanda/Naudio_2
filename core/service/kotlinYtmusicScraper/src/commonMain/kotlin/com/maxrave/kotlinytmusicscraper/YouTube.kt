@@ -2224,17 +2224,41 @@ open class YouTube {
 
     open suspend fun addToLiked(mediaId: String): Result<Int> =
         runCatching {
-            ytMusic.addToLiked(mediaId).status.value
+            val response = ytMusic.addToLiked(mediaId)
+            val code = response.status.value
+            if (code in 200..299) {
+                val body = response.bodyAsText()
+                if (body.contains("\"error\":") && !body.contains("\"actions\":")) {
+                    throw IllegalStateException("YouTube API returned error payload: $body")
+                }
+            }
+            code
         }.onFailure { if (it is CancellationException) throw it }
 
     open suspend fun addToDisliked(mediaId: String): Result<Int> =
         runCatching {
-            ytMusic.addToDisliked(mediaId).status.value
+            val response = ytMusic.addToDisliked(mediaId)
+            val code = response.status.value
+            if (code in 200..299) {
+                val body = response.bodyAsText()
+                if (body.contains("\"error\":") && !body.contains("\"actions\":")) {
+                    throw IllegalStateException("YouTube API returned error payload: $body")
+                }
+            }
+            code
         }.onFailure { if (it is CancellationException) throw it }
 
     open suspend fun removeFromLiked(mediaId: String): Result<Int> =
         runCatching {
-            ytMusic.removeFromLiked(mediaId).status.value
+            val response = ytMusic.removeFromLiked(mediaId)
+            val code = response.status.value
+            if (code in 200..299) {
+                val body = response.bodyAsText()
+                if (body.contains("\"error\":") && !body.contains("\"actions\":")) {
+                    throw IllegalStateException("YouTube API returned error payload: $body")
+                }
+            }
+            code
         }.onFailure { if (it is CancellationException) throw it }
 
     suspend fun getSimpMusicChart() =

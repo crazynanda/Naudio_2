@@ -6,6 +6,7 @@ import com.maxrave.common.Config.REMOVED_SONG_DATE_TIME
 import com.maxrave.domain.data.entities.ArtistEntity
 import com.maxrave.domain.data.entities.DownloadState
 import com.maxrave.domain.data.entities.SongEntity
+import com.maxrave.domain.data.model.favoritesync.YouTubeSyncStatus
 import com.maxrave.domain.extension.now
 import com.maxrave.domain.mediaservice.handler.PlaylistType
 import com.maxrave.domain.mediaservice.handler.QueueData
@@ -45,6 +46,14 @@ class LibraryDynamicPlaylistViewModel(
 ) : BaseViewModel() {
     private val _listFavoriteSong: MutableStateFlow<List<SongEntity>> = MutableStateFlow(emptyList())
     val listFavoriteSong: StateFlow<List<SongEntity>> get() = _listFavoriteSong
+
+    val youTubeSyncStatus: StateFlow<YouTubeSyncStatus> = songRepository.youTubeSyncStatus
+
+    fun retryPendingSync() {
+        viewModelScope.launch {
+            songRepository.retryPendingSync()
+        }
+    }
 
     private val _listFollowedArtist: MutableStateFlow<List<ArtistEntity>> = MutableStateFlow(emptyList())
     val listFollowedArtist: StateFlow<List<ArtistEntity>> get() = _listFollowedArtist

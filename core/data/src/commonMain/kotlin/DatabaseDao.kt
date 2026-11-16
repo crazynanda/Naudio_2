@@ -33,6 +33,7 @@ import com.maxrave.domain.data.entities.PodcastWithEpisodes
 import com.maxrave.domain.data.entities.PodcastsEntity
 import com.maxrave.domain.data.entities.QueueEntity
 import com.maxrave.domain.data.entities.RecentSongEntity
+import com.maxrave.domain.data.entities.YouTubeFavoritePendingEntity
 import com.maxrave.domain.data.entities.SearchHistory
 import com.maxrave.domain.data.entities.SetVideoIdEntity
 import com.maxrave.domain.data.entities.SongEntity
@@ -2225,4 +2226,32 @@ interface DatabaseDao {
             artistsRemoved = artistsRemoved,
         )
     }
+
+    // YouTube Favorite Pending Queue
+    @Insert(onConflict = REPLACE)
+    suspend fun insertYouTubeFavoritePending(entity: YouTubeFavoritePendingEntity)
+
+    @Insert(onConflict = REPLACE)
+    suspend fun insertYouTubeFavoritePendingList(entities: List<YouTubeFavoritePendingEntity>)
+
+    @Query("DELETE FROM youtube_favorite_pending WHERE accountId = :accountId AND videoId = :videoId")
+    suspend fun deleteYouTubeFavoritePending(accountId: String, videoId: String)
+
+    @Query("DELETE FROM youtube_favorite_pending WHERE accountId = :accountId")
+    suspend fun clearYouTubeFavoritePendingForAccount(accountId: String)
+
+    @Query("SELECT * FROM youtube_favorite_pending WHERE accountId = :accountId ORDER BY updatedAt ASC")
+    suspend fun getYouTubeFavoritePendingForAccount(accountId: String): List<YouTubeFavoritePendingEntity>
+
+    @Query("SELECT * FROM youtube_favorite_pending WHERE accountId = :accountId AND videoId = :videoId LIMIT 1")
+    suspend fun getYouTubeFavoritePending(accountId: String, videoId: String): YouTubeFavoritePendingEntity?
+
+    @Query("SELECT * FROM youtube_favorite_pending ORDER BY updatedAt ASC")
+    suspend fun getAllYouTubeFavoritePending(): List<YouTubeFavoritePendingEntity>
+
+    @Query("SELECT COUNT(*) FROM youtube_favorite_pending WHERE accountId = :accountId")
+    fun observePendingCountForAccount(accountId: String): Flow<Int>
+
+    @Query("SELECT COUNT(*) FROM youtube_favorite_pending")
+    fun observeAllPendingCount(): Flow<Int>
 }

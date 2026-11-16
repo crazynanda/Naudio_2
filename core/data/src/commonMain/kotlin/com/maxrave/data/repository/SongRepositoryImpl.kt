@@ -17,12 +17,14 @@ import com.maxrave.domain.data.entities.QueueEntity
 import com.maxrave.domain.data.entities.DownloadState
 import com.maxrave.domain.data.entities.SongEntity
 import com.maxrave.domain.data.entities.SongInfoEntity
+import com.maxrave.domain.data.entities.YouTubeFavoritePendingEntity
 import com.maxrave.domain.data.entities.analytics.query.SongPlaySample
 import com.maxrave.domain.data.model.browse.album.Track
 import com.maxrave.domain.data.model.comments.YouTubeComment
 import com.maxrave.domain.data.model.comments.YouTubeCommentsPage
 import com.maxrave.domain.data.model.download.DownloadProgress
 import com.maxrave.domain.data.model.favoritesync.FavoritesSyncResult
+import com.maxrave.domain.data.model.favoritesync.YouTubeSyncStatus
 import com.maxrave.domain.data.model.streams.YouTubeWatchEndpoint
 import com.maxrave.domain.extension.now
 import com.maxrave.domain.utils.toSongEntity
@@ -63,6 +65,9 @@ import kotlinx.coroutines.IO
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
@@ -137,6 +142,199 @@ internal class SongRepositoryImpl(
     private val youtubeLikeSyncMutex: Mutex = Mutex(),
     private val accountFavoritesSyncMutex: Mutex = Mutex(),
 ) : SongRepository {
+    private val _youTubeSyncStatus = MutableStateFlow<YouTubeSyncStatus>(YouTubeSyncStatus.Idle)
+    override val youTubeSyncStatus: StateFlow<YouTubeSyncStatus> = _youTubeSyncStatus.asStateFlow()
+
+    private suspend fun getActiveAccountId(): String {
+        val activeAccount = localDataSource.getUsedGoogleAccount()
+        val id = getAccountIdentifier(activeAccount)
+        return id.ifEmpty { "default_user" }
+    }
+
+    private fun isNetworkError(throwable: Throwable?): Boolean {
+        if (throwable == null) return false
+        var cur: Throwable? = throwable
+        while (cur != null) {
+            val name = cur::class.simpleName.orEmpty().lowercase()
+            val msg = cur.message.orEmpty().lowercase()
+            if (name.contains("ioexception") ||
+                name.contains("connectexception") ||
+                name.contains("socketexception") ||
+                name.contains("unknownhostexception") ||
+                msg.contains("connect") ||
+                msg.contains("socket") ||
+                msg.contains("timeout") ||
+                msg.contains("unreachable") ||
+                msg.contains("network") ||
+                msg.contains("unknownhost")
+            ) {
+                return true
+            }
+            cur = cur.cause
+        }
+        return false
+    }
+
+    override suspend fun flushPendingYouTubeLikes(): Result<Unit> = withContext(Dispatchers.IO) {
+        if (dataStoreManager.combineLocalAndYouTubeLiked.first() != TRUE) {
+            _youTubeSyncStatus.value = YouTubeSyncStatus.Idle
+            return@withContext Result.success(Unit)
+        }
+        val activeAccountId = getActiveAccountId()
+        youtubeLikeSyncMutex.withLock {
+            flushPendingYouTubeLikesLocked(activeAccountId)
+        }
+    }
+
+    override suspend fun retryPendingSync(): Result<Unit> {
+        return flushPendingYouTubeLikes()
+    }
+
+    override suspend fun getPendingFavoriteCount(accountId: String?): Int {
+        val id = accountId ?: getActiveAccountId()
+        return localDataSource.getYouTubeFavoritePendingForAccount(id).size
+    }
+
+    override suspend fun getPendingFavoriteOperations(accountId: String?): List<YouTubeFavoritePendingEntity> {
+        val id = accountId ?: getActiveAccountId()
+        return localDataSource.getYouTubeFavoritePendingForAccount(id)
+    }
+
+    private suspend fun flushPendingYouTubeLikesLocked(activeAccountId: String): Result<Unit> {
+        if (dataStoreManager.combineLocalAndYouTubeLiked.first() != TRUE) {
+            _youTubeSyncStatus.value = YouTubeSyncStatus.Idle
+            return Result.success(Unit)
+        }
+
+        if (dataStoreManager.loggedIn.first() != TRUE || dataStoreManager.cookie.first().isBlank()) {
+            val pendingCount = localDataSource.getYouTubeFavoritePendingForAccount(activeAccountId).size
+            if (pendingCount > 0) {
+                _youTubeSyncStatus.value = YouTubeSyncStatus.AuthenticationRequired
+            } else {
+                _youTubeSyncStatus.value = YouTubeSyncStatus.Idle
+            }
+            return Result.success(Unit)
+        }
+
+        val pendingList = localDataSource.getYouTubeFavoritePendingForAccount(activeAccountId)
+        if (pendingList.isEmpty()) {
+            _youTubeSyncStatus.value = YouTubeSyncStatus.Synced
+            return Result.success(Unit)
+        }
+
+        _youTubeSyncStatus.value = YouTubeSyncStatus.Syncing(pendingList.size)
+
+        var failureEncountered: Throwable? = null
+        var lastStatusMessage: String? = null
+        var authFailed = false
+        var networkFailed = false
+
+        for (pending in pendingList) {
+            val currentSong = localDataSource.getSong(pending.videoId)
+            val currentLiked = currentSong?.liked == true
+            val desiredLiked = pending.targetState == 1
+
+            val targetState = if (currentSong != null && currentLiked != desiredLiked) {
+                val nowMs = Clock.System.now().toEpochMilliseconds()
+                val updated = pending.copy(
+                    targetState = if (currentLiked) 1 else 0,
+                    updatedAt = nowMs,
+                )
+                localDataSource.insertYouTubeFavoritePending(updated)
+                if (currentLiked) 1 else 0
+            } else {
+                pending.targetState
+            }
+
+            val attemptTime = Clock.System.now().toEpochMilliseconds()
+            val responseResult = try {
+                if (targetState == 1) {
+                    youTube.addToLiked(pending.videoId)
+                } else {
+                    youTube.removeFromLiked(pending.videoId)
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Result.failure(e)
+            }
+
+            if (responseResult.isSuccess) {
+                val statusCode = responseResult.getOrNull() ?: 0
+                if (statusCode in 200..299) {
+                    localDataSource.deleteYouTubeFavoritePending(activeAccountId, pending.videoId)
+                    localDataSource.deleteFavoriteTombstone(FavoriteSyncType.SONG, pending.videoId)
+                    Logger.i(TAG, "Successfully synced like status ($targetState) for ${pending.videoId} to YouTube Music")
+                } else if (statusCode == 401 || statusCode == 403) {
+                    authFailed = true
+                    val err = "Authentication error ($statusCode) while syncing ${pending.videoId}"
+                    failureEncountered = Exception(err)
+                    lastStatusMessage = err
+                    localDataSource.insertYouTubeFavoritePending(
+                        pending.copy(
+                            targetState = targetState,
+                            retryCount = pending.retryCount + 1,
+                            lastAttemptAt = attemptTime,
+                            lastError = err,
+                        ),
+                    )
+                    break
+                } else {
+                    val err = "HTTP $statusCode while syncing ${pending.videoId}"
+                    failureEncountered = Exception(err)
+                    lastStatusMessage = err
+                    localDataSource.insertYouTubeFavoritePending(
+                        pending.copy(
+                            targetState = targetState,
+                            retryCount = pending.retryCount + 1,
+                            lastAttemptAt = attemptTime,
+                            lastError = err,
+                        ),
+                    )
+                }
+            } else {
+                val ex = responseResult.exceptionOrNull()
+                if (ex is CancellationException) throw ex
+                val msg = ex?.message ?: "Network error"
+                failureEncountered = ex ?: Exception(msg)
+                lastStatusMessage = msg
+
+                if (msg.contains("401") || msg.contains("UNAUTHENTICATED", ignoreCase = true) || msg.contains("credentials", ignoreCase = true)) {
+                    authFailed = true
+                } else if (isNetworkError(ex)) {
+                    networkFailed = true
+                }
+
+                localDataSource.insertYouTubeFavoritePending(
+                    pending.copy(
+                        targetState = targetState,
+                        retryCount = pending.retryCount + 1,
+                        lastAttemptAt = attemptTime,
+                        lastError = msg,
+                    ),
+                )
+
+                if (authFailed || networkFailed) {
+                    break
+                }
+            }
+        }
+
+        val remainingPending = localDataSource.getYouTubeFavoritePendingForAccount(activeAccountId)
+        return if (remainingPending.isEmpty()) {
+            _youTubeSyncStatus.value = YouTubeSyncStatus.Synced
+            Result.success(Unit)
+        } else if (authFailed) {
+            _youTubeSyncStatus.value = YouTubeSyncStatus.AuthenticationRequired
+            Result.failure(failureEncountered ?: Exception("Authentication required"))
+        } else if (networkFailed || isNetworkError(failureEncountered)) {
+            _youTubeSyncStatus.value = YouTubeSyncStatus.WaitingForConnection
+            Result.failure(failureEncountered ?: Exception("Waiting for connection"))
+        } else {
+            _youTubeSyncStatus.value = YouTubeSyncStatus.SyncFailed(remainingPending.size, lastStatusMessage)
+            Result.failure(failureEncountered ?: Exception(lastStatusMessage ?: "Sync failed"))
+        }
+    }
     override fun getAllSongs(limit: Int): Flow<List<SongEntity>> =
         flow {
             emit(localDataSource.getAllSongs(limit))
@@ -444,20 +642,38 @@ internal class SongRepositoryImpl(
         }
 
         withContext(Dispatchers.IO) {
+            val activeAccountId = getActiveAccountId()
+            val nowMs = Clock.System.now().toEpochMilliseconds()
+            val existing = localDataSource.getYouTubeFavoritePending(activeAccountId, videoId)
+            val pendingEntity = existing?.copy(
+                targetState = likeStatus,
+                updatedAt = nowMs,
+            ) ?: YouTubeFavoritePendingEntity(
+                accountId = activeAccountId,
+                videoId = videoId,
+                targetState = likeStatus,
+                createdAt = nowMs,
+                updatedAt = nowMs,
+            )
+            localDataSource.insertYouTubeFavoritePending(pendingEntity)
+
             try {
                 youtubeLikeSyncMutex.withLock {
                     if (dataStoreManager.combineLocalAndYouTubeLiked.first() != TRUE) {
                         Logger.d(TAG, "Skipping YouTube like sync for $videoId: sync preference was disabled while queued")
+                        _youTubeSyncStatus.value = YouTubeSyncStatus.Idle
                         return@withLock
                     }
 
                     if (dataStoreManager.loggedIn.first() != TRUE) {
                         Logger.d(TAG, "Skipping YouTube like sync for $videoId: user logged out while queued")
+                        _youTubeSyncStatus.value = YouTubeSyncStatus.AuthenticationRequired
                         return@withLock
                     }
 
                     if (dataStoreManager.cookie.first().isBlank()) {
                         Logger.d(TAG, "Skipping YouTube like sync for $videoId: cookie became blank while queued")
+                        _youTubeSyncStatus.value = YouTubeSyncStatus.AuthenticationRequired
                         return@withLock
                     }
 
@@ -473,23 +689,7 @@ internal class SongRepositoryImpl(
                         }
                     }
 
-                    val result =
-                        if (likeStatus == 1) {
-                            youTube.addToLiked(videoId)
-                        } else {
-                            youTube.removeFromLiked(videoId)
-                        }
-
-                    result.onSuccess { statusCode ->
-                        if (statusCode in 200..299) {
-                            Logger.i(TAG, "YouTube like sync successful for $videoId (likeStatus=$likeStatus, status=$statusCode)")
-                        } else {
-                            Logger.w(TAG, "YouTube like sync returned non-success HTTP status for $videoId (likeStatus=$likeStatus, status=$statusCode)")
-                        }
-                    }.onFailure { error ->
-                        if (error is CancellationException) throw error
-                        Logger.w(TAG, "YouTube like sync failed for $videoId (likeStatus=$likeStatus): ${error.message}")
-                    }
+                    flushPendingYouTubeLikesLocked(activeAccountId)
                 }
             } catch (e: CancellationException) {
                 throw e
@@ -1181,6 +1381,9 @@ internal class SongRepositoryImpl(
                 return@withLock Result.success(FavoritesSyncResult())
             }
 
+            // Flush pending reverse sync queue before reconciling with remote
+            flushPendingYouTubeLikesLocked(activeAccountId)
+
             // Check if user switched accounts since last sync
             val lastSyncedAccount = dataStoreManager.getString(KEY_LAST_SYNCED_ACCOUNT).first().orEmpty().ifEmpty {
                 dataStoreManager.getString(KEY_LEGACY_LAST_SYNCED_ACCOUNT).first().orEmpty()
@@ -1211,6 +1414,14 @@ internal class SongRepositoryImpl(
             if (remoteResult.isFailure) {
                 val err = remoteResult.exceptionOrNull() ?: Exception("Remote fetch failed")
                 Logger.w(TAG, "syncAccountFavorites aborted: ${err.message}")
+                if (isNetworkError(err)) {
+                    _youTubeSyncStatus.value = YouTubeSyncStatus.WaitingForConnection
+                } else if (err.message?.contains("401") == true || err.message?.contains("UNAUTHENTICATED") == true) {
+                    _youTubeSyncStatus.value = YouTubeSyncStatus.AuthenticationRequired
+                } else {
+                    val pendingCount = localDataSource.getYouTubeFavoritePendingForAccount(activeAccountId).size
+                    _youTubeSyncStatus.value = YouTubeSyncStatus.SyncFailed(pendingCount, err.message)
+                }
                 return@withLock Result.failure(err)
             }
             val remoteTracks = remoteResult.getOrThrow()
@@ -1239,6 +1450,12 @@ internal class SongRepositoryImpl(
 
             // 1. Process remote tracks into local DB
             for (track in remoteTracks) {
+                val pending = localDataSource.getYouTubeFavoritePending(activeAccountId, track.videoId)
+                if (pending != null && pending.targetState == 0) {
+                    // Local user unliked, pending push to remote: do not re-add or re-like locally
+                    continue
+                }
+
                 val key = "${FavoriteSyncType.SONG}:${track.videoId}"
                 val tomb = localTombstones[key]
                 if (tomb != null && !tomb.isFavorite) {
@@ -1248,6 +1465,7 @@ internal class SongRepositoryImpl(
                             val res = youTube.removeFromLiked(track.videoId)
                             if (res.isSuccess && (res.getOrNull() ?: 0) in 200..299) {
                                 localDataSource.deleteFavoriteTombstone(FavoriteSyncType.SONG, track.videoId)
+                                localDataSource.deleteYouTubeFavoritePending(activeAccountId, track.videoId)
                             } else {
                                 localDataSource.insertFavoriteTombstone(
                                     FavoriteSyncTombstoneEntity(
@@ -1255,6 +1473,16 @@ internal class SongRepositoryImpl(
                                         id = track.videoId,
                                         isFavorite = false,
                                         updatedAt = syncCycleEpoch + 1,
+                                    )
+                                )
+                                localDataSource.insertYouTubeFavoritePending(
+                                    YouTubeFavoritePendingEntity(
+                                        accountId = activeAccountId,
+                                        videoId = track.videoId,
+                                        targetState = 0,
+                                        createdAt = syncCycleEpoch,
+                                        updatedAt = syncCycleEpoch + 1,
+                                        lastError = "Remote unlike returned status ${res.getOrNull()}",
                                     )
                                 )
                             }
@@ -1268,9 +1496,20 @@ internal class SongRepositoryImpl(
                                     updatedAt = syncCycleEpoch + 1,
                                 )
                             )
+                            localDataSource.insertYouTubeFavoritePending(
+                                YouTubeFavoritePendingEntity(
+                                    accountId = activeAccountId,
+                                    videoId = track.videoId,
+                                    targetState = 0,
+                                    createdAt = syncCycleEpoch,
+                                    updatedAt = syncCycleEpoch + 1,
+                                    lastError = e.message,
+                                )
+                            )
                         }
                     } else {
                         localDataSource.deleteFavoriteTombstone(FavoriteSyncType.SONG, track.videoId)
+                        localDataSource.deleteYouTubeFavoritePending(activeAccountId, track.videoId)
                     }
                     continue
                 }
@@ -1281,6 +1520,7 @@ internal class SongRepositoryImpl(
                         localDataSource.insertSong(track.toSongEntity().copy(liked = true, favoriteAt = now()))
                         localDataSource.updateLikedWithoutTombstone(liked = 1, videoId = track.videoId)
                         localDataSource.deleteFavoriteTombstone(FavoriteSyncType.SONG, track.videoId)
+                        localDataSource.deleteYouTubeFavoritePending(activeAccountId, track.videoId)
                         songsAddedOrUpdated++
                     } else {
                         if (!existing.liked) {
@@ -1288,6 +1528,7 @@ internal class SongRepositoryImpl(
                             songsAddedOrUpdated++
                         }
                         localDataSource.deleteFavoriteTombstone(FavoriteSyncType.SONG, track.videoId)
+                        localDataSource.deleteYouTubeFavoritePending(activeAccountId, track.videoId)
                     }
                 } catch (e: Exception) {
                     importFailures++
@@ -1298,6 +1539,12 @@ internal class SongRepositoryImpl(
             // 2. Process local songs absent from remote LM
             for (localSong in localLikedSongs) {
                 if (localSong.videoId !in remoteVideoIds) {
+                    val pending = localDataSource.getYouTubeFavoritePending(activeAccountId, localSong.videoId)
+                    if (pending != null && pending.targetState == 1) {
+                        // Local user liked, pending push to remote: protect from local deletion!
+                        continue
+                    }
+
                     if (lastSyncTimestamp > 0L) {
                         val key = "${FavoriteSyncType.SONG}:${localSong.videoId}"
                         val tomb = localTombstones[key]
@@ -1309,6 +1556,7 @@ internal class SongRepositoryImpl(
                                     val addResult = youTube.addToLiked(localSong.videoId)
                                     if (addResult.isSuccess && (addResult.getOrNull() ?: 0) in 200..299) {
                                         localDataSource.deleteFavoriteTombstone(FavoriteSyncType.SONG, localSong.videoId)
+                                        localDataSource.deleteYouTubeFavoritePending(activeAccountId, localSong.videoId)
                                     } else {
                                         localDataSource.insertFavoriteTombstone(
                                             FavoriteSyncTombstoneEntity(
@@ -1316,6 +1564,16 @@ internal class SongRepositoryImpl(
                                                 id = localSong.videoId,
                                                 isFavorite = true,
                                                 updatedAt = syncCycleEpoch + 1,
+                                            )
+                                        )
+                                        localDataSource.insertYouTubeFavoritePending(
+                                            YouTubeFavoritePendingEntity(
+                                                accountId = activeAccountId,
+                                                videoId = localSong.videoId,
+                                                targetState = 1,
+                                                createdAt = syncCycleEpoch,
+                                                updatedAt = syncCycleEpoch + 1,
+                                                lastError = "Remote like returned status ${addResult.getOrNull()}",
                                             )
                                         )
                                     }
@@ -1329,12 +1587,23 @@ internal class SongRepositoryImpl(
                                             updatedAt = syncCycleEpoch + 1,
                                         )
                                     )
+                                    localDataSource.insertYouTubeFavoritePending(
+                                        YouTubeFavoritePendingEntity(
+                                            accountId = activeAccountId,
+                                            videoId = localSong.videoId,
+                                            targetState = 1,
+                                            createdAt = syncCycleEpoch,
+                                            updatedAt = syncCycleEpoch + 1,
+                                            lastError = e.message,
+                                        )
+                                    )
                                 }
                             }
                         } else {
                             // Was present in previous sync, now removed remotely -> unlike locally
                             localDataSource.updateLikedWithoutTombstone(liked = 0, videoId = localSong.videoId, favoriteAt = null)
                             localDataSource.deleteFavoriteTombstone(FavoriteSyncType.SONG, localSong.videoId)
+                            localDataSource.deleteYouTubeFavoritePending(activeAccountId, localSong.videoId)
                             songsRemoved++
                         }
                     } else {
@@ -1344,6 +1613,7 @@ internal class SongRepositoryImpl(
                                 val addResult = youTube.addToLiked(localSong.videoId)
                                 if (addResult.isSuccess && (addResult.getOrNull() ?: 0) in 200..299) {
                                     localDataSource.deleteFavoriteTombstone(FavoriteSyncType.SONG, localSong.videoId)
+                                    localDataSource.deleteYouTubeFavoritePending(activeAccountId, localSong.videoId)
                                 } else {
                                     localDataSource.insertFavoriteTombstone(
                                         FavoriteSyncTombstoneEntity(
@@ -1351,6 +1621,16 @@ internal class SongRepositoryImpl(
                                             id = localSong.videoId,
                                             isFavorite = true,
                                             updatedAt = syncCycleEpoch + 1,
+                                        )
+                                    )
+                                    localDataSource.insertYouTubeFavoritePending(
+                                        YouTubeFavoritePendingEntity(
+                                            accountId = activeAccountId,
+                                            videoId = localSong.videoId,
+                                            targetState = 1,
+                                            createdAt = syncCycleEpoch,
+                                            updatedAt = syncCycleEpoch + 1,
+                                            lastError = "Remote like returned status ${addResult.getOrNull()}",
                                         )
                                     )
                                 }
@@ -1364,6 +1644,16 @@ internal class SongRepositoryImpl(
                                         updatedAt = syncCycleEpoch + 1,
                                     )
                                 )
+                                localDataSource.insertYouTubeFavoritePending(
+                                    YouTubeFavoritePendingEntity(
+                                        accountId = activeAccountId,
+                                        videoId = localSong.videoId,
+                                        targetState = 1,
+                                        createdAt = syncCycleEpoch,
+                                        updatedAt = syncCycleEpoch + 1,
+                                        lastError = e.message,
+                                    )
+                                )
                             }
                         }
                     }
@@ -1373,6 +1663,11 @@ internal class SongRepositoryImpl(
             val finishMs = Clock.System.now().toEpochMilliseconds()
             dataStoreManager.putString(KEY_LAST_FAVORITES_SYNC_TIME, finishMs.toString())
             dataStoreManager.putString(KEY_LAST_SYNCED_ACCOUNT, activeAccountId)
+
+            val remainingPending = localDataSource.getYouTubeFavoritePendingForAccount(activeAccountId).size
+            if (remainingPending == 0) {
+                _youTubeSyncStatus.value = YouTubeSyncStatus.Synced
+            }
 
             val finalLocalLiked = localDataSource.getAllLikedSongs()
             Logger.i(

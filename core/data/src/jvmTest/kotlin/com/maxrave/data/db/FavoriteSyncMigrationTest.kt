@@ -229,6 +229,14 @@ class FavoriteSyncMigrationTest {
                     "Tombstones table must be empty right after migration",
                 )
 
+                // Verify the new pending queue table was created by the migration and is operational
+                val initialPending = dao.getAllYouTubeFavoritePending()
+                assertNotNull(initialPending)
+                assertTrue(
+                    initialPending.isEmpty(),
+                    "Pending queue table must be empty right after migration",
+                )
+
                 // Verify writing and reading from the new tombstone table
                 dao.insertFavoriteTombstone(
                     FavoriteSyncTombstoneEntity(
@@ -246,13 +254,141 @@ class FavoriteSyncMigrationTest {
                 upgradedDb.close()
             }
 
-            // Step 3: Verify with raw SQLite that PRAGMA user_version is now 29
+            // Step 3: Verify with raw SQLite that PRAGMA user_version is now 30
             val verifyConn = rawDriver.open(dbFile.absolutePath)
             try {
                 val finalVersionStmt = verifyConn.prepare("PRAGMA user_version")
                 try {
                     assertTrue(finalVersionStmt.step())
-                    assertEquals(29L, finalVersionStmt.getLong(0), "PRAGMA user_version must be 29 after migration")
+                    assertEquals(30L, finalVersionStmt.getLong(0), "PRAGMA user_version must be 30 after migration")
+                } finally {
+                    finalVersionStmt.close()
+                }
+            } finally {
+                verifyConn.close()
+            }
+        }
+
+    @Test
+    fun genuineVersion29DatabaseMigratesTo30PreservingFavoritesAndCreatingPendingQueue() =
+        runBlocking {
+            val schemaFile =
+                sequenceOf(
+                    File("schemas/com.maxrave.data.db.MusicDatabase/29.json"),
+                    File("core/data/schemas/com.maxrave.data.db.MusicDatabase/29.json"),
+                    File("../core/data/schemas/com.maxrave.data.db.MusicDatabase/29.json"),
+                    File("../../core/data/schemas/com.maxrave.data.db.MusicDatabase/29.json"),
+                ).firstOrNull { it.exists() } ?: error("29.json schema file not found")
+
+            val schemaJson = schemaFile.readText()
+            val parsedSchema = Json.parseToJsonElement(schemaJson).jsonObject
+            val databaseObj = parsedSchema["database"]!!.jsonObject
+            val version = databaseObj["version"]!!.jsonPrimitive.content.toInt()
+            val identityHash = databaseObj["identityHash"]!!.jsonPrimitive.content
+            val entities = databaseObj["entities"]!!.jsonArray
+
+            assertEquals(29, version, "Schema file must be version 29")
+
+            val rawDriver = BundledSQLiteDriver()
+            val rawConn = rawDriver.open(dbFile.absolutePath)
+            try {
+                for (entityElement in entities) {
+                    val entity = entityElement.jsonObject
+                    val tableName = entity["tableName"]!!.jsonPrimitive.content
+                    val createSql =
+                        entity["createSql"]!!.jsonPrimitive.content
+                            .replace("\${TABLE_NAME}", tableName)
+                    rawConn.execSQL(createSql)
+
+                    val indices = entity["indices"]?.jsonArray
+                    if (indices != null) {
+                        for (idxElement in indices) {
+                            val idxObj = idxElement.jsonObject
+                            val idxSql =
+                                idxObj["createSql"]!!.jsonPrimitive.content
+                                    .replace("\${TABLE_NAME}", tableName)
+                            rawConn.execSQL(idxSql)
+                        }
+                    }
+                }
+
+                rawConn.execSQL(
+                    "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
+                )
+                rawConn.execSQL(
+                    "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '$identityHash')",
+                )
+                rawConn.execSQL("PRAGMA user_version = 29")
+
+                rawConn.execSQL(
+                    """
+                    INSERT INTO song (
+                        videoId, title, duration, durationSeconds, isAvailable, isExplicit,
+                        likeStatus, videoType, liked, totalPlayTime, downloadState,
+                        favoriteAt, inLibrary
+                    ) VALUES (
+                        'v29_song_1', 'V29 Song', '4:00', 240, 1, 0,
+                        'LIKE', 'MUSIC_VIDEO_TYPE_ATV', 1, 0, 0,
+                        200000, 200000
+                    )
+                    """.trimIndent(),
+                )
+
+                rawConn.execSQL(
+                    """
+                    INSERT INTO favorite_sync_tombstone (
+                        type, id, isFavorite, updatedAt
+                    ) VALUES (
+                        'SONG', 'v29_song_1', 1, 200000
+                    )
+                    """.trimIndent(),
+                )
+
+                val pendingTableStmt =
+                    rawConn.prepare(
+                        "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='youtube_favorite_pending'",
+                    )
+                try {
+                    assertTrue(pendingTableStmt.step())
+                    assertEquals(0L, pendingTableStmt.getLong(0), "youtube_favorite_pending must not exist in version 29")
+                } finally {
+                    pendingTableStmt.close()
+                }
+            } finally {
+                rawConn.close()
+            }
+
+            val upgradedDb =
+                Room
+                    .databaseBuilder<MusicDatabase>(dbFile.absolutePath)
+                    .setDriver(BundledSQLiteDriver())
+                    .addTypeConverter(Converters())
+                    .build()
+
+            try {
+                val dao = upgradedDb.getDatabaseDao()
+
+                val song = dao.getSong("v29_song_1")
+                assertNotNull(song)
+                assertTrue(song.liked)
+
+                val tomb = dao.getFavoriteTombstone(FavoriteSyncType.SONG, "v29_song_1")
+                assertNotNull(tomb)
+                assertTrue(tomb.isFavorite)
+
+                val pending = dao.getAllYouTubeFavoritePending()
+                assertNotNull(pending)
+                assertTrue(pending.isEmpty())
+            } finally {
+                upgradedDb.close()
+            }
+
+            val verifyConn = rawDriver.open(dbFile.absolutePath)
+            try {
+                val finalVersionStmt = verifyConn.prepare("PRAGMA user_version")
+                try {
+                    assertTrue(finalVersionStmt.step())
+                    assertEquals(30L, finalVersionStmt.getLong(0), "PRAGMA user_version must be 30 after migration")
                 } finally {
                     finalVersionStmt.close()
                 }

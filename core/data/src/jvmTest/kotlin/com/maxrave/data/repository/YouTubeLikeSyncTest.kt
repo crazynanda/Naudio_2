@@ -6,7 +6,9 @@ import com.maxrave.data.db.Converters
 import com.maxrave.data.db.MusicDatabase
 import com.maxrave.data.db.datasource.LocalDataSource
 import com.maxrave.domain.data.entities.DownloadState
+import com.maxrave.domain.data.entities.GoogleAccountEntity
 import com.maxrave.domain.data.entities.SongEntity
+import com.maxrave.domain.data.model.favoritesync.YouTubeSyncStatus
 import com.maxrave.domain.manager.DataStoreManager
 import com.maxrave.domain.mediaservice.handler.DownloadHandler
 import com.maxrave.kotlinytmusicscraper.YouTube
@@ -77,6 +79,17 @@ class YouTubeLikeSyncTest {
             downloadState = DownloadState.STATE_NOT_DOWNLOADED,
         )
         database.getDatabaseDao().insertSong(song)
+    }
+
+    private suspend fun setGoogleAccount(email: String, pageId: String? = null) {
+        val account = GoogleAccountEntity(
+            email = email,
+            name = "Test User",
+            thumbnailUrl = "",
+            isUsed = true,
+            pageId = pageId,
+        )
+        database.getDatabaseDao().insertGoogleAccount(account)
     }
 
     @AfterTest
@@ -655,6 +668,302 @@ class YouTubeLikeSyncTest {
             fakeYt.addToLikedCalls.contains(testVideoId),
             "Queued like request must be skipped when logout occurs while waiting",
         )
+    }
+
+    @Test
+    fun offlineLike_queuesOperationAndFlushesOnReconnect() = runBlocking {
+        setGoogleAccount("offline_user@gmail.com")
+        val fakeYt = FakeYouTube().apply {
+            shouldThrow = ConnectException("Offline")
+        }
+        val testDataStore = TestDataStoreManager(
+            combineLocalAndYouTubeLikedVal = DataStoreManager.TRUE,
+            loggedInVal = DataStoreManager.TRUE,
+            cookieVal = "valid_cookie",
+        )
+        val repo = SongRepositoryImpl(
+            dataStoreManager = testDataStore.create(),
+            localDataSource = localDataSource,
+            youTube = fakeYt,
+        )
+
+        // Offline like
+        repo.updateLikeStatus(testVideoId, 1)
+
+        // 1. Local favorite preserved
+        assertTrue(localDataSource.getSong(testVideoId)?.liked == true)
+
+        // 2. Pending operation in SQLite
+        val pendingList = repo.getPendingFavoriteOperations()
+        assertEquals(1, pendingList.size)
+        assertEquals(testVideoId, pendingList.first().videoId)
+        assertEquals(1, pendingList.first().targetState)
+
+        // 3. Status is WaitingForConnection
+        assertEquals(YouTubeSyncStatus.WaitingForConnection, repo.youTubeSyncStatus.value)
+
+        // 4. Reconnect and flush
+        fakeYt.shouldThrow = null
+        fakeYt.addToLikedCalls.clear()
+        val flushResult = repo.retryPendingSync()
+        assertTrue(flushResult.isSuccess)
+
+        // 5. Remote API was called
+        assertEquals(listOf(testVideoId), fakeYt.addToLikedCalls)
+        // 6. Queue is now empty and status Synced
+        assertEquals(0, repo.getPendingFavoriteCount())
+        assertEquals(YouTubeSyncStatus.Synced, repo.youTubeSyncStatus.value)
+    }
+
+    @Test
+    fun offlineUnlike_queuesOperationAndFlushesOnReconnect() = runBlocking {
+        setGoogleAccount("offline_user@gmail.com")
+        // Start liked
+        localDataSource.updateLiked(1, testVideoId)
+
+        val fakeYt = FakeYouTube().apply {
+            shouldThrow = IOException("Connection timed out")
+        }
+        val testDataStore = TestDataStoreManager(
+            combineLocalAndYouTubeLikedVal = DataStoreManager.TRUE,
+            loggedInVal = DataStoreManager.TRUE,
+            cookieVal = "valid_cookie",
+        )
+        val repo = SongRepositoryImpl(
+            dataStoreManager = testDataStore.create(),
+            localDataSource = localDataSource,
+            youTube = fakeYt,
+        )
+
+        // Offline unlike
+        repo.updateLikeStatus(testVideoId, 0)
+
+        // Local unliked
+        assertFalse(localDataSource.getSong(testVideoId)?.liked == true)
+
+        // Pending operation in SQLite
+        val pendingList = repo.getPendingFavoriteOperations()
+        assertEquals(1, pendingList.size)
+        assertEquals(testVideoId, pendingList.first().videoId)
+        assertEquals(0, pendingList.first().targetState)
+
+        // Status is WaitingForConnection
+        assertEquals(YouTubeSyncStatus.WaitingForConnection, repo.youTubeSyncStatus.value)
+
+        // Reconnect and flush
+        fakeYt.shouldThrow = null
+        fakeYt.removeFromLikedCalls.clear()
+        val flushResult = repo.flushPendingYouTubeLikes()
+        assertTrue(flushResult.isSuccess)
+
+        assertEquals(listOf(testVideoId), fakeYt.removeFromLikedCalls)
+        assertEquals(0, repo.getPendingFavoriteCount())
+        assertEquals(YouTubeSyncStatus.Synced, repo.youTubeSyncStatus.value)
+    }
+
+    @Test
+    fun applicationRestart_retainsPendingOperationsInDatabaseAndFlushesOnStart() = runBlocking {
+        setGoogleAccount("persist_user@gmail.com")
+        val fakeYt = FakeYouTube().apply {
+            shouldThrow = ConnectException("Offline during shutdown")
+        }
+        val testDataStore = TestDataStoreManager(
+            combineLocalAndYouTubeLikedVal = DataStoreManager.TRUE,
+            loggedInVal = DataStoreManager.TRUE,
+            cookieVal = "valid_cookie",
+        )
+        val repo1 = SongRepositoryImpl(
+            dataStoreManager = testDataStore.create(),
+            localDataSource = localDataSource,
+            youTube = fakeYt,
+        )
+
+        // Like offline in first app session
+        repo1.updateLikeStatus(testVideoId, 1)
+        assertEquals(1, repo1.getPendingFavoriteCount())
+
+        // Simulate app shutdown: close database
+        val dbFilePath = File(tempDir, "test.db").absolutePath
+        database.close()
+
+        // Simulate app restart: open database afresh from the same SQLite file
+        val restartedDb = Room
+            .databaseBuilder<MusicDatabase>(dbFilePath)
+            .setDriver(BundledSQLiteDriver())
+            .addTypeConverter(Converters())
+            .build()
+        val restartedLocalDataSource = LocalDataSource(restartedDb.getDatabaseDao(), restartedDb)
+
+        // Verify pending operation survived SQLite restart
+        val restoredPending = restartedLocalDataSource.getAllYouTubeFavoritePending()
+        assertEquals(1, restoredPending.size, "Pending operation must persist across app restart in SQLite")
+        assertEquals(testVideoId, restoredPending.first().videoId)
+        assertEquals(1, restoredPending.first().targetState)
+
+        // Network reconnected on new app session
+        val fakeYtRestart = FakeYouTube()
+        val repo2 = SongRepositoryImpl(
+            dataStoreManager = testDataStore.create(),
+            localDataSource = restartedLocalDataSource,
+            youTube = fakeYtRestart,
+        )
+
+        // Flush on start
+        val flushResult = repo2.flushPendingYouTubeLikes()
+        assertTrue(flushResult.isSuccess)
+        assertEquals(listOf(testVideoId), fakeYtRestart.addToLikedCalls)
+        assertEquals(0, repo2.getPendingFavoriteCount())
+        assertEquals(YouTubeSyncStatus.Synced, repo2.youTubeSyncStatus.value)
+
+        restartedDb.close()
+    }
+
+    @Test
+    fun expiredAuthenticationCookies_transitionsToAuthenticationRequiredWithoutDataLoss() = runBlocking {
+        setGoogleAccount("auth_user@gmail.com")
+        val fakeYt = FakeYouTube().apply {
+            simulatedStatus = 401
+        }
+        val testDataStore = TestDataStoreManager(
+            combineLocalAndYouTubeLikedVal = DataStoreManager.TRUE,
+            loggedInVal = DataStoreManager.TRUE,
+            cookieVal = "expired_cookie",
+        )
+        val dataStore = testDataStore.create()
+        val repo = SongRepositoryImpl(
+            dataStoreManager = dataStore,
+            localDataSource = localDataSource,
+            youTube = fakeYt,
+        )
+
+        // Like with expired cookie
+        repo.updateLikeStatus(testVideoId, 1)
+
+        // Local song is NOT lost
+        assertTrue(localDataSource.getSong(testVideoId)?.liked == true)
+
+        // Status is AuthenticationRequired
+        assertEquals(YouTubeSyncStatus.AuthenticationRequired, repo.youTubeSyncStatus.value)
+        assertEquals(1, repo.getPendingFavoriteCount())
+
+        // User logs in again / updates cookie
+        dataStore.setCookie("fresh_sapisid_cookie", null)
+        fakeYt.simulatedStatus = 200
+        fakeYt.addToLikedCalls.clear()
+
+        val retryResult = repo.retryPendingSync()
+        assertTrue(retryResult.isSuccess)
+        assertEquals(listOf(testVideoId), fakeYt.addToLikedCalls)
+        assertEquals(0, repo.getPendingFavoriteCount())
+        assertEquals(YouTubeSyncStatus.Synced, repo.youTubeSyncStatus.value)
+    }
+
+    @Test
+    fun accountSwitching_isolatesPendingOperationsByAccountId() = runBlocking {
+        // Account A logs in
+        setGoogleAccount("accountA@gmail.com", pageId = null)
+        val fakeYt = FakeYouTube().apply {
+            shouldThrow = ConnectException("Offline")
+        }
+        val testDataStore = TestDataStoreManager(
+            combineLocalAndYouTubeLikedVal = DataStoreManager.TRUE,
+            loggedInVal = DataStoreManager.TRUE,
+            cookieVal = "cookie_A",
+        )
+        val repo = SongRepositoryImpl(
+            dataStoreManager = testDataStore.create(),
+            localDataSource = localDataSource,
+            youTube = fakeYt,
+        )
+
+        insertTestSong("song_A")
+        insertTestSong("song_B")
+
+        // Account A likes song_A while offline
+        repo.updateLikeStatus("song_A", 1)
+        val accountAId = "accounta@gmail.com#"
+        val pendingA = localDataSource.getYouTubeFavoritePendingForAccount(accountAId)
+        assertEquals(1, pendingA.size)
+        assertEquals("song_A", pendingA.first().videoId)
+
+        // Switch to Account B
+        localDataSource.deleteGoogleAccount("accountA@gmail.com")
+        setGoogleAccount("accountB@gmail.com", pageId = "brand_123")
+        val accountBId = "accountb@gmail.com#brand_123"
+
+        // Account B pending queue must be empty!
+        assertEquals(0, localDataSource.getYouTubeFavoritePendingForAccount(accountBId).size)
+
+        // Account B likes song_B while offline
+        repo.updateLikeStatus("song_B", 1)
+        val pendingB = localDataSource.getYouTubeFavoritePendingForAccount(accountBId)
+        assertEquals(1, pendingB.size)
+        assertEquals("song_B", pendingB.first().videoId)
+
+        // Account A's pending operation still intact and isolated in database
+        val pendingAStillThere = localDataSource.getYouTubeFavoritePendingForAccount(accountAId)
+        assertEquals(1, pendingAStillThere.size)
+        assertEquals("song_A", pendingAStillThere.first().videoId)
+
+        // Now Account B reconnects and flushes
+        fakeYt.shouldThrow = null
+        fakeYt.addToLikedCalls.clear()
+        repo.flushPendingYouTubeLikes()
+
+        // ONLY song_B was synced! song_A was NOT sent with Account B's cookies!
+        assertEquals(listOf("song_B"), fakeYt.addToLikedCalls)
+        assertEquals(0, localDataSource.getYouTubeFavoritePendingForAccount(accountBId).size)
+
+        // Account A's item remains preserved in DB waiting for Account A
+        assertEquals(1, localDataSource.getYouTubeFavoritePendingForAccount(accountAId).size)
+
+        // Switch back to Account A and verify Account A flushes song_A
+        localDataSource.deleteGoogleAccount("accountB@gmail.com")
+        setGoogleAccount("accountA@gmail.com", pageId = null)
+        fakeYt.addToLikedCalls.clear()
+        repo.flushPendingYouTubeLikes()
+        assertEquals(listOf("song_A"), fakeYt.addToLikedCalls)
+        assertEquals(0, localDataSource.getYouTubeFavoritePendingForAccount(accountAId).size)
+    }
+
+    @Test
+    fun rapidSuperSededLikeAndUnlike_flushesOnlyLatestDesiredState() = runBlocking {
+        setGoogleAccount("supersede_user@gmail.com")
+        val fakeYt = FakeYouTube().apply {
+            shouldThrow = ConnectException("Offline")
+        }
+        val testDataStore = TestDataStoreManager(
+            combineLocalAndYouTubeLikedVal = DataStoreManager.TRUE,
+            loggedInVal = DataStoreManager.TRUE,
+            cookieVal = "valid_cookie",
+        )
+        val repo = SongRepositoryImpl(
+            dataStoreManager = testDataStore.create(),
+            localDataSource = localDataSource,
+            youTube = fakeYt,
+        )
+
+        // User likes, then unlikes while offline
+        repo.updateLikeStatus(testVideoId, 1)
+        repo.updateLikeStatus(testVideoId, 0)
+
+        // In DB, only 1 pending record should exist for this track with targetState = 0
+        val pending = repo.getPendingFavoriteOperations()
+        assertEquals(1, pending.size)
+        assertEquals(0, pending.first().targetState)
+        assertFalse(localDataSource.getSong(testVideoId)?.liked == true)
+
+        // Reconnect and flush
+        fakeYt.shouldThrow = null
+        fakeYt.addToLikedCalls.clear()
+        fakeYt.removeFromLikedCalls.clear()
+
+        repo.flushPendingYouTubeLikes()
+
+        // Only removeFromLiked was called, addToLiked was NOT called
+        assertTrue(fakeYt.addToLikedCalls.isEmpty(), "Superseded like call must not be made")
+        assertEquals(listOf(testVideoId), fakeYt.removeFromLikedCalls)
+        assertEquals(0, repo.getPendingFavoriteCount())
     }
 
     // Test Doubles
