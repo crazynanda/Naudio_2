@@ -8,6 +8,7 @@ on:
   push:
     branches:
       - feature/favorites-sync
+  workflow_dispatch:
 
 jobs:
   verify-builds-and-tests:
@@ -40,15 +41,59 @@ jobs:
           echo "LASTFM_API_KEY=${{ secrets.LASTFM_API_KEY }}" >> ./local.properties
           echo "LASTFM_SECRET=${{ secrets.LASTFM_SECRET }}" >> ./local.properties
 
-      - name: Run Gradle tests and compilation checks
+      - name: Run Gradle tests and build Android debug APKs
         run: |
           ./gradlew \
             :loginSync:jvmTest \
             :data:jvmTest \
             :composeApp:compileKotlinJvm \
             :desktopApp:compileKotlinJvm \
-            :androidApp:compileDebugKotlin \
+            :androidApp:assembleDebug \
             --no-configuration-cache
+
+      - name: Verify Android debug APKs and package ID
+        run: |
+          UNIVERSAL_APK="androidApp/build/outputs/apk/debug/androidApp-universal-debug.apk"
+          ARM64_APK="androidApp/build/outputs/apk/debug/androidApp-arm64-v8a-debug.apk"
+
+          if [ ! -f "$UNIVERSAL_APK" ]; then
+            echo "Universal debug APK not found at $UNIVERSAL_APK!"
+            exit 1
+          fi
+          if [ ! -f "$ARM64_APK" ]; then
+            echo "ARM64 debug APK not found at $ARM64_APK!"
+            exit 1
+          fi
+
+          echo "Universal APK size: $(ls -lh "$UNIVERSAL_APK" | awk '{print $5}')"
+          echo "ARM64 APK size: $(ls -lh "$ARM64_APK" | awk '{print $5}')"
+
+          AAPT2=$(find /usr/local/lib/android/sdk/build-tools "$ANDROID_HOME/build-tools" -name aapt2 2>/dev/null | sort -V | tail -n 1)
+          if [ -n "$AAPT2" ] && [ -x "$AAPT2" ]; then
+            PKG_ID=$("$AAPT2" dump badging "$UNIVERSAL_APK" | grep -o "package: name='[^']*'" | head -n 1 | cut -d"'" -f2)
+            echo "Extracted package ID from universal APK: $PKG_ID"
+            if [ "$PKG_ID" != "com.maxrave.simpmusic.dev" ]; then
+              echo "ERROR: Package ID mismatch: expected com.maxrave.simpmusic.dev, got '$PKG_ID'"
+              exit 1
+            fi
+            echo "Verified package ID: $PKG_ID"
+          else
+            echo "Warning: aapt2 not found, skipping badging dump"
+          fi
+
+      - name: Upload universal debug APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: naudio-android-debug-apk
+          path: androidApp/build/outputs/apk/debug/androidApp-universal-debug.apk
+          if-no-files-found: error
+
+      - name: Upload ARM64 debug APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: naudio-android-arm64-debug
+          path: androidApp/build/outputs/apk/debug/androidApp-arm64-v8a-debug.apk
+          if-no-files-found: error
 
   verify-windows-installer:
     name: Verify Windows Installer Compilation & Packaging (Staged Test Assets)
