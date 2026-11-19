@@ -19,6 +19,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -48,7 +49,9 @@ import dev.chrisbanes.haze.blur.hazeBlur
 import dev.chrisbanes.haze.hazeSource
 import dev.chrisbanes.haze.rememberHazeState
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlin.time.TimeSource
 import org.jetbrains.compose.resources.getString
 import org.jetbrains.compose.resources.stringResource
 import org.koin.compose.viewmodel.koinViewModel
@@ -56,6 +59,18 @@ import simpmusic.composeapp.generated.resources.Res
 import simpmusic.composeapp.generated.resources.log_in
 import simpmusic.composeapp.generated.resources.login_failed
 import simpmusic.composeapp.generated.resources.login_success
+
+/** How often the YouTube cookie jar is checked while the sign-in page is open. */
+private const val LOGIN_POLL_INTERVAL_MS = 500L
+
+/** Pause between two attempts on the same cookie. */
+private const val LOGIN_RETRY_DELAY_MS = 4_000L
+
+/** How many times the same cookie is tried before it is given up on. */
+private const val LOGIN_MAX_ATTEMPTS = 2
+
+/** Pause before a cookie that failed [LOGIN_MAX_ATTEMPTS] times is tried once more. */
+private const val LOGIN_EXHAUSTED_RETRY_DELAY_MS = 15_000L
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -72,9 +87,10 @@ fun LoginScreen(
     var devLoginSheet by rememberSaveable {
         mutableStateOf(false)
     }
-    var isProcessingLogin by rememberSaveable {
-        mutableStateOf(false)
-    }
+    // The URL the embedded page is currently showing. The sign-in completion poll reads it instead
+    // of acting on the page callback directly, so a navigation that lands while an account is
+    // being added is never dropped.
+    var currentUrl by remember { mutableStateOf("") }
 
     val state = rememberWebViewState()
 
@@ -101,6 +117,69 @@ fun LoginScreen(
     DisposableEffect(Unit) {
         onDispose {
             showBottomNavigation()
+        }
+    }
+
+    // Sign-in completion.
+    //
+    // Two rules, both learned the hard way by the version that reported "Login failed" while the
+    // user was still on the Google password screen:
+    //
+    // 1. The page must be on YouTube. The Google sign-in page carries "music.youtube.com" inside
+    //    its percent encoded "continue" parameter, so matching the whole URL as a substring
+    //    matched the sign-in page itself and started the cookie check before anything was signed
+    //    in. Only the host decides now.
+    // 2. The cookie must come from the YouTube cookie jar. The Google account pages set their own
+    //    SAPISID and SID on google.com, which look exactly like a finished sign-in but are not one:
+    //    they sent YouTube a cookie it cannot use, so the account was never added and the screen
+    //    reported a failure for a sign-in that was still running.
+    //
+    // The cookie is read once the page is on YouTube, so a sign-in that is still on the Google
+    // pages costs nothing but a URL comparison.
+    LaunchedEffect(Unit) {
+        val cookieManager = createWebViewCookieManager()
+        val timeSource = TimeSource.Monotonic
+        var attemptedCookie: String? = null
+        var attempts = 0
+        var lastAttempt = timeSource.markNow()
+        var failureReportedFor: String? = null
+
+        while (isActive) {
+            delay(LOGIN_POLL_INTERVAL_MS)
+
+            val pageUrl = currentUrl
+            if (!isYouTubeUrl(pageUrl)) continue
+            // Nothing new can come out of the same cookie for a while: do not even read it.
+            if (attempts >= LOGIN_MAX_ATTEMPTS && lastAttempt.elapsedNow().inWholeMilliseconds < LOGIN_EXHAUSTED_RETRY_DELAY_MS) continue
+
+            val cookie = cookieManager.getCookie(Config.YOUTUBE_MUSIC_MAIN_URL)
+            if (!shouldCompleteYouTubeLogin(pageUrl, cookie)) continue
+
+            if (cookie != attemptedCookie) {
+                attemptedCookie = cookie
+                attempts = 0
+            }
+            if (attempts >= LOGIN_MAX_ATTEMPTS) {
+                // A whole round on this cookie failed. Start a new round later on, in case the
+                // failure was a dropped request rather than a rejected cookie.
+                attempts = 0
+            } else if (attempts > 0 && lastAttempt.elapsedNow().inWholeMilliseconds < LOGIN_RETRY_DELAY_MS) {
+                continue
+            }
+
+            attempts++
+            lastAttempt = timeSource.markNow()
+            Logger.i("LogInScreen", "YouTube sign-in cookies detected on $pageUrl, adding account")
+            val success = settingsViewModel.addAccount(cookie)
+            if (success) {
+                viewModel.makeToast(getString(Res.string.login_success))
+                navController.navigateUp()
+                break
+            }
+            if (attempts >= LOGIN_MAX_ATTEMPTS && failureReportedFor != cookie) {
+                failureReportedFor = cookie
+                viewModel.makeToast(getString(Res.string.login_failed))
+            }
         }
     }
 
@@ -140,28 +219,7 @@ fun LoginScreen(
                 clearCookies = true,
             ) { url ->
                 Logger.d("LogInScreen", "Current URL: $url")
-                if (url.contains("music.youtube.com") && !isProcessingLogin) {
-                    coroutineScope.launch {
-                        for (attempt in 0..6) {
-                            if (isProcessingLogin) break
-                            val cookie = createWebViewCookieManager().getCookie(url)
-                            if (hasYouTubeAuthCookies(cookie)) {
-                                isProcessingLogin = true
-                                Logger.i("LogInScreen", "Detected valid YouTube authentication cookies, adding account")
-                                val success = settingsViewModel.addAccount(cookie)
-                                if (success) {
-                                    viewModel.makeToast(getString(Res.string.login_success))
-                                    navController.navigateUp()
-                                } else {
-                                    isProcessingLogin = false
-                                    viewModel.makeToast(getString(Res.string.login_failed))
-                                }
-                                break
-                            }
-                            delay(500)
-                        }
-                    }
-                }
+                currentUrl = url
             }
         }
 
@@ -208,6 +266,48 @@ fun LoginScreen(
         )
     }
 }
+
+/**
+ * The host of [url], or null when it is not an absolute http(s) URL.
+ *
+ * Parsed by hand because commonMain has no java.net. The login flow needs the host and not the
+ * whole URL: the Google sign-in page carries "music.youtube.com" inside its percent encoded
+ * "continue" parameter, so matching the whole URL as a substring matches the sign-in page itself.
+ */
+internal fun hostOfUrl(url: String): String? {
+    val trimmed = url.trim()
+    val schemeEnd = trimmed.indexOf("://")
+    if (schemeEnd <= 0) return null
+    val scheme = trimmed.substring(0, schemeEnd).lowercase()
+    if (scheme != "http" && scheme != "https") return null
+
+    var authority = trimmed.substring(schemeEnd + 3)
+    val authorityEnd = authority.indexOfFirst { it == '/' || it == '?' || it == '#' }
+    if (authorityEnd >= 0) authority = authority.substring(0, authorityEnd)
+    val userInfoEnd = authority.lastIndexOf('@')
+    if (userInfoEnd >= 0) authority = authority.substring(userInfoEnd + 1)
+    val portStart = authority.indexOf(':')
+    if (portStart >= 0) authority = authority.substring(0, portStart)
+
+    return authority.lowercase().takeIf { it.isNotEmpty() }
+}
+
+/**
+ * Whether [url] is a YouTube page, which is where a sign-in ends: the Google pages are where it
+ * starts.
+ */
+internal fun isYouTubeUrl(url: String): Boolean {
+    val host = hostOfUrl(url) ?: return false
+    return host == "youtube.com" || host.endsWith(".youtube.com")
+}
+
+/**
+ * Whether a sign-in can be completed for [pageUrl] with the cookies of the YouTube cookie jar.
+ */
+internal fun shouldCompleteYouTubeLogin(
+    pageUrl: String,
+    youTubeCookie: String,
+): Boolean = isYouTubeUrl(pageUrl) && hasYouTubeAuthCookies(youTubeCookie)
 
 internal fun hasYouTubeAuthCookies(cookie: String): Boolean {
     if (cookie.isBlank()) return false
