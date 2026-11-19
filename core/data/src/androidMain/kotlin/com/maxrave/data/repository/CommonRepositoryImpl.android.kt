@@ -38,9 +38,14 @@ actual fun getCookies(url: String, packageName: String): CookieItem {
                 )
             CookieManager.getInstance().flush()
             val cookieList = mutableListOf<CookieItem.Content>()
-            val dbPath =
-                File("/data/data/${packageName}/").walkTopDown().find { it.name == "Cookies" }
-                    ?: throw Exception("Cookies File not found!")
+            val candidates = listOf(
+                File("/data/data/$packageName/"),
+                File("/data/user/0/$packageName/"),
+            )
+            val dbPath = candidates.asSequence()
+                .filter { it.exists() }
+                .mapNotNull { dir -> dir.walkTopDown().find { it.name == "Cookies" } }
+                .firstOrNull() ?: throw Exception("Cookies File not found!")
 
             val db =
                 SQLiteDatabase.openDatabase(

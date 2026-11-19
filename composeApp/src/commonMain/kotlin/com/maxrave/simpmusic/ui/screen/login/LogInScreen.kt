@@ -47,6 +47,7 @@ import dev.chrisbanes.haze.HazeInput
 import dev.chrisbanes.haze.blur.hazeBlur
 import dev.chrisbanes.haze.hazeSource
 import dev.chrisbanes.haze.rememberHazeState
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.jetbrains.compose.resources.getString
 import org.jetbrains.compose.resources.stringResource
@@ -69,6 +70,9 @@ fun LoginScreen(
     val hazeState = rememberHazeState()
     val coroutineScope = rememberCoroutineScope()
     var devLoginSheet by rememberSaveable {
+        mutableStateOf(false)
+    }
+    var isProcessingLogin by rememberSaveable {
         mutableStateOf(false)
     }
 
@@ -136,24 +140,25 @@ fun LoginScreen(
                 clearCookies = true,
             ) { url ->
                 Logger.d("LogInScreen", "Current URL: $url")
-                if (url == Config.YOUTUBE_MUSIC_MAIN_URL) {
+                if (url.contains("music.youtube.com") && !isProcessingLogin) {
                     coroutineScope.launch {
-                        val success =
-                            createWebViewCookieManager()
-                                .getCookie(url)
-                                .takeIf {
-                                    it.isNotEmpty()
-                                }?.let {
-                                    settingsViewModel.addAccount(it)
-                                } ?: false
-
-                        createWebViewCookieManager().removeAllCookies()
-
-                        if (success) {
-                            viewModel.makeToast(getString(Res.string.login_success))
-                            navController.navigateUp()
-                        } else {
-                            viewModel.makeToast(getString(Res.string.login_failed))
+                        for (attempt in 0..6) {
+                            if (isProcessingLogin) break
+                            val cookie = createWebViewCookieManager().getCookie(url)
+                            if (hasYouTubeAuthCookies(cookie)) {
+                                isProcessingLogin = true
+                                Logger.i("LogInScreen", "Detected valid YouTube authentication cookies, adding account")
+                                val success = settingsViewModel.addAccount(cookie)
+                                if (success) {
+                                    viewModel.makeToast(getString(Res.string.login_success))
+                                    navController.navigateUp()
+                                } else {
+                                    isProcessingLogin = false
+                                    viewModel.makeToast(getString(Res.string.login_failed))
+                                }
+                                break
+                            }
+                            delay(500)
                         }
                     }
                 }
@@ -202,4 +207,24 @@ fun LoginScreen(
                 ),
         )
     }
+}
+
+internal fun hasYouTubeAuthCookies(cookie: String): Boolean {
+    if (cookie.isBlank()) return false
+    val keys = cookie.split(';')
+        .asSequence()
+        .map { it.trim() }
+        .filter { it.contains('=') }
+        .map { it.substringBefore('=').trim() }
+        .toSet()
+
+    val hasSapisid = keys.contains("SAPISID") ||
+        keys.contains("__Secure-3PAPISID") ||
+        keys.contains("__Secure-1PAPISID")
+
+    val hasSession = keys.contains("SID") ||
+        keys.contains("__Secure-3PSID") ||
+        keys.contains("LOGIN_INFO")
+
+    return hasSapisid && hasSession
 }

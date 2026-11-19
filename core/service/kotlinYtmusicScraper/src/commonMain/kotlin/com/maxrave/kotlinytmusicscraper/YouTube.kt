@@ -1353,7 +1353,6 @@ open class YouTube {
                         ?.ytConfigData
                         ?.visitorData
             Logger.d(TAG, "Visitor Data $visitorData")
-            Logger.d(TAG, "New Cookie $cookie")
             Logger.d(TAG, "Playback Tracking $playbackTracking")
             return Triple(cookie, visitorData ?: this@YouTube.visitorData ?: "", playbackTracking)
         } catch (e: Exception) {

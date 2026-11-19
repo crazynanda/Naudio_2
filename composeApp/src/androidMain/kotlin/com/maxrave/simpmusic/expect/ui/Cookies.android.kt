@@ -9,6 +9,7 @@ import android.webkit.CookieManager
 import android.webkit.JsResult
 import android.webkit.RenderProcessGoneDetail
 import android.webkit.WebChromeClient
+import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.TextView
@@ -47,12 +48,23 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 actual fun createWebViewCookieManager(): WebViewCookieManager =
     object : WebViewCookieManager {
-        // getCookie is null when no cookie matches this url, even if hasCookies() is true for others.
-        override fun getCookie(url: String): String = CookieManager.getInstance().getCookie(url).orEmpty()
+        override fun getCookie(url: String): String {
+            val cookieManager = CookieManager.getInstance()
+            cookieManager.flush()
+            val primary = cookieManager.getCookie(url).orEmpty()
+            return if (url.contains("youtube.com")) {
+                val musicRoot = cookieManager.getCookie("https://music.youtube.com").orEmpty()
+                val ytRoot = cookieManager.getCookie("https://youtube.com").orEmpty()
+                mergeCookieStrings(primary, mergeCookieStrings(musicRoot, ytRoot))
+            } else {
+                primary
+            }
+        }
 
         override fun removeAllCookies() {
-            CookieManager.getInstance().removeAllCookies(null)
-            CookieManager.getInstance().flush()
+            val cookieManager = CookieManager.getInstance()
+            cookieManager.removeAllCookies(null)
+            cookieManager.flush()
         }
     }
 
@@ -74,15 +86,51 @@ actual fun PlatformWebView(
                     ViewGroup.LayoutParams.MATCH_PARENT,
                     ViewGroup.LayoutParams.MATCH_PARENT,
                 )
+
+            val cookieManager = CookieManager.getInstance()
+            cookieManager.setAcceptCookie(true)
+            cookieManager.setAcceptThirdPartyCookies(this, true)
+
+            settings.javaScriptEnabled = true
+            settings.domStorageEnabled = true
+            settings.databaseEnabled = true
+
+            // Clean up WebView identifiers so Google doesn't trigger disallowed_useragent
+            val defaultUa = settings.userAgentString.orEmpty()
+            if (defaultUa.contains("; wv") || defaultUa.contains("Version/4.0")) {
+                settings.userAgentString = defaultUa.replace("; wv", "").replace("Version/4.0 ", "")
+            }
+
             webViewClient =
                 object : WebViewClient() {
+                    override fun shouldOverrideUrlLoading(
+                        view: WebView,
+                        request: WebResourceRequest,
+                    ): Boolean {
+                        val uri = request.url
+                        val scheme = uri.scheme?.lowercase()
+                        if (scheme != "http" && scheme != "https") {
+                            // Non-web schemes (intent://, market://, etc.) shouldn't crash WebView
+                            return true
+                        }
+                        return false // Keep web navigation inside this WebView
+                    }
+
+                    override fun doUpdateVisitedHistory(
+                        view: WebView?,
+                        url: String?,
+                        isReload: Boolean,
+                    ) {
+                        super.doUpdateVisitedHistory(view, url, isReload)
+                        url?.let { onPageFinished(it) }
+                    }
+
                     override fun onPageFinished(
                         view: WebView?,
                         url: String?,
                     ) {
-                        url?.let {
-                            onPageFinished(it)
-                        }
+                        super.onPageFinished(view, url)
+                        url?.let { onPageFinished(it) }
                     }
 
                     override fun onRenderProcessGone(
@@ -90,8 +138,6 @@ actual fun PlatformWebView(
                         detail: RenderProcessGoneDetail,
                     ): Boolean = handleRendererGone(detail, onRendererGone)
                 }
-            settings.javaScriptEnabled = true
-            settings.domStorageEnabled = true
 
             // Runs inside the factory, so after ManagedWebView's startup has finished.
             if (clearCookies && cookiesCleared.compareAndSet(false, true)) {
