@@ -28,6 +28,9 @@ import com.maxrave.kotlinytmusicscraper.models.ThumbnailRenderer
 import com.maxrave.kotlinytmusicscraper.models.Thumbnails
 import com.maxrave.kotlinytmusicscraper.models.WatchEndpoint
 import com.maxrave.kotlinytmusicscraper.models.response.BrowseResponse
+import com.maxrave.kotlinytmusicscraper.models.response.LibraryPage
+import com.maxrave.kotlinytmusicscraper.models.response.isSignInRequired
+import com.maxrave.kotlinytmusicscraper.models.response.libraryRows
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
@@ -1356,47 +1359,60 @@ class AccountFavoritesSyncTest {
         var addToLikedError: Throwable? = null
         var removeFromLikedError: Throwable? = null
 
-        override suspend fun customQuery(
+        override suspend fun fetchLibraryPage(
             browseId: String?,
-            params: String?,
             continuation: String?,
-            country: String?,
-            setLogin: Boolean,
-        ): Result<BrowseResponse> {
+            customCookie: String?,
+        ): Result<LibraryPage> {
             shouldThrow?.let { return Result.failure(it) }
 
             val customPages = customRenderersPages
             if (customPages != null) {
-                if (browseId == "VLLM") {
+                if (browseId != null) {
                     val page1 = customPages.getOrNull(0) ?: emptyList()
                     val nextToken = if (customPages.size > 1) "custom_page_token_1" else null
-                    return Result.success(createInitialBrowseResponseWithRenderers(page1, nextToken))
+                    return libraryPage(createInitialBrowseResponseWithRenderers(page1, nextToken))
                 } else if (continuation != null) {
                     val pageIndex = continuation.removePrefix("custom_page_token_").toIntOrNull() ?: 1
                     val pageItems = customPages.getOrNull(pageIndex) ?: emptyList()
                     val nextToken = if (pageIndex + 1 < customPages.size) "custom_page_token_${pageIndex + 1}" else null
-                    return Result.success(createContinuationBrowseResponseWithRenderers(pageItems, nextToken))
+                    return libraryPage(createContinuationBrowseResponseWithRenderers(pageItems, nextToken))
                 }
             }
 
             val pages = remotePages
             if (pages != null) {
-                if (browseId == "VLLM") {
+                if (browseId != null) {
                     val page1 = pages.getOrNull(0) ?: emptyList()
                     val nextToken = if (pages.size > 1) "page_token_1" else null
-                    return Result.success(createInitialBrowseResponse(page1, nextToken))
+                    return libraryPage(createInitialBrowseResponse(page1, nextToken))
                 } else if (continuation != null) {
                     val pageIndex = continuation.removePrefix("page_token_").toIntOrNull() ?: 1
                     val pageItems = pages.getOrNull(pageIndex) ?: emptyList()
                     val nextToken = if (pageIndex + 1 < pages.size) "page_token_${pageIndex + 1}" else null
-                    return Result.success(createContinuationBrowseResponse(pageItems, nextToken))
+                    return libraryPage(createContinuationBrowseResponse(pageItems, nextToken))
                 }
             }
 
-            if (browseId == "VLLM") {
-                return Result.success(createInitialBrowseResponse(remoteTracks.toList()))
+            if (browseId != null) {
+                return libraryPage(createInitialBrowseResponse(remoteTracks.toList()))
             }
             return Result.failure(Exception("Not found"))
+        }
+
+        /** Turns the answer of the fake into the page the sync reads. */
+        private fun libraryPage(response: BrowseResponse): Result<LibraryPage> {
+            val rows = response.libraryRows()
+            return Result.success(
+                LibraryPage(
+                    httpStatus = 200,
+                    rows = rows.rows,
+                    continuations = rows.continuations,
+                    shelfCount = rows.shelfCount,
+                    signInRequired = response.isSignInRequired(),
+                    shape = "",
+                ),
+            )
         }
 
         override suspend fun addToLiked(mediaId: String): Result<Int> {

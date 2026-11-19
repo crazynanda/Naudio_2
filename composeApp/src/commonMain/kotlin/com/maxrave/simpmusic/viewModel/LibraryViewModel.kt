@@ -29,6 +29,7 @@ import com.maxrave.domain.utils.Resource
 import com.maxrave.domain.utils.isRadioPlaylistId
 import com.maxrave.simpmusic.ui.screen.home.analytics.monthFullNameResource
 import com.maxrave.simpmusic.ui.screen.library.LibraryDynamicPlaylistType
+import com.maxrave.logger.Logger
 import com.maxrave.simpmusic.viewModel.base.BaseViewModel
 import kotlinx.collections.immutable.toImmutableList
 import kotlinx.coroutines.Dispatchers
@@ -250,6 +251,23 @@ class LibraryViewModel(
     }
 
     fun getYouTubeLoggedIn(): Boolean = runBlocking { dataStoreManager.loggedIn.first() } == DataStoreManager.TRUE
+
+    /**
+     * Reads the liked songs of the account again.
+     *
+     * The sync runs when the app starts and when the account is switched, but a like made in
+     * YouTube Music afterwards only shows up with the next start of the app. The Favorites list
+     * asks for the library of the account while it is opened, so a like shows up there.
+     */
+    fun refreshFavorites() {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                songRepository.syncAccountFavorites(force = true)
+            } catch (e: Exception) {
+                Logger.w("LibraryViewModel", "The favorites could not be refreshed: ${e.message}")
+            }
+        }
+    }
 
     fun getPlaylistFavorite() {
         viewModelScope.launch {

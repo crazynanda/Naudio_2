@@ -44,6 +44,10 @@ import com.maxrave.kotlinytmusicscraper.models.response.extractAccountItems
 import com.maxrave.kotlinytmusicscraper.models.response.jsonShape
 import com.maxrave.kotlinytmusicscraper.models.response.AddItemYouTubePlaylistResponse
 import com.maxrave.kotlinytmusicscraper.models.response.BrowseResponse
+import com.maxrave.kotlinytmusicscraper.models.response.LibraryPage
+import com.maxrave.kotlinytmusicscraper.models.response.isSignInRequired
+import com.maxrave.kotlinytmusicscraper.models.response.jsonShape
+import com.maxrave.kotlinytmusicscraper.models.response.libraryRows
 import com.maxrave.kotlinytmusicscraper.models.response.CommentsResponse
 import com.maxrave.kotlinytmusicscraper.models.response.CreatePlaylistResponse
 import com.maxrave.kotlinytmusicscraper.models.response.ImageUploadResponse
@@ -2091,6 +2095,67 @@ open class YouTube {
     suspend fun getLibraryPlaylists() =
         runCatching {
             ytMusic.browse(WEB_REMIX, "FEmusic_liked_playlists", setLogin = true).body<BrowseResponse>()
+        }
+
+    /**
+     * Reads one page of a library answer.
+     *
+     * The status, the rows, the continuations and whether the page asked for a sign-in are kept
+     * apart: a page that was refused is not a library without songs, and reading it as one is what
+     * empties a Favorites list that is not empty.
+     *
+     * The body is never logged. Its shape is, which says where the songs went when there are none.
+     */
+    open suspend fun fetchLibraryPage(
+        browseId: String?,
+        continuation: String? = null,
+        customCookie: String? = null,
+    ): Result<LibraryPage> =
+        try {
+            val response =
+                ytMusic.browse(
+                    WEB_REMIX,
+                    browseId = browseId,
+                    continuation = continuation,
+                    setLogin = true,
+                )
+            val status = response.status.value
+            val body = response.bodyAsText().removePrefix(")]}'\n")
+            val root = ytMusic.normalJson.parseToJsonElement(body).jsonObject
+            val parsed =
+                runCatching {
+                    ytMusic.normalJson.decodeFromJsonElement<BrowseResponse>(root)
+                }.getOrNull()
+
+            if (parsed == null) {
+                Logger.w(TAG, "Library page $browseId could not be read (HTTP $status)")
+                return Result.failure(
+                    IllegalStateException("The library page ($browseId) could not be read (HTTP $status)"),
+                )
+            }
+
+            val rows = parsed.libraryRows()
+            val page =
+                LibraryPage(
+                    httpStatus = status,
+                    rows = rows.rows,
+                    continuations = rows.continuations,
+                    shelfCount = rows.shelfCount,
+                    signInRequired = parsed.isSignInRequired(),
+                    shape = jsonShape(root),
+                )
+            Logger.i(
+                TAG,
+                "Library page ${browseId ?: "continuation"}: HTTP $status, ${page.rows.size} row(s), " +
+                    "${page.shelfCount} shelf(s), ${page.continuations.size} continuation(s)" +
+                    if (page.signInRequired) ", sign-in required" else "",
+            )
+            Result.success(page)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Logger.w(TAG, "Library page ${browseId ?: "continuation"} failed: ${e::class.simpleName}")
+            Result.failure(e)
         }
 
     suspend fun getMixedForYou() =

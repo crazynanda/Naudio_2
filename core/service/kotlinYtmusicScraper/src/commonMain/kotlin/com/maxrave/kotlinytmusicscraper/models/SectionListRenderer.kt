@@ -47,6 +47,11 @@ data class SectionListRenderer(
         val musicResponsiveHeaderRenderer: MusicResponsiveHeaderRenderer?,
         val musicEditablePlaylistDetailHeaderRenderer: BrowseResponse.Header.MusicEditablePlaylistDetailHeaderRenderer?,
         val gridRenderer: GridRenderer?,
+        /**
+         * A message instead of a shelf: what a page shows when it cannot be read, for instance the
+         * "sign in to see your likes" of a library the session may not open.
+         */
+        val itemSectionRenderer: ItemSectionRenderer? = null,
     ) {
         @Serializable
         data class MusicResponsiveHeaderRenderer(
@@ -138,4 +143,26 @@ data class SectionListRenderer(
             )
         }
     }
+
+    /**
+     * A message instead of a shelf: what a page shows when it cannot be read, for instance the
+     * "sign in to see your likes" of a library the session may not open.
+     */
+    @Serializable
+    data class ItemSectionRenderer(
+        val contents: List<ItemSectionContent>? = null,
+    )
+
+    @Serializable
+    data class ItemSectionContent(
+        val messageRenderer: MessageRenderer? = null,
+        /** A section may also hold the rows itself, without a shelf around them. */
+        val musicResponsiveListItemRenderer: MusicResponsiveListItemRenderer? = null,
+    )
+
+    @Serializable
+    data class MessageRenderer(
+        val text: Runs? = null,
+        val button: Button? = null,
+    )
 }

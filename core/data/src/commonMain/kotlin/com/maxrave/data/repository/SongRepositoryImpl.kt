@@ -31,6 +31,7 @@ import com.maxrave.domain.utils.toSongEntity
 import com.maxrave.kotlinytmusicscraper.models.MusicShelfRenderer
 import com.maxrave.kotlinytmusicscraper.models.getContinuation
 import com.maxrave.kotlinytmusicscraper.models.response.BrowseResponse
+import com.maxrave.kotlinytmusicscraper.models.response.LikedSongsBrowseIds
 import com.maxrave.kotlinytmusicscraper.pages.PlaylistPage
 import kotlin.time.Clock
 import com.maxrave.domain.manager.DataStoreManager
@@ -86,6 +87,37 @@ import org.koin.mp.KoinPlatform.getKoin
 import kotlin.math.pow
 
 private const val TAG = "SongRepositoryImpl"
+
+/**
+ * How many pages of the liked songs are read at most.
+ *
+ * A library of thousands of likes is read page by page; the limit keeps a library that keeps
+ * growing from holding the sync forever.
+ */
+private const val MAX_LIKED_SONGS_PAGES = 50
+
+/**
+ * The liked songs of the account, and whether the library was read at all.
+ *
+ * The two answers are kept apart: a library that answered and holds no songs is an account
+ * without likes, while a library that did not answer is a session that could not be read. Only
+ * the first may take the local favorites away.
+ */
+internal data class RemoteLikedSongs(
+    val tracks: List<Track>,
+    val libraryRead: Boolean,
+)
+
+/**
+ * The library could not be read.
+ *
+ * [refused] says the session was refused (the page asked for a sign-in), which is a different
+ * problem than a request that did not get an answer.
+ */
+internal class LikedSongsUnreadableException(
+    val refused: Boolean,
+    message: String,
+) : Exception(message)
 private const val COMMENTS_TAG = "Comments"
 internal const val KEY_LAST_FAVORITES_SYNC_TIME = "last_favorites_sync_time"
 internal const val KEY_LAST_SYNCED_ACCOUNT = "last_synced_account_id"
@@ -132,6 +164,21 @@ internal fun isSameAccount(storedAccountId: String, currentAccount: GoogleAccoun
         return true
     }
     return false
+}
+
+/**
+ * A short, non-reversible tag of an account id.
+ *
+ * The id of an account holds its email address, and the log is written to a file the user can
+ * export. The tag still says whether the account changed, without saying which account it is.
+ */
+internal fun maskedAccountId(accountId: String): String {
+    if (accountId.isBlank()) return "none"
+    var hash = 0L
+    for (char in accountId) {
+        hash = hash * 31 + char.code
+    }
+    return "acct-" + (hash and 0xFFFFFF).toString(16).padStart(6, '0')
 }
 
 internal class SongRepositoryImpl(
@@ -1170,91 +1217,56 @@ internal class SongRepositoryImpl(
         )
     }
 
-    internal suspend fun fetchRemoteLikedSongs(): Result<List<Track>> = withContext(Dispatchers.IO) {
-        val initialResult = youTube.customQuery(browseId = "VLLM", setLogin = true)
-        if (initialResult.isFailure) {
-            val err = initialResult.exceptionOrNull() ?: Exception("Failed to browse VLLM")
-            Logger.w(TAG, "fetchRemoteLikedSongs failed: ${err.message}")
-            return@withContext Result.failure(err)
-        }
-        val response = initialResult.getOrThrow()
+    /**
+     * Reads the liked songs of the signed-in account.
+     *
+     * The liked songs live on more than one page, and YouTube serves each of them in its own
+     * shape: the library lists them in a shelf, the "Liked Music" page lists them as a playlist,
+     * and either of them may open with another section before the songs. Reading one fixed path
+     * therefore found nothing on the accounts where YouTube served the page another way - and an
+     * empty answer cannot be told apart from an account without a single liked song, so the
+     * Favorites list stayed empty while YouTube showed the likes.
+     *
+     * So every known place is read, the shelves are collected wherever they sit, and a page that
+     * asks for a sign-in is reported as a failure instead of as an empty library.
+     */
+    internal suspend fun fetchRemoteLikedSongs(): Result<RemoteLikedSongs> = withContext(Dispatchers.IO) {
+        Logger.i(TAG, "Reading the liked songs of the signed-in account")
         val rawTracks = mutableListOf<Track>()
         var unparseableCount = 0
+        var pagesRead = 0
+        var refusedSources = 0
+        var failedSources = 0
+        var readableSources = 0
+        val sourcesRead = mutableListOf<String>()
 
-        val initialContents: List<MusicShelfRenderer.Content>? =
-            response.contents?.singleColumnBrowseResultsRenderer?.tabs?.firstOrNull()
-                ?.tabRenderer?.content?.sectionListRenderer?.contents?.firstOrNull()
-                ?.musicPlaylistShelfRenderer?.contents
-                ?: response.contents?.twoColumnBrowseResultsRenderer?.secondaryContents
-                    ?.sectionListRenderer?.contents?.firstOrNull()
-                    ?.musicPlaylistShelfRenderer?.contents
+        for (browseId in LikedSongsBrowseIds.ALL) {
+            val source =
+                readLikedSongsSource(
+                    browseId = browseId,
+                    rawTracks = rawTracks,
+                    onUnparseable = { unparseableCount++ },
+                )
+            when (source) {
+                is LikedSongsSource.Read -> {
+                    pagesRead += source.pages
+                    readableSources++
+                    sourcesRead += "$browseId(${source.tracks} tracks)"
+                }
 
-        initialContents?.forEach { content ->
-            content.musicResponsiveListItemRenderer?.let { renderer ->
-                val track = parseRemoteTrack(renderer)
-                if (track != null) {
-                    rawTracks.add(track)
-                } else {
-                    unparseableCount++
-                    Logger.w(TAG, "fetchRemoteLikedSongs: dropped unparseable item on initial page (videoId=${renderer.videoId})")
+                is LikedSongsSource.Refused -> {
+                    refusedSources++
+                    sourcesRead += "$browseId(refused)"
+                }
+
+                is LikedSongsSource.Failed -> {
+                    failedSources++
+                    sourcesRead += "$browseId(failed)"
                 }
             }
-        }
-
-        var continuation = response.getPlaylistContinuation()
-            ?: response.contents?.singleColumnBrowseResultsRenderer?.tabs?.firstOrNull()
-                ?.tabRenderer?.content?.sectionListRenderer?.contents?.firstOrNull()
-                ?.musicPlaylistShelfRenderer?.continuations?.getContinuation()
-            ?: response.contents?.twoColumnBrowseResultsRenderer?.secondaryContents
-                ?.sectionListRenderer?.contents?.firstOrNull()
-                ?.musicPlaylistShelfRenderer?.continuations?.getContinuation()
-
-        val visitedContinuations = mutableSetOf<String>()
-        var pageCount = 1
-
-        while (continuation != null && continuation !in visitedContinuations) {
-            visitedContinuations.add(continuation)
-            pageCount++
-            val continueResult = youTube.customQuery(
-                browseId = null,
-                continuation = continuation,
-                setLogin = true,
-            )
-            if (continueResult.isFailure) {
-                val err = continueResult.exceptionOrNull() ?: Exception("Pagination failed for continuation $continuation")
-                Logger.w(TAG, "fetchRemoteLikedSongs: continuation error on page $pageCount: ${err.message}")
-                return@withContext Result.failure(err)
-            }
-            val continueResponse = continueResult.getOrThrow()
-            val continuationItems = continueResponse.onResponseReceivedActions
-                ?.firstNotNullOfOrNull { it.appendContinuationItemsAction?.continuationItems }
-                ?: continueResponse.continuationContents?.musicPlaylistShelfContinuation?.contents?.map {
-                    BrowseResponse.OnResponseReceivedActions.AppendContinuationItemsAction.ContinuationItem(
-                        musicResponsiveListItemRenderer = it.musicResponsiveListItemRenderer,
-                        continuationItemRenderer = null,
-                    )
-                }
-                ?: emptyList()
-
-            for (item in continuationItems) {
-                val renderer = item.musicResponsiveListItemRenderer
-                if (renderer != null) {
-                    val track = parseRemoteTrack(renderer)
-                    if (track != null) {
-                        rawTracks.add(track)
-                    } else {
-                        unparseableCount++
-                        Logger.w(TAG, "fetchRemoteLikedSongs: dropped unparseable item on page $pageCount (videoId=${renderer.videoId})")
-                    }
-                }
-            }
-
-            continuation = continueResponse.getPlaylistContinuation()
-                ?: continueResponse.getContinuePlaylistContinuation()
-                ?: continueResponse.onResponseReceivedActions
-                    ?.firstNotNullOfOrNull { it.appendContinuationItemsAction?.continuationItems }
-                    ?.firstNotNullOfOrNull { it.continuationItemRenderer?.continuationEndpoint?.continuationCommand?.token }
-                ?: continueResponse.continuationContents?.musicPlaylistShelfContinuation?.continuations?.getContinuation()
+            // The first source that answered with songs is enough: the others are the same
+            // library in other shapes.
+            if (rawTracks.isNotEmpty()) break
         }
 
         // Deduplicate while preserving remote order
@@ -1271,12 +1283,129 @@ internal class SongRepositoryImpl(
 
         Logger.i(
             TAG,
-            "fetchRemoteLikedSongs: fetched ${rawTracks.size} remote tracks across $pageCount pages " +
-                "(${uniqueTracks.size} unique, $duplicateCount duplicates, $unparseableCount unparseable)",
+            "fetchRemoteLikedSongs: ${uniqueTracks.size} track(s) from ${sourcesRead.joinToString(", ")} " +
+                "($pagesRead page(s), $duplicateCount duplicates, $unparseableCount unparseable, " +
+                "$refusedSources refused, $failedSources failed)",
         )
-        Result.success(uniqueTracks)
+
+        if (uniqueTracks.isEmpty() && (refusedSources > 0 || failedSources > 0) && readableSources == 0) {
+            // Every place was refused or failed: the library was not read. That is not an account
+            // without liked songs.
+            return@withContext Result.failure(
+                LikedSongsUnreadableException(
+                    refused = refusedSources > 0 && failedSources == 0,
+                    message = "The liked songs could not be read (${sourcesRead.joinToString(", ")})",
+                ),
+            )
+        }
+
+        Result.success(
+            RemoteLikedSongs(
+                tracks = uniqueTracks,
+                // The library answered: an empty list of tracks is an empty library, not an
+                // unread one. The two are told apart here, because only the second may not take
+                // the local favorites away.
+                libraryRead = readableSources > 0,
+            ),
+        )
     }
 
+    /** What one place of the library answered. */
+    private sealed interface LikedSongsSource {
+        /** The place answered with songs. */
+        data class Read(
+            val tracks: Int,
+            val pages: Int,
+        ) : LikedSongsSource
+
+        /** The place answered, but asked for a sign-in. */
+        data object Refused : LikedSongsSource
+
+        /** The place could not be read. */
+        data object Failed : LikedSongsSource
+    }
+
+    /**
+     * Reads one place of the library and every page that follows it.
+     */
+    private suspend fun readLikedSongsSource(
+        browseId: String,
+        rawTracks: MutableList<Track>,
+        onUnparseable: () -> Unit,
+    ): LikedSongsSource {
+        val first = youTube.fetchLibraryPage(browseId = browseId)
+        val page =
+            first.getOrElse { error ->
+                Logger.w(TAG, "fetchRemoteLikedSongs: $browseId could not be read: ${error.message}")
+                return LikedSongsSource.Failed
+            }
+        if (!page.usable) {
+            Logger.w(
+                TAG,
+                "fetchRemoteLikedSongs: $browseId was refused (HTTP ${page.httpStatus}, sign-in: ${page.signInRequired})",
+            )
+            return if (page.signInRequired) LikedSongsSource.Refused else LikedSongsSource.Failed
+        }
+
+        var tracks = 0
+        var pages = 1
+        page.rows.forEach { renderer ->
+            val track = parseRemoteTrackOrDrop(renderer, onUnparseable)
+            if (track != null) {
+                rawTracks.add(track)
+                tracks++
+            }
+        }
+
+        // The pages that follow.
+        val visited = mutableSetOf<String>()
+        var continuation = page.continuations.firstOrNull()
+        while (continuation != null && visited.add(continuation) && visited.size <= MAX_LIKED_SONGS_PAGES) {
+            val next = youTube.fetchLibraryPage(browseId = null, continuation = continuation)
+            val nextPage =
+                next.getOrElse { error ->
+                    Logger.w(TAG, "fetchRemoteLikedSongs: page $pages of $browseId failed: ${error.message}")
+                    break
+                }
+            if (!nextPage.usable) {
+                Logger.w(TAG, "fetchRemoteLikedSongs: page $pages of $browseId was refused")
+                break
+            }
+            pages++
+            nextPage.rows.forEach { renderer ->
+                val track = parseRemoteTrackOrDrop(renderer, onUnparseable)
+                if (track != null) {
+                    rawTracks.add(track)
+                    tracks++
+                }
+            }
+            continuation = nextPage.continuations.firstOrNull()
+        }
+
+        return LikedSongsSource.Read(tracks = tracks, pages = pages)
+    }
+
+    /**
+     * Turns a row into a track. A row that cannot be read is dropped, never the whole page.
+     */
+    private fun parseRemoteTrackOrDrop(
+        renderer: MusicResponsiveListItemRenderer,
+        onUnparseable: () -> Unit,
+    ): Track? =
+        try {
+            parseRemoteTrack(renderer).also {
+                if (it == null) {
+                    onUnparseable()
+                    Logger.w(TAG, "fetchRemoteLikedSongs: dropped an unreadable row (videoId=${renderer.videoId})")
+                }
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            onUnparseable()
+            Logger.w(TAG, "fetchRemoteLikedSongs: dropped a row that could not be parsed: ${e::class.simpleName}")
+            null
+        }
     private suspend fun backupAccountFavorites(
         accountId: String,
         likedSongs: List<SongEntity>,
@@ -1389,7 +1518,11 @@ internal class SongRepositoryImpl(
                 dataStoreManager.getString(KEY_LEGACY_LAST_SYNCED_ACCOUNT).first().orEmpty()
             }
             if (lastSyncedAccount.isNotEmpty() && activeAccountId.isNotEmpty() && !isSameAccount(lastSyncedAccount, activeAccount)) {
-                Logger.i(TAG, "Account switched from $lastSyncedAccount to $activeAccountId — preserving and isolating favorites")
+                Logger.i(
+                    TAG,
+                    "Account switched from ${maskedAccountId(lastSyncedAccount)} to ${maskedAccountId(activeAccountId)} " +
+                        "— preserving and isolating favorites",
+                )
                 val currentLiked = localDataSource.getAllLikedSongs()
                 val currentTombs = localDataSource.getAllFavoriteTombstones()
                 backupAccountFavorites(lastSyncedAccount, currentLiked, currentTombs)
@@ -1405,7 +1538,10 @@ internal class SongRepositoryImpl(
             val nowMs = Clock.System.now().toEpochMilliseconds()
             // Throttle rapid redundant syncs if already ran within last 3 seconds for the same account (unless forced)
             if (!force && nowMs - lastSyncTimestamp < 3000L && isSameAccount(lastSyncedAccount, activeAccount) && lastSyncTimestamp > 0L) {
-                Logger.d(TAG, "Favorites sync ran recently (${nowMs - lastSyncTimestamp} ms ago) for $activeAccountId, skipping")
+                Logger.d(
+                    TAG,
+                    "Favorites sync ran recently (${nowMs - lastSyncTimestamp} ms ago) for ${maskedAccountId(activeAccountId)}, skipping",
+                )
                 return@withLock Result.success(FavoritesSyncResult())
             }
 
@@ -1414,7 +1550,11 @@ internal class SongRepositoryImpl(
             if (remoteResult.isFailure) {
                 val err = remoteResult.exceptionOrNull() ?: Exception("Remote fetch failed")
                 Logger.w(TAG, "syncAccountFavorites aborted: ${err.message}")
-                if (isNetworkError(err)) {
+                val refused = (err as? LikedSongsUnreadableException)?.refused == true
+                if (refused) {
+                    Logger.w(TAG, "The session was refused by the library: the account has to sign in again")
+                    _youTubeSyncStatus.value = YouTubeSyncStatus.AuthenticationRequired
+                } else if (isNetworkError(err)) {
                     _youTubeSyncStatus.value = YouTubeSyncStatus.WaitingForConnection
                 } else if (err.message?.contains("401") == true || err.message?.contains("UNAUTHENTICATED") == true) {
                     _youTubeSyncStatus.value = YouTubeSyncStatus.AuthenticationRequired
@@ -1424,7 +1564,9 @@ internal class SongRepositoryImpl(
                 }
                 return@withLock Result.failure(err)
             }
-            val remoteTracks = remoteResult.getOrThrow()
+            val remoteLikedSongs = remoteResult.getOrThrow()
+            val remoteTracks = remoteLikedSongs.tracks
+            val remoteLibraryReadable = remoteLikedSongs.libraryRead
             val remoteVideoIds = remoteTracks.map { it.videoId }.toSet()
 
             // Verify account did not change during in-flight network request
@@ -1537,7 +1679,22 @@ internal class SongRepositoryImpl(
             }
 
             // 2. Process local songs absent from remote LM
+            //
+            // An empty remote list is not proof that the local likes are gone: an unreadable
+            // library and a library without a single like look the same from here, and taking the
+            // local likes away on that basis loses the favorites of the user. The local likes are
+            // therefore only taken away when the remote library was actually read - and it was
+            // read when it answered with a shelf, however empty that shelf is.
+            val remoteLibraryWasRead = remoteLibraryReadable
+            if (!remoteLibraryWasRead) {
+                Logger.w(
+                    TAG,
+                    "The remote library was not read: keeping ${localLikedSongs.size} local favorite(s) untouched",
+                )
+            }
             for (localSong in localLikedSongs) {
+                // An unreadable library says nothing about the local likes: they stay.
+                if (!remoteLibraryWasRead) continue
                 if (localSong.videoId !in remoteVideoIds) {
                     val pending = localDataSource.getYouTubeFavoritePending(activeAccountId, localSong.videoId)
                     if (pending != null && pending.targetState == 1) {
@@ -1673,7 +1830,7 @@ internal class SongRepositoryImpl(
             Logger.i(
                 TAG,
                 "syncAccountFavorites complete: +$songsAddedOrUpdated, -$songsRemoved, $importFailures import failures. " +
-                    "Final local favorites: ${finalLocalLiked.size} (remote: ${remoteTracks.size})",
+                    "Final local favorites: ${finalLocalLiked.size} (remote: ${remoteTracks.size}, library read: $remoteLibraryReadable)",
             )
             Result.success(FavoritesSyncResult(songsAddedOrUpdated = songsAddedOrUpdated, songsRemoved = songsRemoved))
         }
