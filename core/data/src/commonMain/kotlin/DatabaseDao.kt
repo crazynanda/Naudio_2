@@ -274,6 +274,18 @@ interface DatabaseDao {
     ): List<SongEntity>
 
     /**
+     * The liked songs, as a flow.
+     *
+     * The list of the Favorites screen is read while it is open, and a song that the import of the
+     * liked songs brings in after that moment belongs in the list. A one-shot read could not show
+     * it: the list would keep the state of the moment it was read. The query is the one of
+     * [getLikedSongs], without the paging - a flow cannot be paged, and every liked song is held
+     * in the list anyway.
+     */
+    @Query("SELECT * FROM song WHERE liked = 1 ORDER BY favoriteAt DESC, inLibrary DESC, videoId ASC")
+    fun getLikedSongsAsFlow(): Flow<List<SongEntity>>
+
+    /**
      * Liked songs crediting [channelId] anywhere in their artist list — the "Liked songs" row on an
      * artist's page and the list it opens (issue #2524).
      *

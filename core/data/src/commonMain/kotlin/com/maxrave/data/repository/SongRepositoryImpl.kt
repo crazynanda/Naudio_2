@@ -432,14 +432,15 @@ internal class SongRepositoryImpl(
     override fun getDownloadedVideoIdListFromListVideoIdAsFlow(listVideoId: List<String>) =
         localDataSource.getDownloadedVideoIdListFromListVideoIdAsFlow(listVideoId)
 
+    /**
+     * The liked songs of the library.
+     *
+     * A flow of the table, so a song that is liked - or imported from the account of the user
+     * while the list is open - shows up in it. A one-shot read left the list at the state of the
+     * moment it was read.
+     */
     override fun getLikedSongs(): Flow<List<SongEntity>> =
-        flow {
-            emit(
-                getFullDataFromDB { limit, offset ->
-                    localDataSource.getLikedSongs(limit, offset)
-                },
-            )
-        }.flowOn(Dispatchers.IO)
+        localDataSource.getLikedSongsAsFlow().flowOn(Dispatchers.IO)
 
     override suspend fun downloadAllLikedSongs(): Int =
         withContext(Dispatchers.IO) {

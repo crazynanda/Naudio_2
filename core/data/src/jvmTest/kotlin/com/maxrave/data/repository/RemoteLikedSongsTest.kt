@@ -17,9 +17,12 @@ import com.maxrave.kotlinytmusicscraper.models.Thumbnail
 import com.maxrave.kotlinytmusicscraper.models.ThumbnailRenderer
 import com.maxrave.kotlinytmusicscraper.models.Thumbnails
 import com.maxrave.kotlinytmusicscraper.models.response.LibraryPage
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import java.io.File
 import java.lang.reflect.InvocationHandler
@@ -264,6 +267,34 @@ class RemoteLikedSongsTest {
         assertEquals(
             listOf("local_only"),
             localDataSource.getAllLikedSongs().map { it.videoId },
+        )
+    }
+
+    @Test
+    fun theFavoritesListShowsASongThatIsImportedWhileItIsOpen() = runBlocking {
+        setGoogleAccount()
+        val youTube =
+            FakeLibraryYouTube().apply {
+                pages = listOf(listOf(renderer("imported_later")) to null)
+            }
+        val repo = repository(youTube)
+
+        // The Favorites list is open before the import happens.
+        val seen = mutableListOf<List<SongEntity>>()
+        val collector =
+            launch(Dispatchers.IO) {
+                repo.getLikedSongs().collect { list -> seen.add(list) }
+            }
+        delay(500)
+
+        repo.syncAccountFavorites()
+        delay(500)
+        collector.cancel()
+
+        // The list is read from the table, so the imported song shows up in it.
+        assertTrue(
+            seen.any { list -> list.any { it.videoId == "imported_later" } },
+            "the imported song must show up in the list, saw ${seen.map { list -> list.map { it.videoId } }}",
         )
     }
 

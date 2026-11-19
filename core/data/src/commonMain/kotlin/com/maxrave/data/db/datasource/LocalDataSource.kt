@@ -175,6 +175,9 @@ internal class LocalDataSource(
         offset,
     )
 
+    /** The liked songs, as a flow: a song that is liked shows up in the list straight away. */
+    fun getLikedSongsAsFlow() = databaseDao.getLikedSongsAsFlow()
+
     fun getLikedSongsByArtist(channelId: String) = databaseDao.getLikedSongsByArtist(channelId)
 
     suspend fun getSong(videoId: String) = databaseDao.getSong(videoId)
