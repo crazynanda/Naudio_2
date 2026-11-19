@@ -11,6 +11,7 @@ import com.maxrave.common.SELECTED_LANGUAGE
 import com.maxrave.common.VIDEO_QUALITY
 import com.maxrave.domain.data.entities.DownloadState
 import com.maxrave.domain.data.entities.GoogleAccountEntity
+import com.maxrave.domain.data.model.account.YouTubeAccountProbe
 import com.maxrave.domain.data.model.lyrics.RomanizationDictionaryState
 import com.maxrave.domain.data.player.GenericCastState
 import com.maxrave.domain.data.player.ReverbPreset
@@ -1521,10 +1522,55 @@ class SettingsViewModel(
         }
     }
 
-    suspend fun addAccount(
+    /**
+     * Asks YouTube which account a cookie belongs to.
+     *
+     * Read-only on purpose: the sign-in screen polls this while the WebView is still handing the
+     * session over, and every poll must not touch the stored session.
+     *
+     * The three possible answers are kept apart and logged, so a sign-in that does not finish says
+     * why: a rejected cookie, a request that never got an answer, and a response that named no
+     * account are three different problems and used to look like one.
+     */
+    suspend fun probeYouTubeAccount(cookie: String): YouTubeAccountProbe =
+        try {
+            Logger.i("Auth", "YouTube: asking which account the session belongs to")
+            val probe =
+                accountRepository
+                    .probeAccount(cookie)
+                    .lastOrNull() ?: YouTubeAccountProbe.Failed(null, "no answer")
+            when (probe) {
+                is YouTubeAccountProbe.Found ->
+                    Logger.i("Auth", "YouTube: the session belongs to ${probe.accounts.size} account(s)")
+
+                is YouTubeAccountProbe.NoAccount ->
+                    Logger.w(
+                        "Auth",
+                        "YouTube: the session named no account (HTTP ${probe.httpStatus}, code ${probe.code ?: "none"})",
+                    )
+
+                is YouTubeAccountProbe.Failed ->
+                    Logger.w(
+                        "Auth",
+                        "YouTube: the account request failed (HTTP ${probe.httpStatus ?: "none"}, ${probe.reason})",
+                    )
+            }
+            probe
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Logger.e("Auth", "YouTube: the account request failed: ${e.message}")
+            YouTubeAccountProbe.Failed(null, e::class.simpleName ?: "Exception")
+        }
+
+    /**
+     * Registers the account of a YouTube session.
+     */
+    suspend fun registerYouTubeAccount(
         cookie: String,
+        accountInfoList: List<com.maxrave.domain.data.model.account.AccountInfo>,
         netscapeCookie: String? = null,
-    ): Boolean {
+    ): YouTubeLoginOutcome {
         val currentCookie = dataStoreManager.cookie.first()
         val currentPageId = dataStoreManager.pageId.first()
         val currentAuthUser = dataStoreManager.authUser.first()
@@ -1532,87 +1578,98 @@ class SettingsViewModel(
         try {
             dataStoreManager.setCookie(cookie, "")
             dataStoreManager.setLoggedIn(true)
-            return accountRepository
-                .getAccountInfo(
-                    cookie,
-                ).lastOrNull()
-                ?.takeIf {
-                    it.isNotEmpty()
-                }?.let { accountInfoList ->
-                    Logger.d("getAllGoogleAccount", "addAccount: ${accountInfoList.size} account(s)")
-                    accountRepository.getGoogleAccounts().lastOrNull()?.forEach {
-                        Logger.d("getAllGoogleAccount", "set used: start")
-                        accountRepository
-                            .updateGoogleAccountUsed(it.email, false)
-                            .singleOrNull()
-                            ?.let {
-                                Logger.d("getAllGoogleAccount", "set used: $it")
-                            }
+            Logger.d("getAllGoogleAccount", "addAccount: ${accountInfoList.size} account(s)")
+            accountRepository.getGoogleAccounts().lastOrNull()?.forEach {
+                Logger.d("getAllGoogleAccount", "set used: start")
+                accountRepository
+                    .updateGoogleAccountUsed(it.email, false)
+                    .singleOrNull()
+                    ?.let {
+                        Logger.d("getAllGoogleAccount", "set used: $it")
                     }
-                    dataStoreManager.putString("AccountName", accountInfoList.first().name)
-                    dataStoreManager.putString(
-                        "AccountThumbUrl",
-                        accountInfoList
-                            .first()
-                            .thumbnails
-                            .lastOrNull()
-                            ?.url ?: "",
-                    )
-                    val cookieItem =
-                        netscapeCookie ?: commonRepository
-                            .getCookiesFromInternalDatabase(Config.YOUTUBE_MUSIC_MAIN_URL, getPackageName())
-                            .toNetScapeString()
-                    commonRepository.writeTextToFile(cookieItem, (getFileDir() + "/ytdlp-cookie.txt")).let {
-                        Logger.d("getAllGoogleAccount", "addAccount: write cookie file: $it")
-                    }
-                    accountInfoList.forEachIndexed { index, account ->
-                        accountRepository
-                            .insertGoogleAccount(
-                                GoogleAccountEntity(
-                                    email = account.email,
-                                    name = account.name,
-                                    thumbnailUrl =
-                                        account
-                                            .thumbnails
-                                            .lastOrNull()
-                                            ?.url ?: "",
-                                    cache = cookie,
-                                    isUsed = index == 0,
-                                    netscapeCookie = cookieItem,
-                                    pageId = account.pageId,
-                                    authUser = account.authUser,
-                                ),
-                            ).firstOrNull()
-                            ?.let {
-                                log("addAccount: inserted $it")
-                            }
-                    }
-                    dataStoreManager.setLoggedIn(true)
-                    dataStoreManager.setCookie(cookie, accountInfoList.first().pageId, accountInfoList.first().authUser)
-                    if (dataStoreManager.getString(DataStoreManager.KEY_COMBINE_LOCAL_AND_YOUTUBE_LIKED).first().isNullOrEmpty()) {
-                        dataStoreManager.setCombineLocalAndYouTubeLiked(true)
-                    }
-                    Logger.i("Auth", "YouTube: signed in, ${accountInfoList.size} account(s) on this cookie")
-                    getAllGoogleAccount()
-                    getLoggedIn()
-                    viewModelScope.launch(Dispatchers.IO) {
-                        songRepository.syncAccountFavorites()
-                    }
-                    true
-                } ?: run {
-                Logger.w("Auth", "YouTube: sign-in failed, YouTube returned no account for this cookie")
-                dataStoreManager.setCookie(currentCookie, currentPageId, currentAuthUser)
-                dataStoreManager.setLoggedIn(currentLoggedIn)
-                false
             }
+            dataStoreManager.putString("AccountName", accountInfoList.first().name)
+            dataStoreManager.putString(
+                "AccountThumbUrl",
+                accountInfoList
+                    .first()
+                    .thumbnails
+                    .lastOrNull()
+                    ?.url ?: "",
+            )
+            val cookieItem =
+                netscapeCookie ?: commonRepository
+                    .getCookiesFromInternalDatabase(Config.YOUTUBE_MUSIC_MAIN_URL, getPackageName())
+                    .toNetScapeString()
+            commonRepository.writeTextToFile(cookieItem, (getFileDir() + "/ytdlp-cookie.txt")).let {
+                Logger.d("getAllGoogleAccount", "addAccount: write cookie file: $it")
+            }
+            accountInfoList.forEachIndexed { index, account ->
+                accountRepository
+                    .insertGoogleAccount(
+                        GoogleAccountEntity(
+                            email = account.email,
+                            name = account.name,
+                            thumbnailUrl =
+                                account
+                                    .thumbnails
+                                    .lastOrNull()
+                                    ?.url ?: "",
+                            cache = cookie,
+                            isUsed = index == 0,
+                            netscapeCookie = cookieItem,
+                            pageId = account.pageId,
+                            authUser = account.authUser,
+                        ),
+                    ).firstOrNull()
+                    ?.let {
+                        log("addAccount: inserted $it")
+                    }
+            }
+            dataStoreManager.setLoggedIn(true)
+            dataStoreManager.setCookie(cookie, accountInfoList.first().pageId, accountInfoList.first().authUser)
+            if (dataStoreManager.getString(DataStoreManager.KEY_COMBINE_LOCAL_AND_YOUTUBE_LIKED).first().isNullOrEmpty()) {
+                dataStoreManager.setCombineLocalAndYouTubeLiked(true)
+            }
+            Logger.i("Auth", "YouTube: signed in, ${accountInfoList.size} account(s) on this cookie")
+            getAllGoogleAccount()
+            getLoggedIn()
+            viewModelScope.launch(Dispatchers.IO) {
+                songRepository.syncAccountFavorites()
+            }
+            return YouTubeLoginOutcome.Success
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             e.printStackTrace()
             Logger.e("Auth", "YouTube: sign-in failed: ${e.message}")
             dataStoreManager.setCookie(currentCookie, currentPageId, currentAuthUser)
             dataStoreManager.setLoggedIn(currentLoggedIn)
-            return false
+            return YouTubeLoginOutcome.Failed(e::class.simpleName ?: "Exception")
         }
     }
+
+    /**
+     * Registers the account of a YouTube session.
+     *
+     * The answer of YouTube decides whether the session is a session: the account switcher names
+     * the account of the cookie, and every other signal (the page the WebView shows, the names of
+     * the cookies in its jar) can be right while the session is still being handed over.
+     */
+    suspend fun loginWithYouTube(
+        cookie: String,
+        netscapeCookie: String? = null,
+    ): YouTubeLoginOutcome =
+        when (val probe = probeYouTubeAccount(cookie)) {
+            is YouTubeAccountProbe.Found -> registerYouTubeAccount(cookie, probe.accounts, netscapeCookie)
+            is YouTubeAccountProbe.NoAccount -> YouTubeLoginOutcome.NoAccount(probe.httpStatus, probe.code)
+            is YouTubeAccountProbe.Failed -> YouTubeLoginOutcome.Failed(probe.reason)
+        }
+
+    suspend fun addAccount(
+        cookie: String,
+        netscapeCookie: String? = null,
+    ): Boolean = loginWithYouTube(cookie, netscapeCookie) is YouTubeLoginOutcome.Success
 
     fun setUsedAccount(acc: GoogleAccountEntity?) {
         viewModelScope.launch {
@@ -2177,6 +2234,36 @@ const val EQUALIZER_BAND_COUNT = 10
 
 /** Band centre labels, for display only — the backend owns the actual frequencies. */
 val EQUALIZER_BAND_LABELS = listOf("31", "62", "125", "250", "500", "1k", "2k", "4k", "8k", "16k")
+
+/**
+ * What came out of a YouTube sign-in.
+ *
+ * The sign-in screen needs the three apart: "YouTube named no account" is worth telling the user,
+ * while "the request did not get an answer" is worth retrying instead of reporting a failure.
+ */
+sealed interface YouTubeLoginOutcome {
+    /** The account is registered. */
+    data object Success : YouTubeLoginOutcome
+
+    /** YouTube answered and named no account. */
+    data class NoAccount(
+        val httpStatus: Int,
+        val code: String?,
+    ) : YouTubeLoginOutcome
+
+    /** The request did not get an answer. */
+    data class Failed(
+        val reason: String,
+    ) : YouTubeLoginOutcome
+
+    /** A short description for the log. Carries no cookie and no token. */
+    fun describe(): String =
+        when (this) {
+            is Success -> "signed in"
+            is NoAccount -> "no account (HTTP $httpStatus, code ${code ?: "none"})"
+            is Failed -> "the request failed ($reason)"
+        }
+}
 
 // The three delay defaults and the reverb mix repeat what DataStoreManagerImpl falls back to. They
 // exist here so the StateFlows start on the stored default rather than on a placeholder the

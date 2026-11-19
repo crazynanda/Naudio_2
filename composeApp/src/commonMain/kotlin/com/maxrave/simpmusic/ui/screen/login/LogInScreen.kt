@@ -30,6 +30,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.navigation.NavController
 import com.maxrave.common.Config
+import com.maxrave.domain.data.model.account.YouTubeAccountProbe
 import com.maxrave.logger.Logger
 import com.maxrave.simpmusic.expect.ui.PlatformWebView
 import com.maxrave.simpmusic.expect.ui.createWebViewCookieManager
@@ -44,6 +45,7 @@ import com.maxrave.simpmusic.ui.icon.SimpIcons
 import com.maxrave.simpmusic.ui.theme.typo
 import com.maxrave.simpmusic.viewModel.LogInViewModel
 import com.maxrave.simpmusic.viewModel.SettingsViewModel
+import com.maxrave.simpmusic.viewModel.YouTubeLoginOutcome
 import dev.chrisbanes.haze.HazeInput
 import dev.chrisbanes.haze.blur.hazeBlur
 import dev.chrisbanes.haze.hazeSource
@@ -63,14 +65,24 @@ import simpmusic.composeapp.generated.resources.login_success
 /** How often the YouTube cookie jar is checked while the sign-in page is open. */
 private const val LOGIN_POLL_INTERVAL_MS = 500L
 
-/** Pause between two attempts on the same cookie. */
-private const val LOGIN_RETRY_DELAY_MS = 4_000L
+/** Shortest pause between two requests to YouTube. */
+private const val LOGIN_PROBE_MIN_INTERVAL_MS = 1_500L
 
-/** How many times the same cookie is tried before it is given up on. */
-private const val LOGIN_MAX_ATTEMPTS = 2
+/** Pause before the same session is asked about again without having changed. */
+private const val LOGIN_PROBE_INTERVAL_MS = 10_000L
 
-/** Pause before a cookie that failed [LOGIN_MAX_ATTEMPTS] times is tried once more. */
-private const val LOGIN_EXHAUSTED_RETRY_DELAY_MS = 15_000L
+/**
+ * How long YouTube may answer "no account" for a session that keeps standing still before the
+ * sign-in is called a failure.
+ *
+ * The answer arrives while the session is still being handed over: the cookies are in the jar
+ * before YouTube accepts them. Reporting that answer as a failure is what ended a working
+ * sign-in early, again and again.
+ */
+private const val LOGIN_NO_ACCOUNT_TIMEOUT_MS = 20_000L
+
+/** The tag every stage of the sign-in is written under. */
+private const val TAG_LOGIN = "Login"
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -87,10 +99,9 @@ fun LoginScreen(
     var devLoginSheet by rememberSaveable {
         mutableStateOf(false)
     }
-    // The URL the embedded page is currently showing. The sign-in completion poll reads it instead
-    // of acting on the page callback directly, so a navigation that lands while an account is
-    // being added is never dropped.
-    var currentUrl by remember { mutableStateOf("") }
+    // The host the embedded page is currently showing. Only the host is kept: the query of the
+    // Google sign-in pages carries the session handoff.
+    var currentHost by remember { mutableStateOf("") }
 
     val state = rememberWebViewState()
 
@@ -122,63 +133,92 @@ fun LoginScreen(
 
     // Sign-in completion.
     //
-    // Two rules, both learned the hard way by the version that reported "Login failed" while the
-    // user was still on the Google password screen:
+    // The web page the WebView shows is not the signal that the sign-in finished. Every proxy for
+    // it failed at some point: the URL matched the Google sign-in page itself (it carries
+    // "music.youtube.com" inside its percent encoded "continue" parameter), the page stayed on
+    // Google while the session was already handed over, and the cookie names were read from the
+    // Google pages, where Google sets a SAPISID and a SID of its own.
     //
-    // 1. The page must be on YouTube. The Google sign-in page carries "music.youtube.com" inside
-    //    its percent encoded "continue" parameter, so matching the whole URL as a substring
-    //    matched the sign-in page itself and started the cookie check before anything was signed
-    //    in. Only the host decides now.
-    // 2. The cookie must come from the YouTube cookie jar. The Google account pages set their own
-    //    SAPISID and SID on google.com, which look exactly like a finished sign-in but are not one:
-    //    they sent YouTube a cookie it cannot use, so the account was never added and the screen
-    //    reported a failure for a sign-in that was still running.
+    // The signal is YouTube itself: the account switcher names the account a cookie belongs to, and
+    // only that answer can say whether there is a session to register.
     //
-    // The cookie is read once the page is on YouTube, so a sign-in that is still on the Google
-    // pages costs nothing but a URL comparison.
+    // So the jar is watched for a session, and a session is checked against YouTube. A session that
+    // is not there yet is waited for, and every stage is written to the app log, because a
+    // sign-in that does not finish has to say where it stopped.
     LaunchedEffect(Unit) {
         val cookieManager = createWebViewCookieManager()
         val timeSource = TimeSource.Monotonic
-        var attemptedCookie: String? = null
-        var attempts = 0
-        var lastAttempt = timeSource.markNow()
-        var failureReportedFor: String? = null
+        var lastProbedCookie: String? = null
+        var lastProbeAt = timeSource.markNow()
+        var rejectionReported = false
+        var waitingLogged = false
+        var noAccountSinceMs: Long? = null
 
         while (isActive) {
             delay(LOGIN_POLL_INTERVAL_MS)
 
-            val pageUrl = currentUrl
-            if (!isYouTubeUrl(pageUrl)) continue
-            // Nothing new can come out of the same cookie for a while: do not even read it.
-            if (attempts >= LOGIN_MAX_ATTEMPTS && lastAttempt.elapsedNow().inWholeMilliseconds < LOGIN_EXHAUSTED_RETRY_DELAY_MS) continue
-
             val cookie = cookieManager.getCookie(Config.YOUTUBE_MUSIC_MAIN_URL)
-            if (!shouldCompleteYouTubeLogin(pageUrl, cookie)) continue
-
-            if (cookie != attemptedCookie) {
-                attemptedCookie = cookie
-                attempts = 0
-            }
-            if (attempts >= LOGIN_MAX_ATTEMPTS) {
-                // A whole round on this cookie failed. Start a new round later on, in case the
-                // failure was a dropped request rather than a rejected cookie.
-                attempts = 0
-            } else if (attempts > 0 && lastAttempt.elapsedNow().inWholeMilliseconds < LOGIN_RETRY_DELAY_MS) {
+            if (!hasYouTubeAuthCookies(cookie)) {
+                // No session in the jar yet: the sign-in has not handed one over.
+                if (!waitingLogged && cookie.isNotBlank()) {
+                    waitingLogged = true
+                    Logger.i(TAG_LOGIN, "Waiting for a YouTube session: the jar holds no session cookie yet")
+                }
                 continue
             }
-
-            attempts++
-            lastAttempt = timeSource.markNow()
-            Logger.i("LogInScreen", "YouTube sign-in cookies detected on $pageUrl, adding account")
-            val success = settingsViewModel.addAccount(cookie)
-            if (success) {
-                viewModel.makeToast(getString(Res.string.login_success))
-                navController.navigateUp()
-                break
+            if (waitingLogged) {
+                waitingLogged = false
+                // The names only. The values of these cookies are the session.
+                Logger.i(TAG_LOGIN, "The jar holds a session cookie (${sessionCookieNames(cookie).joinToString()})")
             }
-            if (attempts >= LOGIN_MAX_ATTEMPTS && failureReportedFor != cookie) {
-                failureReportedFor = cookie
-                viewModel.makeToast(getString(Res.string.login_failed))
+
+            val changed = cookie != lastProbedCookie
+            val elapsed = lastProbeAt.elapsedNow().inWholeMilliseconds
+            if (!changed && elapsed < LOGIN_PROBE_INTERVAL_MS) continue
+            if (changed && elapsed < LOGIN_PROBE_MIN_INTERVAL_MS) continue
+
+            lastProbedCookie = cookie
+            lastProbeAt = timeSource.markNow()
+            // A session that changed is a new session: the clock of the rejection starts over.
+            if (changed) noAccountSinceMs = null
+
+            when (val probe = settingsViewModel.probeYouTubeAccount(cookie)) {
+                is YouTubeAccountProbe.Found -> {
+                    Logger.i(TAG_LOGIN, "YouTube named ${probe.accounts.size} account(s): registering")
+                    val outcome = settingsViewModel.registerYouTubeAccount(cookie, probe.accounts)
+                    if (outcome is YouTubeLoginOutcome.Success) {
+                        viewModel.makeToast(getString(Res.string.login_success))
+                        navController.navigateUp()
+                        break
+                    }
+                    Logger.w(TAG_LOGIN, "The account could not be registered: ${outcome.describe()}")
+                }
+
+                is YouTubeAccountProbe.NoAccount -> {
+                    // YouTube answered and named no account. That answer is not a failure yet: the
+                    // cookies are in the jar before YouTube accepts them, and a session that is
+                    // still being handed over is answered this way.
+                    Logger.w(
+                        TAG_LOGIN,
+                        "YouTube named no account for the session (HTTP ${probe.httpStatus}, code ${probe.code ?: "none"}, page ${currentHost})",
+                    )
+                    val nowMs = timeSource.markNow().elapsedNow().inWholeMilliseconds
+                    val rejectedForMs = noAccountSinceMs?.let { nowMs - it }
+                    if (rejectedForMs == null) {
+                        noAccountSinceMs = nowMs
+                    } else if (rejectedForMs >= LOGIN_NO_ACCOUNT_TIMEOUT_MS && !rejectionReported) {
+                        // The session stands still and YouTube keeps naming no account: this
+                        // sign-in is not going to finish.
+                        rejectionReported = true
+                        Logger.w(TAG_LOGIN, "YouTube named no account for $rejectedForMs ms: giving up")
+                        viewModel.makeToast(getString(Res.string.login_failed))
+                    }
+                }
+
+                is YouTubeAccountProbe.Failed -> {
+                    // A dropped request is not a failed sign-in: keep waiting for the next one.
+                    Logger.w(TAG_LOGIN, "The account request did not get an answer: ${probe.reason} (page ${currentHost})")
+                }
             }
         }
     }
@@ -218,8 +258,10 @@ fun LoginScreen(
                 },
                 clearCookies = true,
             ) { url ->
-                Logger.d("LogInScreen", "Current URL: $url")
-                currentUrl = url
+                // Only the host is logged: the query of the Google sign-in pages carries the
+                // session handoff, and the log is read off the device.
+                Logger.d(TAG_LOGIN, "The login page moved to ${hostOfUrl(url) ?: "an unknown host"}")
+                currentHost = hostOfUrl(url) ?: ""
             }
         }
 
@@ -293,30 +335,37 @@ internal fun hostOfUrl(url: String): String? {
 }
 
 /**
- * Whether [url] is a YouTube page, which is where a sign-in ends: the Google pages are where it
- * starts.
+ * The names of the cookies of a cookie string.
+ *
+ * Only the names are ever read: the values are the session itself.
  */
-internal fun isYouTubeUrl(url: String): Boolean {
-    val host = hostOfUrl(url) ?: return false
-    return host == "youtube.com" || host.endsWith(".youtube.com")
-}
-
-/**
- * Whether a sign-in can be completed for [pageUrl] with the cookies of the YouTube cookie jar.
- */
-internal fun shouldCompleteYouTubeLogin(
-    pageUrl: String,
-    youTubeCookie: String,
-): Boolean = isYouTubeUrl(pageUrl) && hasYouTubeAuthCookies(youTubeCookie)
-
-internal fun hasYouTubeAuthCookies(cookie: String): Boolean {
-    if (cookie.isBlank()) return false
-    val keys = cookie.split(';')
+internal fun cookieNames(cookie: String): Set<String> =
+    cookie
+        .split(';')
         .asSequence()
         .map { it.trim() }
         .filter { it.contains('=') }
         .map { it.substringBefore('=').trim() }
+        .filter { it.isNotEmpty() }
         .toSet()
+
+/**
+ * The names of the cookies that carry the YouTube session.
+ */
+internal fun sessionCookieNames(cookie: String): Set<String> {
+    val keys = cookieNames(cookie)
+    return keys.filter { it in SESSION_COOKIE_NAMES }.toSet()
+}
+
+/**
+ * Whether [cookie] can be a YouTube session.
+ *
+ * The names are the only thing that can be read from a cookie string without holding the session:
+ * a SAPISID for the hash and one of the session ids beside it.
+ */
+internal fun hasYouTubeAuthCookies(cookie: String): Boolean {
+    if (cookie.isBlank()) return false
+    val keys = cookieNames(cookie)
 
     val hasSapisid = keys.contains("SAPISID") ||
         keys.contains("__Secure-3PAPISID") ||
@@ -328,3 +377,15 @@ internal fun hasYouTubeAuthCookies(cookie: String): Boolean {
 
     return hasSapisid && hasSession
 }
+
+/** The cookie names that carry a YouTube session. */
+private val SESSION_COOKIE_NAMES =
+    setOf(
+        "SAPISID",
+        "__Secure-3PAPISID",
+        "__Secure-1PAPISID",
+        "SID",
+        "__Secure-3PSID",
+        "__Secure-1PSID",
+        "LOGIN_INFO",
+    )

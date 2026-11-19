@@ -4,8 +4,10 @@ import com.maxrave.data.db.datasource.LocalDataSource
 import com.maxrave.data.mapping.toDomainAccountInfo
 import com.maxrave.domain.data.entities.GoogleAccountEntity
 import com.maxrave.domain.data.model.account.AccountInfo
+import com.maxrave.domain.data.model.account.YouTubeAccountProbe
 import com.maxrave.domain.repository.AccountRepository
 import com.maxrave.kotlinytmusicscraper.YouTube
+import com.maxrave.kotlinytmusicscraper.models.response.AccountSwitcherResult
 import com.maxrave.logger.Logger
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -34,6 +36,24 @@ internal class AccountRepositoryImpl(
                     Logger.e(TAG, "getAccountInfo: ${it.message}", it)
                     emit(emptyList())
                 }
+        }.flowOn(Dispatchers.IO)
+
+    override fun probeAccount(cookie: String): Flow<YouTubeAccountProbe> =
+        flow {
+            youTube.cookie = cookie
+            delay(1000)
+            emit(
+                when (val result = youTube.fetchAccountSwitcher(cookie)) {
+                    is AccountSwitcherResult.Found ->
+                        YouTubeAccountProbe.Found(result.accounts.map { it.toDomainAccountInfo() })
+
+                    is AccountSwitcherResult.NoAccount ->
+                        YouTubeAccountProbe.NoAccount(result.httpStatus, result.code)
+
+                    is AccountSwitcherResult.Failed ->
+                        YouTubeAccountProbe.Failed(result.httpStatus, result.reason)
+                },
+            )
         }.flowOn(Dispatchers.IO)
 
     override fun insertGoogleAccount(googleAccountEntity: GoogleAccountEntity) =

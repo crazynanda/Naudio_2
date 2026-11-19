@@ -39,6 +39,9 @@ import com.maxrave.kotlinytmusicscraper.models.getContinuation
 import com.maxrave.kotlinytmusicscraper.models.oddElements
 import com.maxrave.kotlinytmusicscraper.models.response.AccountMenuResponse
 import com.maxrave.kotlinytmusicscraper.models.response.AccountSwitcherEndpointResponse
+import com.maxrave.kotlinytmusicscraper.models.response.AccountSwitcherResult
+import com.maxrave.kotlinytmusicscraper.models.response.extractAccountItems
+import com.maxrave.kotlinytmusicscraper.models.response.jsonShape
 import com.maxrave.kotlinytmusicscraper.models.response.AddItemYouTubePlaylistResponse
 import com.maxrave.kotlinytmusicscraper.models.response.BrowseResponse
 import com.maxrave.kotlinytmusicscraper.models.response.CommentsResponse
@@ -97,6 +100,7 @@ import com.mohamedrejeb.ksoup.html.parser.KsoupHtmlParser
 import io.ktor.client.call.body
 import io.ktor.client.engine.ProxyBuilder
 import io.ktor.client.engine.http
+import io.ktor.client.plugins.ResponseException
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.URLBuilder
 import io.ktor.http.parseQueryString
@@ -119,6 +123,7 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.decodeFromJsonElement
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -2029,6 +2034,51 @@ open class YouTube {
             val accountSwitcherEndpointResponse = ytMusic.normalJson.decodeFromString<AccountSwitcherEndpointResponse>(res)
             Logger.d(TAG, "Account List Response: $accountSwitcherEndpointResponse")
             accountSwitcherEndpointResponse.toListAccountInfo()
+        }
+
+    /**
+     * Asks YouTube which account a cookie belongs to, and reports what actually happened.
+     *
+     * This is the authoritative answer to "is this sign-in finished": YouTube itself names the
+     * account of the session. Every proxy for it (the page the WebView shows, the names of the
+     * cookies in the jar) can be right while the session is still being handed over, and wrong
+     * while it is complete.
+     *
+     * The body is never logged: it carries the account of the user.
+     */
+    suspend fun fetchAccountSwitcher(customCookie: String): AccountSwitcherResult =
+        try {
+            val response = ytMusic.getAccountSwitcherEndpoint(customCookie)
+            val status = response.status.value
+            val body = response.bodyAsText().removePrefix(")]}'\n")
+            val root = ytMusic.normalJson.parseToJsonElement(body)
+            val parsed =
+                runCatching {
+                    ytMusic.normalJson.decodeFromJsonElement<AccountSwitcherEndpointResponse>(root)
+                }.getOrNull()
+
+            val accounts =
+                parsed?.toListAccountInfo().orEmpty().ifEmpty {
+                    extractAccountItems(root, ytMusic.normalJson)
+                }
+
+            Logger.i(
+                TAG,
+                "Account switcher answered $status with ${accounts.size} account(s); shape: ${jsonShape(root)}",
+            )
+            if (accounts.isEmpty()) {
+                AccountSwitcherResult.NoAccount(status, parsed?.code)
+            } else {
+                AccountSwitcherResult.Found(accounts)
+            }
+        } catch (e: ResponseException) {
+            Logger.w(TAG, "Account switcher rejected the cookie: HTTP ${e.response.status.value}")
+            AccountSwitcherResult.Failed(e.response.status.value, "HTTP ${e.response.status.value}")
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Logger.w(TAG, "Account switcher request failed: ${e::class.simpleName}")
+            AccountSwitcherResult.Failed(null, e::class.simpleName ?: "Exception")
         }
 
     suspend fun pipeStream(

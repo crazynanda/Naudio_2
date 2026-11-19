@@ -98,44 +98,33 @@ class LoginAuthTest {
     }
 
     @Test
-    fun isYouTubeUrl_isFalseForTheGoogleSignInPageEvenThoughItMentionsYouTubeMusic() {
+    fun hostOfUrl_isTheHostOfTheGoogleSignInPageAndNotTheYoutubeItCarries() {
         // The sign-in page carries "music.youtube.com" inside its percent encoded "continue"
         // parameter. A substring match on the whole URL used to match this page, which started
         // the cookie check before anything was signed in.
         assertTrue(Config.LOG_IN_URL.contains("music.youtube.com"))
-        assertFalse(isYouTubeUrl(Config.LOG_IN_URL))
-        assertFalse(isYouTubeUrl("https://accounts.google.com/ServiceLogin?continue=x"))
-        assertFalse(isYouTubeUrl("https://accounts.google.com/signin/challenge/pwd"))
-        assertFalse(isYouTubeUrl("https://myaccount.google.com/"))
+        assertEquals("accounts.google.com", hostOfUrl(Config.LOG_IN_URL))
     }
 
     @Test
-    fun isYouTubeUrl_isTrueForThePagesASignInEndsOn() {
-        assertTrue(isYouTubeUrl("https://music.youtube.com/"))
-        assertTrue(isYouTubeUrl("https://music.youtube.com/?list=RDAMVM"))
-        assertTrue(isYouTubeUrl("https://www.youtube.com/signin?action_handle_signin=true&next=https://music.youtube.com/"))
+    fun cookieNames_readsTheNamesOnly() {
+        val names = cookieNames("SAPISID=value; SID=other; PREF=f4=4000000&tz=UTC")
+
+        assertEquals(setOf("SAPISID", "SID", "PREF"), names)
+        assertFalse(names.any { it.contains("value") })
     }
 
     @Test
-    fun shouldCompleteYouTubeLogin_isFalseOnTheGooglePageEvenWithGoogleCookies() {
-        // Google sets its own SAPISID and SID on google.com once the account is authenticated.
-        // They look like a finished sign-in but are not one, and YouTube rejects them.
-        val googleCookies = "SAPISID=google_sapisid; SID=google_sid; HSID=google_hsid"
+    fun sessionCookieNames_namesTheCookiesThatCarryTheSession() {
+        val names = sessionCookieNames("__Secure-3PAPISID=a; __Secure-3PSID=b; PREF=c; VISITOR_INFO1_LIVE=d")
 
-        assertFalse(shouldCompleteYouTubeLogin(Config.LOG_IN_URL, googleCookies))
-        assertFalse(shouldCompleteYouTubeLogin("https://accounts.google.com/signin/challenge/pwd", googleCookies))
+        assertEquals(setOf("__Secure-3PAPISID", "__Secure-3PSID"), names)
     }
 
     @Test
-    fun shouldCompleteYouTubeLogin_isTrueOnYouTubeWithYouTubeCookies() {
-        val youTubeCookies = "SAPISID=yt_sapisid; SID=yt_sid; HSID=yt_hsid"
-
-        assertTrue(shouldCompleteYouTubeLogin("https://music.youtube.com/", youTubeCookies))
-    }
-
-    @Test
-    fun shouldCompleteYouTubeLogin_isFalseOnYouTubeWithoutAuthCookies() {
-        assertFalse(shouldCompleteYouTubeLogin("https://music.youtube.com/", "PREF=f4=4000000; VISITOR_INFO1_LIVE=xyz"))
-        assertFalse(shouldCompleteYouTubeLogin("https://music.youtube.com/", ""))
+    fun hasYouTubeAuthCookies_isFalseForTheGuestCookiesOfTheJar() {
+        // What the jar holds while the sign-in is still running: no session, so nothing to ask
+        // YouTube about.
+        assertFalse(hasYouTubeAuthCookies("PREF=f4=4000000; VISITOR_INFO1_LIVE=xyz; YSC=abc; SOCS=CAI"))
     }
 }

@@ -191,7 +191,12 @@ class Ytmusic {
             }
             install(Logging) {
                 logger = io.ktor.client.plugins.logging.Logger.DEFAULT
-                level = LogLevel.ALL
+                level = LogLevel.HEADERS
+                // The cookie header is the session and the Authorization header is derived from it.
+                // Both used to be written to the log in full at LogLevel.ALL.
+                sanitizeHeader { header ->
+                    header == HttpHeaders.Cookie || header == HttpHeaders.Authorization
+                }
             }
             install(ContentNegotiation) {
                 protobuf()
