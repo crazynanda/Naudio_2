@@ -1,10 +1,9 @@
 package com.maxrave.kotlinytmusicscraper.pages
 
-import com.maxrave.kotlinytmusicscraper.models.response.BrowseResponse
-import com.maxrave.kotlinytmusicscraper.models.response.isSignInRequired
 import com.maxrave.kotlinytmusicscraper.models.response.libraryRows
-import kotlinx.serialization.decodeFromString
+import com.maxrave.kotlinytmusicscraper.models.response.librarySignInRequired
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonElement
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -15,18 +14,17 @@ import kotlin.test.assertTrue
  *
  * The shapes below are the ones the API answers with: a library page puts the songs in a
  * `musicShelfRenderer`, a playlist page in a `musicPlaylistShelfRenderer`, and either of them may
- * open with another section. Reading one fixed path found the songs on some pages and on none of
- * the others, and an answer without songs is the same as an account without likes.
+ * open with another section.
+ *
+ * The answer is read as the JSON it is, so the tests here are about the answer and not about a
+ * model of it: the model of a browse answer declares fields as required, and a single missing
+ * field failed the whole answer - the `itemSize` of the recommendation shelf every library page
+ * carries, for one.
  */
 class LibraryRowsTest {
-    private val json =
-        Json {
-            ignoreUnknownKeys = true
-            explicitNulls = false
-            encodeDefaults = true
-        }
+    private val json = Json { ignoreUnknownKeys = true; explicitNulls = false }
 
-    private fun parse(body: String): BrowseResponse = json.decodeFromString(body)
+    private fun parse(body: String): JsonElement = json.parseToJsonElement(body)
 
     private fun row(videoId: String): String =
         """
@@ -42,6 +40,19 @@ class LibraryRowsTest {
             {"text": "3:21"}]}}}],
           "menu": null,
           "playlistItemData": {"playlistSetVideoId": "ps$videoId", "videoId": "$videoId"}
+        }}
+        """.trimIndent()
+
+    /**
+     * The recommendation shelf every library page carries. Its `itemSize` is not in the model of
+     * the answer, and a required field that is missing failed the whole answer.
+     */
+    private fun recommendationShelf(): String =
+        """
+        {"musicCarouselShelfRenderer": {
+          "title": {"runs": [{"text": "Songs"}]},
+          "contents": [${row("recommended")}],
+          "continuations": [{"nextContinuationData": {"continuation": "recommendations-next"}}]
         }}
         """.trimIndent()
 
@@ -66,8 +77,58 @@ class LibraryRowsTest {
     }
 
     @Test
+    fun readsTheSongsOfTheLibraryPageOfAnAccount() {
+        // The shape the library answers with: the songs in a shelf under the section list, and a
+        // recommendation shelf beside them.
+        val body =
+            """
+            {
+              "responseContext": {},
+              "contents": {"sectionListRenderer": {"contents": [
+                {"musicShelfRenderer": {"title": {"runs": [{"text": "Songs"}]},
+                  "contents": [${row("saved")}],
+                  "continuations": [{"nextContinuationData": {"continuation": "library-next"}}]}},
+                ${recommendationShelf()}
+              ]}}
+            }
+            """.trimIndent()
+
+        val page = parse(body).libraryRows()
+
+        assertEquals(listOf("saved"), page.rows.map { it.playlistItemData?.videoId })
+        assertEquals(listOf("library-next"), page.continuations)
+    }
+
+    @Test
+    fun theSongsOfTheRecommendationShelfAreNotLikedSongs() {
+        val body =
+            """
+            {
+              "responseContext": {},
+              "contents": {"sectionListRenderer": {"contents": [
+                {"musicShelfRenderer": {"contents": [${row("saved")}],
+                  "continuations": [{"nextContinuationData": {"continuation": "library-next"}}]}},
+                ${recommendationShelf()}
+              ]}}
+            }
+            """.trimIndent()
+
+        val page = parse(body).libraryRows()
+
+        assertEquals(
+            listOf("saved"),
+            page.rows.map { it.playlistItemData?.videoId },
+            "a recommended song is not a song the account liked",
+        )
+        assertEquals(
+            listOf("library-next"),
+            page.continuations,
+            "the token of the recommendation shelf is not a token of the library",
+        )
+    }
+
+    @Test
     fun readsTheSongsWhenTheShelfIsNotTheFirstSection() {
-        // The library opens with another section before the songs.
         val body =
             """
             {
@@ -108,6 +169,26 @@ class LibraryRowsTest {
     }
 
     @Test
+    fun readsTheSongsOfAnItemSection() {
+        val body =
+            """
+            {
+              "responseContext": {},
+              "contents": {"singleColumnBrowseResultsRenderer": {"tabs": [{"tabRenderer": {"content": {
+                "sectionListRenderer": {"contents": [{"itemSectionRenderer": {"contents": [
+                  ${row("h")},
+                  ${row("i")}
+                ]}}]}}}}]}}
+            }
+            """.trimIndent()
+
+        val rows = parse(body).libraryRows().rows
+
+        assertEquals(2, rows.size)
+        assertEquals(listOf("h", "i"), rows.map { it.playlistItemData?.videoId })
+    }
+
+    @Test
     fun readsTheSongsOfAContinuationPage() {
         val body =
             """
@@ -124,6 +205,24 @@ class LibraryRowsTest {
 
         assertEquals(1, page.rows.size)
         assertEquals(listOf("page-2"), page.continuations)
+    }
+
+    @Test
+    fun readsTheSongsOfASectionListContinuation() {
+        // The shape the rest of the library arrives in.
+        val body =
+            """
+            {
+              "responseContext": {},
+              "continuationContents": {"sectionListContinuation": {"contents": [
+                {"musicShelfRenderer": {"contents": [${row("saved-next")}]}}
+              ]}}
+            }
+            """.trimIndent()
+
+        val page = parse(body).libraryRows()
+
+        assertEquals(listOf("saved-next"), page.rows.map { it.playlistItemData?.videoId })
     }
 
     @Test
@@ -146,58 +245,22 @@ class LibraryRowsTest {
     }
 
     @Test
-    fun readsTheSongsOfAnItemSection() {
-        // A section may hold the rows itself, without a shelf around them.
-        val body =
-            """
-            {
-              "responseContext": {},
-              "contents": {"singleColumnBrowseResultsRenderer": {"tabs": [{"tabRenderer": {"content": {
-                "sectionListRenderer": {"contents": [{"itemSectionRenderer": {"contents": [
-                  ${row("h")},
-                  ${row("i")}
-                ]}}]}}}}]}}
-            }
-            """.trimIndent()
-
-        val rows = parse(body).libraryRows().rows
-
-        assertEquals(2, rows.size)
-        assertEquals(listOf("h", "i"), rows.map { it.playlistItemData?.videoId })
-    }
-
-    @Test
-    fun theFixedPathTheImportUsedToReadFindsNothingOnALibraryPage() {
-        // The path the import read until now: the first section of the first tab, and only a
-        // playlist shelf. A library page answers with a shelf of another kind, so the path found
-        // nothing - and an answer without songs is an account without a single like.
+    fun readsTheContinuationOfARow() {
         val body =
             """
             {
               "responseContext": {},
               "contents": {"singleColumnBrowseResultsRenderer": {"tabs": [{"tabRenderer": {"content": {
                 "sectionListRenderer": {"contents": [{"musicShelfRenderer": {
-                  "contents": [${row("g")}]
+                  "contents": [${row("g")}, {"continuationItemRenderer": {"continuationEndpoint": {
+                    "continuationCommand": {"token": "row-token"}}}}]
                 }}]}}}}]}}
             }
             """.trimIndent()
 
-        val response = parse(body)
-        val oldPath =
-            response.contents
-                ?.singleColumnBrowseResultsRenderer
-                ?.tabs
-                ?.firstOrNull()
-                ?.tabRenderer
-                ?.content
-                ?.sectionListRenderer
-                ?.contents
-                ?.firstOrNull()
-                ?.musicPlaylistShelfRenderer
-                ?.contents
+        val page = parse(body).libraryRows()
 
-        assertTrue(oldPath.isNullOrEmpty(), "the fixed path found nothing: that is the reported failure")
-        assertEquals(1, response.libraryRows().rows.size, "the shelves are collected wherever they sit")
+        assertEquals(listOf("row-token"), page.continuations)
     }
 
     @Test
@@ -220,7 +283,7 @@ class LibraryRowsTest {
             }
             """.trimIndent()
 
-        assertTrue(parse(signIn).isSignInRequired())
+        assertTrue(parse(signIn).librarySignInRequired())
         assertTrue(parse(signIn).libraryRows().rows.isEmpty())
 
         // An empty library is a shelf without a single song, not a sign-in page.
@@ -228,11 +291,55 @@ class LibraryRowsTest {
             """
             {
               "responseContext": {},
-              "contents": {"singleColumnBrowseResultsRenderer": {"tabs": [{"tabRenderer": {"content": {
-                "sectionListRenderer": {"contents": [{"musicShelfRenderer": {"contents": []}}]}}}}]}}
+              "contents": {"sectionListRenderer": {"contents": []}}
             }
             """.trimIndent()
 
-        assertFalse(parse(emptyLibrary).isSignInRequired())
+        assertFalse(parse(emptyLibrary).librarySignInRequired())
+        assertTrue(parse(emptyLibrary).libraryRows().rows.isEmpty())
+    }
+
+    @Test
+    fun readsTheLibraryEvenWhenTheModelOfTheAnswerIsIncomplete() {
+        // The answer carries a field the models do not know. A model of the answer would fail
+        // here, and the songs that are in the answer would be gone with it.
+        val body =
+            """
+            {
+              "responseContext": {"visitorData": "abc"},
+              "aFieldTheModelDoesNotKnow": {"nested": [1, 2, {"deeper": true}]},
+              "contents": {"sectionListRenderer": {"contents": [
+                {"musicShelfRenderer": {"itemSize": "MUSIC_SHELF", "contents": [${row("kept")}]}}
+              ]}}
+            }
+            """.trimIndent()
+
+        val rows = parse(body).libraryRows().rows
+
+        assertEquals(listOf("kept"), rows.map { it.playlistItemData?.videoId })
+    }
+
+    @Test
+    fun aShelfThatIsThereButHoldsNothingIsNotAShelfOfRecommendations() {
+        // The answer of a page that was built by a model writes every field the model knows, and
+        // a field that is null is not a shelf of recommendations - it is no shelf at all. Reading
+        // the presence of the key as the shelf hid the songs of the library behind it.
+        val body =
+            """
+            {
+              "contents": {"sectionListRenderer": {"contents": [
+                {"musicPlaylistShelfRenderer": {
+                  "playlistId": "VLLM",
+                  "musicCarouselShelfRenderer": null,
+                  "musicCardShelfRenderer": null,
+                  "contents": [${row("kept")}]
+                }}
+              ]}}
+            }
+            """.trimIndent()
+
+        val rows = parse(body).libraryRows().rows
+
+        assertEquals(listOf("kept"), rows.map { it.playlistItemData?.videoId })
     }
 }

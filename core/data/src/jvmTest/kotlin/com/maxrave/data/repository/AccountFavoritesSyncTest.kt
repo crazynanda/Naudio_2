@@ -29,8 +29,11 @@ import com.maxrave.kotlinytmusicscraper.models.Thumbnails
 import com.maxrave.kotlinytmusicscraper.models.WatchEndpoint
 import com.maxrave.kotlinytmusicscraper.models.response.BrowseResponse
 import com.maxrave.kotlinytmusicscraper.models.response.LibraryPage
-import com.maxrave.kotlinytmusicscraper.models.response.isSignInRequired
 import com.maxrave.kotlinytmusicscraper.models.response.libraryRows
+import com.maxrave.kotlinytmusicscraper.models.response.librarySignInRequired
+import com.maxrave.kotlinytmusicscraper.models.response.libraryRows
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.encodeToJsonElement
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
@@ -1402,14 +1405,17 @@ class AccountFavoritesSyncTest {
 
         /** Turns the answer of the fake into the page the sync reads. */
         private fun libraryPage(response: BrowseResponse): Result<LibraryPage> {
-            val rows = response.libraryRows()
+            // The page is read the way the app reads it: from the raw answer, not from a model
+            // that every shelf of the answer has to fit into.
+            val answer = Json.encodeToJsonElement(response)
+            val rows = answer.libraryRows()
             return Result.success(
                 LibraryPage(
                     httpStatus = 200,
                     rows = rows.rows,
                     continuations = rows.continuations,
                     shelfCount = rows.shelfCount,
-                    signInRequired = response.isSignInRequired(),
+                    signInRequired = answer.librarySignInRequired(),
                     shape = "",
                 ),
             )

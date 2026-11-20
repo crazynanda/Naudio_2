@@ -19,7 +19,9 @@ import kotlinx.serialization.json.JsonNames
 data class MusicResponsiveListItemRenderer(
     val badges: List<Badges>?,
     val fixedColumns: List<FlexColumn>?,
-    val flexColumns: List<FlexColumn>,
+    // With a default, because a row without it is still a row: a required field here failed the
+    // whole answer it was part of, and a row is never worth an answer.
+    val flexColumns: List<FlexColumn> = emptyList(),
     val thumbnail: ThumbnailRenderer?,
     val menu: Menu?,
     val playlistItemData: PlaylistItemData?,

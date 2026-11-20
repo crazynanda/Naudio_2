@@ -45,15 +45,17 @@ import com.maxrave.kotlinytmusicscraper.models.response.jsonShape
 import com.maxrave.kotlinytmusicscraper.models.response.AddItemYouTubePlaylistResponse
 import com.maxrave.kotlinytmusicscraper.models.response.BrowseResponse
 import com.maxrave.kotlinytmusicscraper.models.response.LibraryPage
-import com.maxrave.kotlinytmusicscraper.models.response.isSignInRequired
-import com.maxrave.kotlinytmusicscraper.models.response.jsonShape
+
 import com.maxrave.kotlinytmusicscraper.models.response.libraryRows
+import com.maxrave.kotlinytmusicscraper.models.response.librarySignInRequired
 import com.maxrave.kotlinytmusicscraper.models.response.CommentsResponse
 import com.maxrave.kotlinytmusicscraper.models.response.CreatePlaylistResponse
 import com.maxrave.kotlinytmusicscraper.models.response.ImageUploadResponse
 import com.maxrave.kotlinytmusicscraper.models.response.DownloadProgress
 import com.maxrave.kotlinytmusicscraper.models.response.GetQueueResponse
 import com.maxrave.kotlinytmusicscraper.models.response.GetSearchSuggestionsResponse
+import com.maxrave.kotlinytmusicscraper.models.response.LikeChange
+import com.maxrave.kotlinytmusicscraper.models.response.LikeChangeAnswer
 import com.maxrave.kotlinytmusicscraper.models.response.LikeStatus
 import com.maxrave.kotlinytmusicscraper.models.response.NextAndroidMusicResponse
 import com.maxrave.kotlinytmusicscraper.models.response.NextResponse
@@ -123,6 +125,7 @@ import kotlinx.datetime.TimeZone
 import kotlinx.datetime.daysUntil
 import kotlinx.datetime.toLocalDateTime
 import kotlinx.datetime.todayIn
+import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -2122,26 +2125,19 @@ open class YouTube {
             val status = response.status.value
             val body = response.bodyAsText().removePrefix(")]}'\n")
             val root = ytMusic.normalJson.parseToJsonElement(body).jsonObject
-            val parsed =
-                runCatching {
-                    ytMusic.normalJson.decodeFromJsonElement<BrowseResponse>(root)
-                }.getOrNull()
 
-            if (parsed == null) {
-                Logger.w(TAG, "Library page $browseId could not be read (HTTP $status)")
-                return Result.failure(
-                    IllegalStateException("The library page ($browseId) could not be read (HTTP $status)"),
-                )
-            }
-
-            val rows = parsed.libraryRows()
+            // The answer is read as the JSON it is, not as the model of it: the model declares
+            // fields as required, and one missing field (the `itemSize` of the recommendation
+            // shelf every library page carries) failed the whole answer and threw the liked songs
+            // away with it.
+            val rows = root.libraryRows()
             val page =
                 LibraryPage(
                     httpStatus = status,
                     rows = rows.rows,
                     continuations = rows.continuations,
                     shelfCount = rows.shelfCount,
-                    signInRequired = parsed.isSignInRequired(),
+                    signInRequired = root.librarySignInRequired(),
                     shape = jsonShape(root),
                 )
             Logger.i(
@@ -2336,44 +2332,90 @@ open class YouTube {
             ytMusic.unsubscribeChannel(channelId).status.value
         }
 
-    open suspend fun addToLiked(mediaId: String): Result<Int> =
+    /**
+     * Likes a song in the account of the user.
+     *
+     * The change is only reported as done when YouTube says the song is liked now: the status
+     * code of the request says that YouTube answered, not that the song was liked. An answer
+     * that says something else is a failed change, and the change stays in the queue of the
+     * pending changes instead of being dropped.
+     */
+    open suspend fun addToLiked(mediaId: String): Result<Int> = setLiked(mediaId, LikeState.LIKE)
+
+    /** Dislikes a song in the account of the user. */
+    open suspend fun addToDisliked(mediaId: String): Result<Int> = setLiked(mediaId, LikeState.DISLIKE)
+
+    /** Takes the like of a song away in the account of the user. */
+    open suspend fun removeFromLiked(mediaId: String): Result<Int> = setLiked(mediaId, LikeState.INDIFFERENT)
+
+    /**
+     * The state a song is meant to have, as YouTube names it.
+     */
+    private enum class LikeState(
+        val wireName: String,
+    ) {
+        LIKE("LIKE"),
+        DISLIKE("DISLIKE"),
+        INDIFFERENT("INDIFFERENT"),
+    }
+
+    /**
+     * Changes the like state of a song and checks that the change happened.
+     */
+    private suspend fun setLiked(
+        mediaId: String,
+        wanted: LikeState,
+    ): Result<Int> =
         runCatching {
-            val response = ytMusic.addToLiked(mediaId)
+            val response =
+                when (wanted) {
+                    LikeState.LIKE -> ytMusic.addToLiked(mediaId)
+                    LikeState.DISLIKE -> ytMusic.addToDisliked(mediaId)
+                    LikeState.INDIFFERENT -> ytMusic.removeFromLiked(mediaId)
+                }
             val code = response.status.value
-            if (code in 200..299) {
-                val body = response.bodyAsText()
-                if (body.contains("\"error\":") && !body.contains("\"actions\":")) {
-                    throw IllegalStateException("YouTube API returned error payload: $body")
+            if (code !in 200..299) {
+                throw IllegalStateException("YouTube refused the change of $mediaId (HTTP $code)")
+            }
+            val body = response.bodyAsText()
+            when (val answer = LikeChange.read(body)) {
+                is LikeChangeAnswer.Changed -> {
+                    if (answer.status != wanted.wireName) {
+                        throw IllegalStateException(
+                            "YouTube did not change $mediaId (the answer says ${answer.status}, not ${wanted.wireName})",
+                        )
+                    }
+                }
+                // The answer does not say what happened. What the account holds is read back, so
+                // the change is not reported as done because nobody looked.
+                LikeChangeAnswer.Unsaid -> {
+                    val readBack = readLikedState(mediaId)
+                    if (readBack != wanted.wireName) {
+                        throw IllegalStateException(
+                            "YouTube did not confirm the change of $mediaId (the account holds $readBack)",
+                        )
+                    }
+                }
+                is LikeChangeAnswer.Refused -> {
+                    throw IllegalStateException("YouTube refused the change of $mediaId: ${answer.message}")
+                }
+                is LikeChangeAnswer.Unreadable -> {
+                    throw IllegalStateException(
+                        "The answer of YouTube to the change of $mediaId could not be read: ${answer.reason}",
+                    )
                 }
             }
             code
         }.onFailure { if (it is CancellationException) throw it }
 
-    open suspend fun addToDisliked(mediaId: String): Result<Int> =
-        runCatching {
-            val response = ytMusic.addToDisliked(mediaId)
-            val code = response.status.value
-            if (code in 200..299) {
-                val body = response.bodyAsText()
-                if (body.contains("\"error\":") && !body.contains("\"actions\":")) {
-                    throw IllegalStateException("YouTube API returned error payload: $body")
-                }
-            }
-            code
-        }.onFailure { if (it is CancellationException) throw it }
-
-    open suspend fun removeFromLiked(mediaId: String): Result<Int> =
-        runCatching {
-            val response = ytMusic.removeFromLiked(mediaId)
-            val code = response.status.value
-            if (code in 200..299) {
-                val body = response.bodyAsText()
-                if (body.contains("\"error\":") && !body.contains("\"actions\":")) {
-                    throw IllegalStateException("YouTube API returned error payload: $body")
-                }
-            }
-            code
-        }.onFailure { if (it is CancellationException) throw it }
+    /**
+     * The like state the account holds for a song, read back from YouTube.
+     */
+    private suspend fun readLikedState(mediaId: String): String =
+        getLikedInfo(mediaId)
+            .getOrNull()
+            ?.name
+            ?: "UNKNOWN"
 
     suspend fun getSimpMusicChart() =
         runCatching {
