@@ -74,13 +74,31 @@ jobs:
         id: sign_app
         with:
           releaseDirectory: androidApp/build/outputs/apk/release
-          signingKeyBase64: ${{ secrets.SIGNING_KEY }}
+          # The same key the published releases are signed with. A second secret for the same key
+          # (this one was called SIGNING_KEY) is how a build ends up signed with another key -
+          # and an APK signed with another key cannot be put over an older one, which forces an
+          # uninstall and loses everything the app had stored.
+          signingKeyBase64: ${{ secrets.BASE_64_SIGNING_KEY }}
           alias: ${{ secrets.ALIAS }}
           keyStorePassword: ${{ secrets.KEY_STORE_PASSWORD }}
           keyPassword: ${{ secrets.KEY_PASSWORD }}
           zipAlign: true
         env:
             BUILD_TOOLS_VERSION: ${{ env.BUILD_TOOL_VERSION }}
+
+      - name: Verify the signed APK carries the production certificate
+        run: |
+          EXPECTED_FINGERPRINT="0208a0c5291d07483d23ec92f2c9b5a877d1d49969990e872211c5effc0fb41c"
+          BUILD_TOOLS_PATH="/usr/local/lib/android/sdk/build-tools/$BUILD_TOOLS_VERSION"
+          for apk in androidApp/build/outputs/apk/release/*-signed.apk; do
+            echo "Verifying $apk"
+            "$BUILD_TOOLS_PATH/apksigner" verify --verbose "$apk"
+            "$BUILD_TOOLS_PATH/apksigner" verify --print-certs "$apk" \
+              | tr -d ' :' | tr '[:upper:]' '[:lower:]' | grep "$EXPECTED_FINGERPRINT" || {
+                echo "ERROR: $apk is not signed with the production certificate"
+                exit 1
+              }
+          done
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
@@ -141,7 +159,8 @@ jobs:
         id: sign_app
         with:
           releaseDirectory: vivoAndroidApp/build/outputs/apk/release
-          signingKeyBase64: ${{ secrets.SIGNING_KEY }}
+          # The same key as everywhere else, for the same reason.
+          signingKeyBase64: ${{ secrets.BASE_64_SIGNING_KEY }}
           alias: ${{ secrets.ALIAS }}
           keyStorePassword: ${{ secrets.KEY_STORE_PASSWORD }}
           keyPassword: ${{ secrets.KEY_PASSWORD }}

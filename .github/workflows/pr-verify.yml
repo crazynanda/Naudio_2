@@ -81,6 +81,16 @@ jobs:
             echo "Warning: aapt2 not found, skipping badging dump"
           fi
 
+      - name: Verify the debug APKs are signed with the shared debug key
+        run: |
+          # A debug build that is signed with another key cannot be put over an older one on the
+          # phone (INSTALL_FAILED_UPDATE_INCOMPATIBLE), which forces an uninstall and loses
+          # everything the app had stored. The shared key is `keystore/naudio-debug.keystore`.
+          chmod +x scripts/verify-debug-signing.sh
+          ./scripts/verify-debug-signing.sh \
+            "androidApp/build/outputs/apk/debug/androidApp-universal-debug.apk" \
+            "androidApp/build/outputs/apk/debug/androidApp-arm64-v8a-debug.apk"
+
       - name: Upload universal debug APK artifact
         uses: actions/upload-artifact@v4
         with:

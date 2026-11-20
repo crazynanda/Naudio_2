@@ -54,6 +54,9 @@ sentry.properties
 *.keystore
 *.p12
 *.pfx
+# The debug key is the one exception: it is in the repository on purpose, so that every debug
+# build - on a machine and on a runner - is signed the same way and can be put over an older one.
+!keystore/naudio-debug.keystore
 
 # Local backup artifacts
 *.bak

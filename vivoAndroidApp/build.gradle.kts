@@ -93,6 +93,17 @@ android {
         }
     }
 
+    // The same shared debug key as `androidApp`, so a debug build of this module can be put over
+    // an older one instead of forcing an uninstall.
+    signingConfigs {
+        create("sharedDebug") {
+            storeFile = rootProject.file("keystore/naudio-debug.keystore")
+            storePassword = "naudio-debug"
+            keyAlias = "naudio-debug"
+            keyPassword = "naudio-debug"
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = true
@@ -105,6 +116,7 @@ android {
         debug {
             // No ".dev" suffix: vivo matches the exact package, and a debug build is how this is tried on a vivo phone.
             isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("sharedDebug")
         }
     }
     compileOptions {
