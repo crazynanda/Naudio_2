@@ -345,6 +345,9 @@ internal class SongRepositoryImpl(
                 val msg = ex?.message ?: "Network error"
                 failureEncountered = ex ?: Exception(msg)
                 lastStatusMessage = msg
+                // The message says what YouTube answered - it holds the state it reported, and
+                // never a cookie or a token.
+                Logger.w(TAG, "The like change of ${pending.videoId} was not confirmed: $msg")
 
                 if (msg.contains("401") || msg.contains("UNAUTHENTICATED", ignoreCase = true) || msg.contains("credentials", ignoreCase = true)) {
                     authFailed = true
@@ -1241,11 +1244,28 @@ internal class SongRepositoryImpl(
         var readableSources = 0
         val sourcesRead = mutableListOf<String>()
 
+        // The cookie of the session is read here and given to every request, instead of the
+        // request taking it from the shared state of the scraper: that state is filled when the
+        // repository starts, which happens in its own coroutine, and a request that went out
+        // before the cookie was applied asked YouTube as a guest - and was answered with the page
+        // that asks for a sign-in.
+        val sessionCookie = dataStoreManager.cookie.first().takeIf { it.isNotBlank() }
+        if (sessionCookie == null) {
+            Logger.w(TAG, "fetchRemoteLikedSongs: there is no session cookie, the library cannot be read")
+            return@withContext Result.failure(
+                LikedSongsUnreadableException(
+                    refused = false,
+                    message = "There is no session cookie to read the liked songs with",
+                ),
+            )
+        }
+
         for (browseId in LikedSongsBrowseIds.ALL) {
             val source =
                 readLikedSongsSource(
                     browseId = browseId,
                     rawTracks = rawTracks,
+                    cookie = sessionCookie,
                     onUnparseable = { unparseableCount++ },
                 )
             when (source) {
@@ -1332,9 +1352,10 @@ internal class SongRepositoryImpl(
     private suspend fun readLikedSongsSource(
         browseId: String,
         rawTracks: MutableList<Track>,
+        cookie: String,
         onUnparseable: () -> Unit,
     ): LikedSongsSource {
-        val first = youTube.fetchLibraryPage(browseId = browseId)
+        val first = youTube.fetchLibraryPage(browseId = browseId, customCookie = cookie)
         val page =
             first.getOrElse { error ->
                 Logger.w(TAG, "fetchRemoteLikedSongs: $browseId could not be read: ${error.message}")
@@ -1362,7 +1383,7 @@ internal class SongRepositoryImpl(
         val visited = mutableSetOf<String>()
         var continuation = page.continuations.firstOrNull()
         while (continuation != null && visited.add(continuation) && visited.size <= MAX_LIKED_SONGS_PAGES) {
-            val next = youTube.fetchLibraryPage(browseId = null, continuation = continuation)
+            val next = youTube.fetchLibraryPage(browseId = null, continuation = continuation, customCookie = cookie)
             val nextPage =
                 next.getOrElse { error ->
                     Logger.w(TAG, "fetchRemoteLikedSongs: page $pages of $browseId failed: ${error.message}")
