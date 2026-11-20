@@ -11,7 +11,9 @@ import com.maxrave.data.favoritesync.favoritesSyncJson
 import com.maxrave.domain.data.model.favoritesync.FavoritesSyncResult
 import com.maxrave.domain.data.model.loginsync.LoginSyncHostState
 import com.maxrave.domain.data.model.loginsync.LoginSyncService
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import org.simpmusic.loginsync.LoginSyncClient
 import org.simpmusic.loginsync.LoginSyncTransportException
 import com.maxrave.data.db.datasource.LocalDataSource
@@ -45,6 +47,17 @@ private inline fun <reified T> fakeProxy(): T =
             else -> null
         }
     } as T
+
+/**
+ * The state of the host, once it reaches it.
+ *
+ * The host answers the phone and sets the state of a finished exchange afterwards, so a test that
+ * reads the state in the same moment as the answer reads it too early.
+ */
+private suspend fun LoginSyncHostRepositoryImpl.awaitState(timeoutMs: Long = 10_000, reached: (LoginSyncHostState) -> Boolean): LoginSyncHostState =
+    withTimeout(timeoutMs) {
+        state.first { reached(it) }
+    }
 
 class LoginSyncHostRepositoryTest {
     private lateinit var tempDir: File
@@ -293,7 +306,11 @@ class LoginSyncHostRepositoryTest {
         // First login transfer succeeds
         val ack = client.send(loginPayload)
         assertTrue(ack.isNotEmpty())
-        assertTrue(repository.state.value is LoginSyncHostState.Done)
+
+        // The host marks the transfer as delivered and sets the state after it answered the
+        // phone, so the test waits for the state instead of reading it in the same moment.
+        val done = repository.awaitState { it is LoginSyncHostState.Done }
+        assertTrue(done is LoginSyncHostState.Done)
 
         // Duplicate login transfer is rejected with REFUSED (HTTP 410)
         val refused = assertFailsWith<LoginSyncTransportException> {

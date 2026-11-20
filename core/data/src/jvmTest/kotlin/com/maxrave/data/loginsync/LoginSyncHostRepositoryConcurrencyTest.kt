@@ -17,7 +17,9 @@ import com.maxrave.domain.repository.CommonRepository
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import org.simpmusic.loginsync.LoginSyncClient
 import org.simpmusic.loginsync.LoginSyncInvite
 import java.io.File
@@ -46,6 +48,17 @@ private inline fun <reified T> fakeProxy(): T =
             else -> null
         }
     } as T
+
+/**
+ * The state of the host, once it reaches it.
+ *
+ * The host answers the phone and sets the state of a finished exchange afterwards, so a test that
+ * reads the state in the same moment as the answer reads it too early.
+ */
+private suspend fun LoginSyncHostRepositoryImpl.awaitState(timeoutMs: Long = 10_000, reached: (LoginSyncHostState) -> Boolean): LoginSyncHostState =
+    withTimeout(timeoutMs) {
+        state.first { reached(it) }
+    }
 
 class LoginSyncHostRepositoryConcurrencyTest {
     private lateinit var tempDir: File
@@ -343,7 +356,12 @@ class LoginSyncHostRepositoryConcurrencyTest {
 
         val ack = client.send(loginPayload)
         assertTrue(ack.isNotEmpty())
-        assertTrue(repository.state.value is LoginSyncHostState.Done)
+
+        // The host sets the state of a finished login after it answered the phone (the state must
+        // not say "done" before the phone holds the reply), so the test waits for it instead of
+        // reading it in the same moment.
+        val done = repository.awaitState { it is LoginSyncHostState.Done }
+        assertTrue(done is LoginSyncHostState.Done)
 
         // Client cancels after delivery
         client.cancelSync()
