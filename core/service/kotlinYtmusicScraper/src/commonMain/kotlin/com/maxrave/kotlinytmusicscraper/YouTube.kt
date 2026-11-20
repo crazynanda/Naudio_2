@@ -45,6 +45,8 @@ import com.maxrave.kotlinytmusicscraper.models.response.jsonShape
 import com.maxrave.kotlinytmusicscraper.models.response.AddItemYouTubePlaylistResponse
 import com.maxrave.kotlinytmusicscraper.models.response.BrowseResponse
 import com.maxrave.kotlinytmusicscraper.models.response.LibraryPage
+import com.maxrave.kotlinytmusicscraper.models.response.PlaylistBrowsePage
+import com.maxrave.kotlinytmusicscraper.models.response.playlistHeader
 
 import com.maxrave.kotlinytmusicscraper.models.response.libraryRows
 import com.maxrave.kotlinytmusicscraper.models.response.librarySignInRequired
@@ -2121,6 +2123,7 @@ open class YouTube {
                     browseId = browseId,
                     continuation = continuation,
                     setLogin = true,
+                    customCookie = customCookie,
                 )
             val status = response.status.value
             val body = response.bodyAsText().removePrefix(")]}'\n")
@@ -2151,6 +2154,53 @@ open class YouTube {
             throw e
         } catch (e: Exception) {
             Logger.w(TAG, "Library page ${browseId ?: "continuation"} failed: ${e::class.simpleName}")
+            Result.failure(e)
+        }
+
+    /**
+     * One page of a playlist browse answer, read as the JSON it is.
+     *
+     * The typed read of the answer fails the whole page on one missing field of one header; the
+     * page is read here the way the library pages are read - the rows and the tokens from the
+     * walk, the header decoded on its own - so a page the model does not fit is still read.
+     */
+    open suspend fun fetchPlaylistPage(
+        browseId: String?,
+        customCookie: String? = null,
+    ): Result<PlaylistBrowsePage> =
+        try {
+            val response =
+                ytMusic.browse(
+                    WEB_REMIX,
+                    browseId = browseId,
+                    setLogin = true,
+                    customCookie = customCookie,
+                )
+            val status = response.status.value
+            val body = response.bodyAsText().removePrefix(")]}'\n")
+            val root = ytMusic.normalJson.parseToJsonElement(body).jsonObject
+
+            val rows = root.libraryRows()
+            val page =
+                PlaylistBrowsePage(
+                    httpStatus = status,
+                    header = root.playlistHeader(),
+                    rows = rows.rows,
+                    continuations = rows.continuations,
+                    signInRequired = root.librarySignInRequired(),
+                    shape = jsonShape(root),
+                )
+            Logger.i(
+                TAG,
+                "Playlist page ${browseId ?: "continuation"}: HTTP $status, ${page.rows.size} row(s), " +
+                    (if (page.header != null) "header read" else "no header") +
+                    if (page.signInRequired) ", sign-in required" else "",
+            )
+            Result.success(page)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Logger.w(TAG, "Playlist page ${browseId ?: "continuation"} failed: ${e::class.simpleName}")
             Result.failure(e)
         }
 

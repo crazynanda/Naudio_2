@@ -765,8 +765,9 @@ class Ytmusic {
         continuation: String? = null,
         countryCode: String? = null,
         setLogin: Boolean = false,
+        customCookie: String? = null,
     ) = httpClient.post("browse") {
-        ytClient(client, if (setLogin) true else cookie != "" && cookie != null, isUsingReferer = false)
+        ytClient(client, if (setLogin) true else cookie != "" && cookie != null, isUsingReferer = false, customCookie)
 
         if (continuation != null && browseId != null) {
             setBody(

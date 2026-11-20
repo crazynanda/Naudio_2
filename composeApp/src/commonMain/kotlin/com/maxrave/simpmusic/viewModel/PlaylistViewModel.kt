@@ -262,6 +262,11 @@ class PlaylistViewModel(
                             }
 
                             else -> {
+                                if (res.message != null) {
+                                    // The remote page named the stage it failed at; the local
+                                    // read below decides what the screen shows from here.
+                                    Logger.w(tag, "the page of $id was not read: ${res.message}")
+                                }
                                 getPlaylistEntity(id)
                             }
                         }
