@@ -5,12 +5,26 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
+
+/**
+ * Waits until a condition holds.
+ *
+ * The server marks a transfer as delivered and answers the phone *afterwards* (the state of the
+ * host must not say "delivered" before the phone holds the reply), so a test that reads the flag
+ * in the same moment as the answer reads it too early.
+ */
+private suspend fun waitUntil(timeoutMs: Long = 10_000, condition: () -> Boolean) {
+    withTimeout(timeoutMs) {
+        while (!condition()) delay(10)
+    }
+}
 
 class LoginSyncFavoritesTest {
 
@@ -124,6 +138,7 @@ class LoginSyncFavoritesTest {
             // 3. Transfer login credentials
             val loginAck = client.send("""{"login":"youtube"}""".encodeToByteArray()).decodeToString()
             assertEquals("ack_logins", loginAck)
+            waitUntil { events.contains("delivered") }
             assertTrue(events.contains("delivered"))
 
             // 4. Press Sync Again & 5. Synchronize newly added or removed favorites successfully
@@ -215,6 +230,7 @@ class LoginSyncFavoritesTest {
             // Transfer login credentials
             val reply = client.send("""{"user":"test"}""".encodeToByteArray()).decodeToString()
             assertEquals("ok_login", reply)
+            waitUntil { loginsDelivered }
             assertTrue(loginsDelivered)
 
             // Re-transfer is blocked
@@ -283,6 +299,7 @@ class LoginSyncFavoritesTest {
             assertEquals(LoginSyncTransportException.Kind.REFUSED, exception.kind)
 
             // Only one payload processed and delivered
+            waitUntil { deliveredCount.get() == 1 }
             assertEquals(1, payloadCount.get(), "handler.onPayload() must only be invoked once")
             assertEquals(1, deliveredCount.get(), "handler.onDelivered() must only be invoked once")
 
@@ -331,6 +348,7 @@ class LoginSyncFavoritesTest {
             // Second attempt succeeds
             val reply = client.send("""{"try":2}""".encodeToByteArray()).decodeToString()
             assertEquals("success_payload", reply)
+            waitUntil { delivered }
             assertTrue(delivered, "Delivered must be set after successful response")
 
             // Third attempt is now blocked (REFUSED / 410)

@@ -3,12 +3,27 @@ package org.simpmusic.loginsync
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
+
+/**
+ * Waits until a condition holds.
+ *
+ * The server marks a transfer as delivered and answers the phone *afterwards* (the state of the
+ * host must not say "delivered" before the phone holds the reply), so a test that reads the flag
+ * in the same moment as the answer reads it too early.
+ */
+private suspend fun waitUntil(timeoutMs: Long = 10_000, condition: () -> Boolean) {
+    withTimeout(timeoutMs) {
+        while (!condition()) delay(10)
+    }
+}
 
 class LoginSyncCancellationConcurrencyTest {
 
@@ -213,6 +228,7 @@ class LoginSyncCancellationConcurrencyTest {
 
             val reply = loginTask.await()
             assertEquals("ack", reply)
+            waitUntil { loginDelivered.get() }
             assertTrue(loginDelivered.get(), "Login delivered successfully")
 
             cancelTask.await()
@@ -286,6 +302,7 @@ class LoginSyncCancellationConcurrencyTest {
 
             val reply = client.send("""{"test":"creds"}""".encodeToByteArray()).decodeToString()
             assertEquals("ack", reply)
+            waitUntil { events.contains("delivered") }
 
             client.cancelSync()
             assertEquals(listOf("hello", "payload", "delivered", "cancel"), events)
