@@ -14,6 +14,10 @@ val isFullBuild: Boolean =
         false
     }
 
+// Local release builds use a self-managed signing key, which the official-build check rejects.
+// Default false: normal and CI builds keep the guard; only -PskipOfficialBuildCheck=true opts out.
+val skipOfficialBuildCheck = providers.gradleProperty("skipOfficialBuildCheck").orNull?.toBoolean() ?: false
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.sentry.gradle)
@@ -39,6 +43,10 @@ android {
                 .get()
         vectorDrawables.useSupportLibrary = true
         multiDexEnabled = true
+        // The BuildConfig field `MainActivity` reads. androidApp declares it in its
+        // defaultConfig, and this module compiles androidApp's sources, so it needs the same
+        // declaration - without it the compile of the module fails on the one reference.
+        buildConfigField("boolean", "SKIP_OFFICIAL_BUILD_CHECK", skipOfficialBuildCheck.toString())
 
         @Suppress("UnstableApiUsage")
         androidResources {

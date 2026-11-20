@@ -50,7 +50,7 @@ side, each with its own data. A debug build updates another debug build ✓.
 ## The fingerprint of the key
 
 ```
-SHA-256: 6c5113c44b4b809a7d8a96ee3752df45b4bdff8283d202cb99565c17bb0870520
+SHA-256: 6c5113c44b809a7d8a96ee3752df454bdff8283d202cb99565c17bb087052001
 ```
 
 It is checked by `scripts/verify-debug-signing.sh`, which reads the certificate of a built APK
