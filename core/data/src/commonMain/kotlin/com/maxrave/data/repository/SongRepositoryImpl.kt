@@ -1242,6 +1242,7 @@ internal class SongRepositoryImpl(
         var refusedSources = 0
         var failedSources = 0
         var readableSources = 0
+        var readableEmptySources = 0
         val sourcesRead = mutableListOf<String>()
 
         // The cookie of the session is read here and given to every request, instead of the
@@ -1272,6 +1273,7 @@ internal class SongRepositoryImpl(
                 is LikedSongsSource.Read -> {
                     pagesRead += source.pages
                     readableSources++
+                    if (source.tracks == 0) readableEmptySources++
                     sourcesRead += "$browseId(${source.tracks} tracks)"
                 }
 
@@ -1309,12 +1311,28 @@ internal class SongRepositoryImpl(
                 "$refusedSources refused, $failedSources failed)",
         )
 
-        if (uniqueTracks.isEmpty() && (refusedSources > 0 || failedSources > 0) && readableSources == 0) {
-            // Every place was refused or failed: the library was not read. That is not an account
-            // without liked songs.
+        // A place that refused the session has said what the session is worth. An empty answer
+        // from a differently-shaped page of the same library must not override that refusal: on
+        // the device a dead session answered one place with a refusal and another with 200 and
+        // no rows, and the read was reported as one that had happened.
+        val libraryRead =
+            (readableSources - readableEmptySources) > 0 ||
+                (readableSources > 0 && refusedSources == 0 && failedSources == 0)
+
+        if (uniqueTracks.isEmpty() && refusedSources > 0 && readableSources == readableEmptySources) {
+            // Every refusal stands and no place read an actual track: the library was not read.
             return@withContext Result.failure(
                 LikedSongsUnreadableException(
-                    refused = refusedSources > 0 && failedSources == 0,
+                    refused = failedSources == 0,
+                    message = "The liked songs could not be read (${sourcesRead.joinToString(", ")})",
+                ),
+            )
+        }
+
+        if (uniqueTracks.isEmpty() && readableSources == 0 && failedSources > 0) {
+            return@withContext Result.failure(
+                LikedSongsUnreadableException(
+                    refused = false,
                     message = "The liked songs could not be read (${sourcesRead.joinToString(", ")})",
                 ),
             )
@@ -1323,10 +1341,11 @@ internal class SongRepositoryImpl(
         Result.success(
             RemoteLikedSongs(
                 tracks = uniqueTracks,
-                // The library answered: an empty list of tracks is an empty library, not an
-                // unread one. The two are told apart here, because only the second may not take
-                // the local favorites away.
-                libraryRead = readableSources > 0,
+                // The library answered with songs (or every place answered and none was
+                // refused): an empty list of tracks is an empty library, not an unread one.
+                // The two are told apart here, because only the second may not take the local
+                // favorites away.
+                libraryRead = libraryRead,
             ),
         )
     }

@@ -124,6 +124,8 @@ class RemoteLikedSongsTest {
         var pages: List<Pair<List<MusicResponsiveListItemRenderer>, String?>> = emptyList()
         /** A page that asks for a sign-in. */
         var signInRequired = false
+        /** The browse ids whose page asks for a sign-in; the others answer from `pages`. */
+        var refusedFor: Set<String> = emptySet()
         /** The browse ids that were asked for. */
         val requestedBrowseIds: MutableList<String?> = mutableListOf()
 
@@ -133,7 +135,7 @@ class RemoteLikedSongsTest {
             customCookie: String?,
         ): Result<LibraryPage> {
             requestedBrowseIds.add(browseId)
-            if (signInRequired) {
+            if (signInRequired || (browseId != null && browseId in refusedFor)) {
                 return Result.success(
                     LibraryPage(
                         httpStatus = 200,
@@ -234,6 +236,28 @@ class RemoteLikedSongsTest {
 
         assertTrue(result.isSuccess, "An empty library is a library without songs, not a failed sync")
         assertEquals(0, localDataSource.getAllLikedSongs().size)
+    }
+
+    @Test
+    fun anEmptyAnswerMustNotMaskARefusal() = runBlocking {
+        // The shape the device proved: a dead session answers the liked-videos place and the
+        // liked-music playlist with a sign-in refusal, and the liked-music place with 200 and
+        // no rows and no marker. The empty answer must not turn the refusal into a library
+        // that was read.
+        setGoogleAccount()
+        val youTube =
+            FakeLibraryYouTube().apply {
+                refusedFor = setOf("FEmusic_liked_videos", "VLLM")
+                pages = listOf(emptyList<MusicResponsiveListItemRenderer>() to null)
+            }
+        val repo = repository(youTube)
+
+        val result = repo.syncAccountFavorites()
+
+        assertTrue(result.isFailure, "Two refusals are not an empty library")
+        val ex = result.exceptionOrNull()
+        assertTrue(ex is LikedSongsUnreadableException)
+        assertTrue(ex.refused, "A refusal, not a read")
     }
 
     @Test

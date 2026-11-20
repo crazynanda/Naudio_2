@@ -603,7 +603,11 @@ internal class PlaylistRepositoryImpl(
                 onSuccess = { page ->
                     if (!page.usable) {
                         if (page.signInRequired) {
-                            onFailed("YouTube answered that a sign-in is required for this playlist")
+                            // The user-facing wording: what they can do about it.
+                            onFailed(
+                                "sign-in required - the saved YouTube session may have expired; " +
+                                    "sign in again from Settings > YouTube Account",
+                            )
                         } else {
                             onFailed("YouTube answered HTTP ${page.httpStatus}")
                         }
