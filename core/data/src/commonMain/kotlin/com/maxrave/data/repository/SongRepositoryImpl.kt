@@ -1261,11 +1261,21 @@ internal class SongRepositoryImpl(
             )
         }
 
+        // Every place is asked; the answer of the canonical liked playlist (VLLM) is the one
+        // that counts. `FEmusic_liked_videos` is a "Recently saved" shelf that still lists songs
+        // whose like was removed minutes ago - taking its rows as the liked list resurrects
+        // favorites the user deleted (measured on a device, 2026-11-21). It is a fallback for
+        // sessions whose canonical playlist page cannot be read, nothing more.
+        var canonicalRead: LikedSongsSource.Read? = null
+        var canonicalTracks: MutableList<Track>? = null
+        var fallbackTracks: MutableList<Track>? = null
+        var fallbackBrowseId: String = LikedSongsBrowseIds.LIKED_SONGS
         for (browseId in LikedSongsBrowseIds.ALL) {
+            val sourceTracks = mutableListOf<Track>()
             val source =
                 readLikedSongsSource(
                     browseId = browseId,
-                    rawTracks = rawTracks,
+                    rawTracks = sourceTracks,
                     cookie = sessionCookie,
                     onUnparseable = { unparseableCount++ },
                 )
@@ -1287,10 +1297,27 @@ internal class SongRepositoryImpl(
                     sourcesRead += "$browseId(failed)"
                 }
             }
-            // The first source that answered with songs is enough: the others are the same
-            // library in other shapes.
-            if (rawTracks.isNotEmpty()) break
+            if (browseId == LikedSongsBrowseIds.LIKED_MUSIC) {
+                if (source is LikedSongsSource.Read) {
+                    // Only an actually-read page counts as the liked list: a refusal or a
+                    // failure must not overwrite the local favorites with an empty answer.
+                    canonicalRead = source
+                    canonicalTracks = sourceTracks
+                }
+            } else if (fallbackTracks == null && source is LikedSongsSource.Read) {
+                fallbackTracks = sourceTracks
+                fallbackBrowseId = browseId
+            }
         }
+
+        val chosenSource =
+            when {
+                canonicalRead != null -> "${LikedSongsBrowseIds.LIKED_MUSIC} (canonical liked playlist)"
+                fallbackTracks != null -> "$fallbackBrowseId (fallback; the canonical playlist could not be read)"
+                else -> "no readable source"
+            }
+        rawTracks.addAll(canonicalTracks ?: fallbackTracks.orEmpty())
+        Logger.i(TAG, "fetchRemoteLikedSongs: using the rows of $chosenSource")
 
         // Deduplicate while preserving remote order
         val uniqueTracks = mutableListOf<Track>()

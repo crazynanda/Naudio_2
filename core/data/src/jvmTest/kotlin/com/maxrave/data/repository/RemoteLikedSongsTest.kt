@@ -122,6 +122,13 @@ class RemoteLikedSongsTest {
     private class FakeLibraryYouTube : YouTube() {
         /** The pages, as (rows, next token). */
         var pages: List<Pair<List<MusicResponsiveListItemRenderer>, String?>> = emptyList()
+
+        /**
+         * Pages per browse id. The sources of the liked songs are not the same library in other
+         * shapes: the section answers with a "Recently saved" shelf that still lists recently
+         * unliked songs, while the canonical playlist answers with the liked list.
+         */
+        val pagesByBrowseId: MutableMap<String, List<Pair<List<MusicResponsiveListItemRenderer>, String?>>> = mutableMapOf()
         /** A page that asks for a sign-in. */
         var signInRequired = false
         /** The browse ids whose page asks for a sign-in; the others answer from `pages`. */
@@ -153,7 +160,8 @@ class RemoteLikedSongsTest {
                 } else {
                     continuation.removePrefix("token_").toIntOrNull() ?: 0
                 }
-            val (rows, nextToken) = pages.getOrNull(index) ?: (emptyList<MusicResponsiveListItemRenderer>() to null)
+            val source = browseId?.let { pagesByBrowseId[it] } ?: pages
+            val (rows, nextToken) = source.getOrNull(index) ?: (emptyList<MusicResponsiveListItemRenderer>() to null)
             return Result.success(
                 LibraryPage(
                     httpStatus = 200,
@@ -337,6 +345,77 @@ class RemoteLikedSongsTest {
         assertTrue(
             youTube.requestedBrowseIds.contains("FEmusic_liked_videos"),
             "The library section of the liked songs must be asked for, got ${youTube.requestedBrowseIds}",
+        )
+    }
+
+    @Test
+    fun prefersTheCanonicalLikedPlaylistOverTheRecentlySavedShelf() = runBlocking {
+        // What the device measured on 2026-11-21: the section `FEmusic_liked_videos` opens a
+        // "Recently saved" shelf that still listed four songs the user had unliked, while the
+        // canonical `VLLM` playlist answered with the two songs the account actually holds.
+        // Importing the section resurrected the removed favorites (6 in the app, 2 on YouTube).
+        setGoogleAccount()
+        val youTube =
+            FakeLibraryYouTube().apply {
+                pagesByBrowseId["FEmusic_liked_videos"] =
+                    listOf(
+                        listOf(renderer("liked_1"), renderer("removed_a"), renderer("removed_b"), renderer("removed_c"), renderer("removed_d")) to null,
+                    )
+                pagesByBrowseId["VLLM"] =
+                    listOf(listOf(renderer("liked_1"), renderer("liked_2")) to null)
+            }
+        val repo = repository(youTube)
+
+        val result = repo.syncAccountFavorites()
+
+        assertTrue(result.isSuccess)
+        assertEquals(
+            setOf("liked_1", "liked_2"),
+            localDataSource.getAllLikedSongs().map { it.videoId }.toSet(),
+            "The rows of the recently-saved shelf must not become favorites",
+        )
+    }
+
+    @Test
+    fun fallsBackToTheRecentlySavedShelfWhenTheCanonicalPlaylistCannotBeRead() = runBlocking {
+        setGoogleAccount()
+        val youTube =
+            FakeLibraryYouTube().apply {
+                refusedFor = setOf("VLLM")
+                pagesByBrowseId["FEmusic_liked_videos"] =
+                    listOf(listOf(renderer("liked_1"), renderer("liked_2")) to null)
+            }
+        val repo = repository(youTube)
+
+        val result = repo.syncAccountFavorites()
+
+        assertTrue(result.isSuccess, "A refusal of one source must not fail a read the others answered")
+        assertEquals(
+            setOf("liked_1", "liked_2"),
+            localDataSource.getAllLikedSongs().map { it.videoId }.toSet(),
+        )
+    }
+
+    @Test
+    fun aCanonicalPlaylistThatAnswersEmptyLeavesTheRecentlySavedShelfIgnored() = runBlocking {
+        // The recently-saved shelf always has rows; an empty canonical playlist is an account
+        // without likes, not a reason to fall back to the activity shelf.
+        setGoogleAccount()
+        val youTube =
+            FakeLibraryYouTube().apply {
+                pagesByBrowseId["FEmusic_liked_videos"] =
+                    listOf(listOf(renderer("recently_saved")) to null)
+                pagesByBrowseId["VLLM"] = listOf(emptyList<MusicResponsiveListItemRenderer>() to null)
+            }
+        val repo = repository(youTube)
+
+        val result = repo.syncAccountFavorites()
+
+        assertTrue(result.isSuccess)
+        assertEquals(
+            emptySet(),
+            localDataSource.getAllLikedSongs().map { it.videoId }.toSet(),
+            "The recently-saved shelf must not fill an empty liked list",
         )
     }
 

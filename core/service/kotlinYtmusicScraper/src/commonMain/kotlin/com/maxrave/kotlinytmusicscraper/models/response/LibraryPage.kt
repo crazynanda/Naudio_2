@@ -3,10 +3,13 @@ package com.maxrave.kotlinytmusicscraper.models.response
 /** The browse ids that lead to the liked songs of a session. */
 object LikedSongsBrowseIds {
     /**
-     * The library section that lists the liked songs.
+     * The library section that opens a "Recently saved" shelf.
      *
-     * The library answers every section on its own id, and the liked songs are the section
-     * `FEmusic_liked_videos`.
+     * Measured on a signed-in account on 2026-11-21: this id answers with a shelf titled
+     * "Recently saved", which lists what was recently saved/liked - including songs whose like
+     * was removed afterwards, and items saved to the library without being liked. It is NOT the
+     * liked-songs list, and importing it wholesale resurrects locally-removed favorites. It is
+     * kept as a fallback for sessions whose canonical playlist page cannot be read.
      */
     const val LIKED_SONGS = "FEmusic_liked_videos"
 
@@ -26,7 +29,14 @@ object LikedSongsBrowseIds {
      */
     const val LIKED_MUSIC_PLAYLIST = "VLM"
 
-    /** The ids to try, in order. The first one that answers with rows wins. */
+    /**
+     * The ids to try, in order.
+     *
+     * The canonical liked list is [LIKED_MUSIC] (`VLLM`): it was the only source whose rows
+     * matched the account's actual like states when the sources disagreed (2 liked songs:
+     * the section `FEmusic_liked_videos` answered with 6 rows, four of them recently unliked).
+     * Every id is asked, and the reader decides which answer to use.
+     */
     val ALL = listOf(LIKED_SONGS, LIKED_MUSIC, LIKED_MUSIC_PLAYLIST)
 }
 
