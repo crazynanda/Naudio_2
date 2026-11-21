@@ -31,10 +31,11 @@ import com.maxrave.kotlinytmusicscraper.models.response.RemoteConfig
 import com.maxrave.kotlinytmusicscraper.utils.parseCookieString
 import com.maxrave.kotlinytmusicscraper.utils.sha1
 import com.maxrave.ktorext.curl.CurlLogger
-import com.maxrave.ktorext.encoding.brotli
 import com.maxrave.ktorext.getEngine
 import com.maxrave.logger.Logger
 import io.ktor.client.HttpClient
+import io.ktor.client.engine.HttpClientEngineConfig
+import io.ktor.client.engine.HttpClientEngineFactory
 import io.ktor.client.engine.ProxyConfig
 import io.ktor.client.plugins.ClientRequestException
 import io.ktor.client.plugins.HttpRedirect
@@ -98,7 +99,11 @@ private const val DOWNLOAD_USER_AGENT =
 private const val DEFAULT_PARALLEL_DOWNLOADS = 4
 private const val CHUNK_SIZE = 1024L * 1024L // 1MB per chunk
 
-class Ytmusic {
+class Ytmusic(
+    // Injectable engine so tests can capture the exact request this client puts on the wire
+    // (the Accept-Encoding contract is what keeps the signed-in session honored).
+    private val engineFactory: HttpClientEngineFactory<HttpClientEngineConfig>? = null,
+) {
     val normalJson =
         Json {
             ignoreUnknownKeys = true
@@ -168,7 +173,7 @@ class Ytmusic {
 
     @OptIn(ExperimentalSerializationApi::class)
     private fun createClient() =
-        HttpClient(getEngine()) {
+        HttpClient(engineFactory ?: getEngine()) {
             expectSuccess = true
             install(CurlLogger) {
                 logger = { Logger.d(TAG, it) }
@@ -213,10 +218,17 @@ class Ytmusic {
                 )
             }
 
+            // NEVER advertise brotli to music.youtube.com: requests whose Accept-Encoding
+            // carries `br` (or `zstd`) are served by a Google frontend layer that does not
+            // honor the signed-in session — InnerTube answers the anonymous sign-in stub
+            // ("logged_in": 0) even with a valid cookie. Measured on 2026-11-20: on the
+            // frontend edge the phone's DNS resolves to, `br;q=1.0, gzip;q=0.9,` ...
+            // `deflate;q=0.8` and `gzip, deflate, br` both got the stub while `gzip;q=0.9`,
+            // `gzip, deflate` and plain `gzip` returned the real logged-in page
+            // (serviceTrackingParams logged_in=1). `gzip;q=0.9` alone is what this config
+            // advertises and is accepted on every edge tested, phone and desktop.
             install(ContentEncoding) {
-                brotli(1.0F)
                 gzip(0.9F)
-                deflate(0.8F)
             }
 
             if (proxy != null) {
@@ -244,11 +256,16 @@ class Ytmusic {
             append("X-Goog-Api-Format-Version", "1")
             append("X-YouTube-Client-Name", "${client.xClientName ?: 67}")
             append("X-YouTube-Client-Version", client.clientVersion)
+            // One append per header. Ktor's mergeHeaders joins repeated values of a header with
+            // commas on the wire (everything except Cookie), so a second append under a different
+            // case produced `X-Goog-AuthUser: 0,0` — and Google's frontend served the anonymous
+            // sign-in interstitial for every InnerTube call that carried it, exactly like an
+            // expired session. Proven on device 2026-11-21: the same request with the clean single
+            // value returned the logged-in page (73 kB) while the merged value returned the
+            // interstitial (4 kB), in-app and from a replay harness.
             append("X-Goog-AuthUser", authUser.toString())
-            append("X-Goog-Authuser", authUser.toString())
             pageId?.let {
                 append("X-Goog-PageId", it)
-                append("X-Goog-Pageid", it)
             }
             append("Origin", "https://music.youtube.com")
             append("x-origin", "https://music.youtube.com")
