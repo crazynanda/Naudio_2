@@ -19,51 +19,59 @@ data class ArtistItemsPage(
 ) {
     companion object {
         fun fromMusicResponsiveListItemRenderer(renderer: MusicResponsiveListItemRenderer): SongItem? {
+            val videoId = renderer.videoId
+                ?: renderer.navigationEndpoint?.watchEndpoint?.videoId
+                ?: return null
+            val title = renderer.flexColumns
+                .firstOrNull()
+                ?.musicResponsiveListItemFlexColumnRenderer
+                ?.text
+                ?.runs
+                ?.firstOrNull()
+                ?.text ?: ""
+            val artists = renderer.flexColumns.getOrNull(1)
+                ?.musicResponsiveListItemFlexColumnRenderer?.text?.runs?.oddElements()?.map {
+                    Artist(
+                        name = it.text,
+                        id = it.navigationEndpoint?.browseEndpoint?.browseId,
+                    )
+                } ?: emptyList()
+            val albumRun = renderer.flexColumns.getOrNull(2)
+                ?.musicResponsiveListItemFlexColumnRenderer?.text?.runs?.firstOrNull()
+            val album = albumRun?.let {
+                Album(
+                    name = it.text,
+                    id = it.navigationEndpoint?.browseEndpoint?.browseId ?: "",
+                )
+            }
+            val duration = renderer.fixedColumns
+                ?.firstOrNull()
+                ?.musicResponsiveListItemFlexColumnRenderer
+                ?.text
+                ?.runs
+                ?.firstOrNull()
+                ?.text
+                ?.parseTime()
+            val thumbnail = renderer.thumbnail?.musicThumbnailRenderer?.getThumbnailUrl() ?: ""
+            val explicit = renderer.badges?.find {
+                it.musicInlineBadgeRenderer?.icon?.iconType == "MUSIC_EXPLICIT_BADGE"
+            } != null
+            val endpoint = renderer.overlay
+                ?.musicItemThumbnailOverlayRenderer
+                ?.content
+                ?.musicPlayButtonRenderer
+                ?.playNavigationEndpoint
+                ?.watchEndpoint
             return SongItem(
-                id = renderer.videoId ?: return null,
-                title =
-                    renderer.flexColumns
-                        .firstOrNull()
-                        ?.musicResponsiveListItemFlexColumnRenderer
-                        ?.text
-                        ?.runs
-                        ?.firstOrNull()
-                        ?.text ?: return null,
-                artists =
-                    renderer.flexColumns.getOrNull(1)?.musicResponsiveListItemFlexColumnRenderer?.text?.runs?.oddElements()?.map {
-                        Artist(
-                            name = it.text,
-                            id = it.navigationEndpoint?.browseEndpoint?.browseId,
-                        )
-                    } ?: return null,
-                album =
-                    renderer.flexColumns.getOrNull(2)?.musicResponsiveListItemFlexColumnRenderer?.text?.runs?.firstOrNull()?.let {
-                        Album(
-                            name = it.text,
-                            id = it.navigationEndpoint?.browseEndpoint?.browseId ?: return null,
-                        )
-                    },
-                duration =
-                    renderer.fixedColumns
-                        ?.firstOrNull()
-                        ?.musicResponsiveListItemFlexColumnRenderer
-                        ?.text
-                        ?.runs
-                        ?.firstOrNull()
-                        ?.text
-                        ?.parseTime() ?: return null,
-                thumbnail = renderer.thumbnail?.musicThumbnailRenderer?.getThumbnailUrl() ?: return null,
-                explicit =
-                    renderer.badges?.find {
-                        it.musicInlineBadgeRenderer?.icon?.iconType == "MUSIC_EXPLICIT_BADGE"
-                    } != null,
-                endpoint =
-                    renderer.overlay
-                        ?.musicItemThumbnailOverlayRenderer
-                        ?.content
-                        ?.musicPlayButtonRenderer
-                        ?.playNavigationEndpoint
-                        ?.watchEndpoint,
+                id = videoId,
+                title = title,
+                artists = artists,
+                album = album,
+                duration = duration,
+                thumbnail = thumbnail,
+                explicit = explicit,
+                endpoint = endpoint,
+                thumbnails = renderer.thumbnail?.musicThumbnailRenderer?.thumbnail,
                 musicVideoType = renderer.musicVideoType,
                 isLive = renderer.isLive,
             )

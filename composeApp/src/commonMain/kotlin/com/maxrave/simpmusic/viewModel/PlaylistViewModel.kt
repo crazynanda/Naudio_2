@@ -95,6 +95,8 @@ class PlaylistViewModel(
     private var playlistEntityJob: Job? = null
     private var newUpdateJob: Job? = null
     private var checkDownloadedPlaylist: Job? = null
+    /** The stage the remote page failed at, kept for the screen when no local row exists. */
+    private var remotePageFailure: String? = null
 
     init {
         viewModelScope.launch {
@@ -262,6 +264,15 @@ class PlaylistViewModel(
                             }
 
                             else -> {
+                                if (res.message != null) {
+                                    // The remote page named the stage it failed at; the local
+                                    // read below decides what the screen shows from here. It is
+                                    // kept for the case where the screen has no row to fall
+                                    // back to, so the user sees the stage instead of a bare
+                                    // "Empty response".
+                                    remotePageFailure = res.message
+                                    Logger.w(tag, "the page of $id was not read: ${res.message}")
+                                }
                                 getPlaylistEntity(id)
                             }
                         }
@@ -408,7 +419,10 @@ class PlaylistViewModel(
                             }
                     }
                 } else {
-                    _uiState.value = Error("Empty response")
+                    // The screen fell back to a local row that does not exist. The reason the
+                    // remote page was not read is what the user can act on; "Empty response"
+                    // says nothing.
+                    _uiState.value = Error(remotePageFailure ?: "Empty response")
                 }
             }
     }

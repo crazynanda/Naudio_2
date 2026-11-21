@@ -5,8 +5,13 @@ import kotlinx.serialization.Serializable
 @Serializable
 data class MusicCarouselShelfRenderer(
     val header: Header?,
-    val contents: List<Content>,
-    val itemSize: String,
+    // With a default, for the same reason as `itemSize` below: a shelf without rows is still a
+    // shelf, and a required field that is missing failed the whole answer.
+    val contents: List<Content> = emptyList(),
+    // With a default: a shelf that answers without it is still a shelf, and a required field that
+    // is missing failed the whole answer it was part of - the library page of every account
+    // carries a shelf of this kind.
+    val itemSize: String = "",
     val numItemsPerColumn: String?,
 ) {
     @Serializable

@@ -24,15 +24,26 @@ internal fun parsePlaylistData(
     listContent: List<MusicShelfRenderer.Content>,
     playlistId: String,
     viewString: String,
+    /**
+     * Whether a page without a header is still a page.
+     *
+     * The typed read requires the header - an answer without one says nothing about the playlist.
+     * The raw read of a page that carried its rows without a header is still the playlist: the
+     * tracks are there, and the name of the page comes from the row the caller holds it for.
+     */
+    requireHeader: Boolean = true,
 ): PlaylistBrowse? {
+    if (header == null && requireHeader) {
+        return null
+    }
+    var title = ""
+    val listAuthor: ArrayList<Author> = arrayListOf()
+    var duration = ""
+    var description = ""
+    val listThumbnails: ArrayList<Thumbnail> = arrayListOf()
+    var year = now().year.toString()
+    var trackCount = 0
     if (header != null) {
-        var title = ""
-        val listAuthor: ArrayList<Author> = arrayListOf()
-        var duration = ""
-        var description = ""
-        val listThumbnails: ArrayList<Thumbnail> = arrayListOf()
-        var year = now().year.toString()
-        var trackCount = 0
         when (header) {
             is BrowseResponse.Header.MusicDetailHeaderRenderer -> {
                 title +=
@@ -254,8 +265,11 @@ internal fun parsePlaylistData(
                     ?.let { listThumbnails.addAll(it) }
             }
         }
-        Logger.d("PlaylistParser", "description: $description")
-        val listTrack: MutableList<Track> = arrayListOf()
+    } else {
+        Logger.d("PlaylistParser", "the page carried no header the model knows; it is built from its rows")
+    }
+    Logger.d("PlaylistParser", "description: $description")
+    val listTrack: MutableList<Track> = arrayListOf()
         for (content in listContent) {
             val renderer = content.musicResponsiveListItemRenderer
             // Identify the columns from each one's own pageType instead of assuming an order —
@@ -337,25 +351,21 @@ internal fun parsePlaylistData(
                 listTrack.add(track)
             }
         }
-        Logger.d("PlaylistParser", "description: $description")
         Logger.d("PlaylistParser", "trackCount: $trackCount")
         Logger.d("PlaylistParser", "year: $year")
-        return PlaylistBrowse(
-            author = listAuthor.firstOrNull() ?: Author("", "YouTube Music"),
-            description = description,
-            duration = duration,
-            durationSeconds = 0,
-            id = playlistId,
-            privacy = "PUBLIC",
-            thumbnails = listThumbnails,
-            title = title,
-            trackCount = if (trackCount == 0) listContent.size else trackCount,
-            tracks = listTrack,
-            year = year,
-        )
-    } else {
-        return null
-    }
+    return PlaylistBrowse(
+        author = listAuthor.firstOrNull() ?: Author("", "YouTube Music"),
+        description = description,
+        duration = duration,
+        durationSeconds = 0,
+        id = playlistId,
+        privacy = "PUBLIC",
+        thumbnails = listThumbnails,
+        title = title,
+        trackCount = if (trackCount == 0) listContent.size else trackCount,
+        tracks = listTrack,
+        year = year,
+    )
 }
 
 internal fun parseSetVideoId(

@@ -14,6 +14,10 @@ val isFullBuild: Boolean =
         false
     }
 
+// Local release builds use a self-managed signing key, which the official-build check rejects.
+// Default false: normal and CI builds keep the guard; only -PskipOfficialBuildCheck=true opts out.
+val skipOfficialBuildCheck = providers.gradleProperty("skipOfficialBuildCheck").orNull?.toBoolean() ?: false
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.sentry.gradle)
@@ -39,6 +43,10 @@ android {
                 .get()
         vectorDrawables.useSupportLibrary = true
         multiDexEnabled = true
+        // The BuildConfig field `MainActivity` reads. androidApp declares it in its
+        // defaultConfig, and this module compiles androidApp's sources, so it needs the same
+        // declaration - without it the compile of the module fails on the one reference.
+        buildConfigField("boolean", "SKIP_OFFICIAL_BUILD_CHECK", skipOfficialBuildCheck.toString())
 
         @Suppress("UnstableApiUsage")
         androidResources {
@@ -93,6 +101,17 @@ android {
         }
     }
 
+    // The same shared debug key as `androidApp`, so a debug build of this module can be put over
+    // an older one instead of forcing an uninstall.
+    signingConfigs {
+        create("sharedDebug") {
+            storeFile = rootProject.file("keystore/naudio-debug.keystore")
+            storePassword = "naudio-debug"
+            keyAlias = "naudio-debug"
+            keyPassword = "naudio-debug"
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = true
@@ -105,6 +124,7 @@ android {
         debug {
             // No ".dev" suffix: vivo matches the exact package, and a debug build is how this is tried on a vivo phone.
             isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("sharedDebug")
         }
     }
     compileOptions {

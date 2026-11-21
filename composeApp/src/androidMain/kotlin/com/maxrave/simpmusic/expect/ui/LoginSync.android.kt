@@ -85,6 +85,9 @@ import simpmusic.composeapp.generated.resources.login_sync_choose_title
 import simpmusic.composeapp.generated.resources.login_sync_code_expired
 import simpmusic.composeapp.generated.resources.login_sync_connecting
 import simpmusic.composeapp.generated.resources.login_sync_failed
+import simpmusic.composeapp.generated.resources.login_sync_favorites
+import simpmusic.composeapp.generated.resources.login_sync_favorites_description
+import simpmusic.composeapp.generated.resources.login_sync_favorites_synced
 import simpmusic.composeapp.generated.resources.login_sync_no_camera
 import simpmusic.composeapp.generated.resources.login_sync_nothing_signed_in
 import simpmusic.composeapp.generated.resources.login_sync_open_settings
@@ -92,6 +95,7 @@ import simpmusic.composeapp.generated.resources.login_sync_scan_hint
 import simpmusic.composeapp.generated.resources.login_sync_send
 import simpmusic.composeapp.generated.resources.login_sync_sending
 import simpmusic.composeapp.generated.resources.login_sync_sent
+import simpmusic.composeapp.generated.resources.login_sync_sync_again
 import simpmusic.composeapp.generated.resources.login_sync_trust
 import simpmusic.composeapp.generated.resources.login_sync_trust_message
 import simpmusic.composeapp.generated.resources.login_sync_trust_title
@@ -253,11 +257,46 @@ actual fun LoginSyncDialog(onDismiss: () -> Unit) {
                         }
 
                         is Step.Done -> {
+                            val doneText =
+                                buildString {
+                                    if (step.favoritesResult != null) {
+                                        append(
+                                            stringResource(
+                                                Res.string.login_sync_favorites_synced,
+                                                step.favoritesResult.totalAddedOrUpdated,
+                                                step.favoritesResult.totalRemoved,
+                                            ),
+                                        )
+                                    }
+                                    if (step.services.isNotEmpty()) {
+                                        if (isNotEmpty()) append("\n\n")
+                                        append(
+                                            stringResource(
+                                                Res.string.login_sync_sent,
+                                                step.desktop.name,
+                                                step.services.joinToString { it.label },
+                                            ),
+                                        )
+                                    }
+                                    if (isEmpty()) {
+                                        append(stringResource(Res.string.login_sync_sent, step.desktop.name, ""))
+                                    }
+                                }
                             Status(
-                                stringResource(Res.string.login_sync_sent, step.desktop.name, step.services.joinToString { it.label }),
+                                doneText,
                                 progress = false,
                             ) {
-                                SheetButton(stringResource(Res.string.ok), ::close)
+                                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    SheetButton(stringResource(Res.string.login_sync_sync_again)) {
+                                        viewModel.resyncFavorites()
+                                    }
+                                    TextButton(
+                                        onClick = ::close,
+                                        modifier = Modifier.fillMaxWidth(),
+                                    ) {
+                                        Text(text = stringResource(Res.string.ok))
+                                    }
+                                }
                             }
                         }
 
@@ -299,6 +338,24 @@ actual fun LoginSyncDialog(onDismiss: () -> Unit) {
                 title = { Text(text = stringResource(Res.string.login_sync_choose_title), style = typo().titleSmall) },
                 text = {
                     Column {
+                        Row(
+                            modifier =
+                                Modifier
+                                    .fillMaxWidth()
+                                    .toggleable(
+                                        value = uiState.syncFavorites,
+                                        role = Role.Checkbox,
+                                        onValueChange = { viewModel.toggleFavorites() },
+                                    ).padding(vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            Checkbox(checked = uiState.syncFavorites, onCheckedChange = null)
+                            Column {
+                                Text(text = stringResource(Res.string.login_sync_favorites), style = typo().bodyMedium)
+                                Text(text = stringResource(Res.string.login_sync_favorites_description), style = typo().bodySmall)
+                            }
+                        }
                         uiState.signedIn.forEach { service ->
                             Row(
                                 modifier =
@@ -319,7 +376,7 @@ actual fun LoginSyncDialog(onDismiss: () -> Unit) {
                     }
                 },
                 confirmButton = {
-                    TextButton(enabled = uiState.selected.isNotEmpty(), onClick = viewModel::send) {
+                    TextButton(enabled = uiState.syncFavorites || uiState.selected.isNotEmpty(), onClick = viewModel::send) {
                         Text(text = stringResource(Res.string.login_sync_send))
                     }
                 },

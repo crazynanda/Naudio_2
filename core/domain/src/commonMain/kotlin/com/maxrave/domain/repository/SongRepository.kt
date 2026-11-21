@@ -3,14 +3,18 @@ package com.maxrave.domain.repository
 import com.maxrave.domain.data.entities.QueueEntity
 import com.maxrave.domain.data.entities.SongEntity
 import com.maxrave.domain.data.entities.SongInfoEntity
+import com.maxrave.domain.data.entities.YouTubeFavoritePendingEntity
 import com.maxrave.domain.data.model.browse.album.Track
 import com.maxrave.domain.data.model.comments.YouTubeComment
 import com.maxrave.domain.data.model.comments.YouTubeCommentsPage
 import com.maxrave.domain.data.model.download.DownloadProgress
+import com.maxrave.domain.data.model.favoritesync.FavoritesSyncResult
+import com.maxrave.domain.data.model.favoritesync.YouTubeSyncStatus
 import com.maxrave.domain.data.model.streams.YouTubeWatchEndpoint
 import com.maxrave.domain.utils.Resource
 import com.maxrave.domain.utils.YouTubeLikeStatus
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.datetime.LocalDateTime
 
 interface SongRepository {
@@ -179,4 +183,25 @@ interface SongRepository {
     fun performCommentAction(action: String): Flow<Resource<Unit>>
 
     fun getRadioFromEndpoint(endpoint: YouTubeWatchEndpoint): Flow<Resource<Pair<List<Track>, String?>>>
+
+    /**
+     * Synchronizes the user's account favorites with YouTube Music ("LM" playlist).
+     *
+     * Fetches all remote favorites, paginating through continuations.
+     * Safely reconciles with local database without clobbering local offline likes or remote items.
+     * Imported tracks do not trigger outgoing like calls.
+     *
+     * @return [Result] wrapping [FavoritesSyncResult] with count of added/updated and removed favorites.
+     */
+    suspend fun syncAccountFavorites(force: Boolean = false): Result<FavoritesSyncResult>
+
+    val youTubeSyncStatus: StateFlow<YouTubeSyncStatus>
+
+    suspend fun flushPendingYouTubeLikes(): Result<Unit>
+
+    suspend fun retryPendingSync(): Result<Unit>
+
+    suspend fun getPendingFavoriteCount(accountId: String? = null): Int
+
+    suspend fun getPendingFavoriteOperations(accountId: String? = null): List<YouTubeFavoritePendingEntity>
 }

@@ -89,6 +89,22 @@ class LoginSyncClient {
         }
     }
 
+    /** Sends favorites [payload] to the connected computer and returns its reply. Throws [LoginSyncTransportException]. */
+    suspend fun sendFavorites(payload: ByteArray): ByteArray {
+        val code = invite
+        val target = host
+        if (code == null || target == null) throw LoginSyncTransportException(LoginSyncTransportException.Kind.FAILED, "not connected")
+        return try {
+            call(code, target, LoginSyncWire.FAVORITES, payload)
+        } catch (e: LoginSyncTransportException) {
+            throw e
+        } catch (e: Exception) {
+            if (e is CancellationException) throw e
+            Logger.e(TAG, "sendFavorites failed", e)
+            throw LoginSyncTransportException(LoginSyncTransportException.Kind.FAILED, e.describe())
+        }
+    }
+
     /**
      * Ends the session and, if the computer is still waiting on this phone, puts it back on its QR.
      * Returns at once: the notice goes out in the background. After a delivered payload the computer
@@ -110,15 +126,33 @@ class LoginSyncClient {
         }
     }
 
+    /**
+     * Synchronously sends the cancel request and waits for the server to process it.
+     */
+    suspend fun cancelSync() {
+        val code = invite ?: return
+        val target = host ?: return
+        invite = null
+        host = null
+        call(code, target, LoginSyncWire.CANCEL, EMPTY)
+    }
+
     private suspend fun call(
         code: LoginSyncInvite,
         target: String,
         kind: String,
         plain: ByteArray,
     ): ByteArray {
+        val sealed = LoginSyncCipher.seal(code.key, LoginSyncWire.aad(kind, reply = false), plain)
+        if (sealed.size > LoginSyncWire.MAX_BODY_BYTES) {
+            throw LoginSyncTransportException(
+                LoginSyncTransportException.Kind.FAILED,
+                "payload exceeds transport limit of ${LoginSyncWire.MAX_BODY_BYTES} bytes: ${sealed.size}",
+            )
+        }
         val response =
             http.post("http://$target:${code.port}${LoginSyncWire.path(kind)}") {
-                setBody(LoginSyncCipher.seal(code.key, LoginSyncWire.aad(kind, reply = false), plain))
+                setBody(sealed)
             }
         when (response.status) {
             HttpStatusCode.OK -> {

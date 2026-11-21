@@ -12,6 +12,11 @@ data class NavigationEndpoint(
     val queueAddEndpoint: QueueAddEndpoint? = null,
     val shareEntityEndpoint: ShareEntityEndpoint? = null,
     val playlistEditEndpoint: PlaylistEditEndpoint? = null,
+    /**
+     * The endpoint of a "sign in" button. Its presence says the page was served to a session
+     * that is not signed in.
+     */
+    val signInEndpoint: SignInEndpoint? = null,
 ) {
     val endpoint: Endpoint?
         get() =
@@ -21,4 +26,10 @@ data class NavigationEndpoint(
                 ?: searchEndpoint
                 ?: queueAddEndpoint
                 ?: shareEntityEndpoint
+
+    /** The sign-in button of a page that asks for a sign-in. */
+    @Serializable
+    data class SignInEndpoint(
+        val clickTrackingParams: String? = null,
+    )
 }

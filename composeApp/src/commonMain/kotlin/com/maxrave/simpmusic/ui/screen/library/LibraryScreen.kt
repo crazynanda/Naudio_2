@@ -230,6 +230,8 @@ fun LibraryScreen(
 
             LibraryChipType.FAVORITE_PLAYLIST -> {
                 viewModel.getPlaylistFavorite()
+                // A like made in YouTube Music shows up while the list is opened.
+                viewModel.refreshFavorites()
             }
 
             LibraryChipType.DOWNLOADED_PLAYLIST -> {

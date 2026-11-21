@@ -31,10 +31,11 @@ import com.maxrave.kotlinytmusicscraper.models.response.RemoteConfig
 import com.maxrave.kotlinytmusicscraper.utils.parseCookieString
 import com.maxrave.kotlinytmusicscraper.utils.sha1
 import com.maxrave.ktorext.curl.CurlLogger
-import com.maxrave.ktorext.encoding.brotli
 import com.maxrave.ktorext.getEngine
 import com.maxrave.logger.Logger
 import io.ktor.client.HttpClient
+import io.ktor.client.engine.HttpClientEngineConfig
+import io.ktor.client.engine.HttpClientEngineFactory
 import io.ktor.client.engine.ProxyConfig
 import io.ktor.client.plugins.ClientRequestException
 import io.ktor.client.plugins.HttpRedirect
@@ -98,7 +99,11 @@ private const val DOWNLOAD_USER_AGENT =
 private const val DEFAULT_PARALLEL_DOWNLOADS = 4
 private const val CHUNK_SIZE = 1024L * 1024L // 1MB per chunk
 
-class Ytmusic {
+class Ytmusic(
+    // Injectable engine so tests can capture the exact request this client puts on the wire
+    // (the Accept-Encoding contract is what keeps the signed-in session honored).
+    private val engineFactory: HttpClientEngineFactory<HttpClientEngineConfig>? = null,
+) {
     val normalJson =
         Json {
             ignoreUnknownKeys = true
@@ -168,7 +173,7 @@ class Ytmusic {
 
     @OptIn(ExperimentalSerializationApi::class)
     private fun createClient() =
-        HttpClient(getEngine()) {
+        HttpClient(engineFactory ?: getEngine()) {
             expectSuccess = true
             install(CurlLogger) {
                 logger = { Logger.d(TAG, it) }
@@ -191,7 +196,12 @@ class Ytmusic {
             }
             install(Logging) {
                 logger = io.ktor.client.plugins.logging.Logger.DEFAULT
-                level = LogLevel.ALL
+                level = LogLevel.HEADERS
+                // The cookie header is the session and the Authorization header is derived from it.
+                // Both used to be written to the log in full at LogLevel.ALL.
+                sanitizeHeader { header ->
+                    header == HttpHeaders.Cookie || header == HttpHeaders.Authorization
+                }
             }
             install(ContentNegotiation) {
                 protobuf()
@@ -208,10 +218,17 @@ class Ytmusic {
                 )
             }
 
+            // NEVER advertise brotli to music.youtube.com: requests whose Accept-Encoding
+            // carries `br` (or `zstd`) are served by a Google frontend layer that does not
+            // honor the signed-in session — InnerTube answers the anonymous sign-in stub
+            // ("logged_in": 0) even with a valid cookie. Measured on 2026-11-20: on the
+            // frontend edge the phone's DNS resolves to, `br;q=1.0, gzip;q=0.9,` ...
+            // `deflate;q=0.8` and `gzip, deflate, br` both got the stub while `gzip;q=0.9`,
+            // `gzip, deflate` and plain `gzip` returned the real logged-in page
+            // (serviceTrackingParams logged_in=1). `gzip;q=0.9` alone is what this config
+            // advertises and is accepted on every edge tested, phone and desktop.
             install(ContentEncoding) {
-                brotli(1.0F)
                 gzip(0.9F)
-                deflate(0.8F)
             }
 
             if (proxy != null) {
@@ -237,12 +254,20 @@ class Ytmusic {
         contentType(ContentType.Application.Json)
         headers {
             append("X-Goog-Api-Format-Version", "1")
-            append("X-YouTube-Client-Name", "${client.xClientName ?: 1}")
+            append("X-YouTube-Client-Name", "${client.xClientName ?: 67}")
             append("X-YouTube-Client-Version", client.clientVersion)
-            append("X-Goog-Authuser", authUser.toString())
+            // One append per header. Ktor's mergeHeaders joins repeated values of a header with
+            // commas on the wire (everything except Cookie), so a second append under a different
+            // case produced `X-Goog-AuthUser: 0,0` — and Google's frontend served the anonymous
+            // sign-in interstitial for every InnerTube call that carried it, exactly like an
+            // expired session. Proven on device 2026-11-21: the same request with the clean single
+            // value returned the logged-in page (73 kB) while the merged value returned the
+            // interstitial (4 kB), in-app and from a replay harness.
+            append("X-Goog-AuthUser", authUser.toString())
             pageId?.let {
-                append("X-Goog-Pageid", it)
+                append("X-Goog-PageId", it)
             }
+            append("Origin", "https://music.youtube.com")
             append("x-origin", "https://music.youtube.com")
             if (client.referer != null && isUsingReferer) {
                 append("Referer", client.referer)
@@ -251,11 +276,16 @@ class Ytmusic {
                 val cookie = customCookie ?: this@Ytmusic.cookie
                 cookie?.let { cookie ->
                     append("Cookie", cookie)
-                    if ("SAPISID" !in cookieMap || "__Secure-3PAPISID" !in cookieMap) return@let
-                    val currentTime = now().toInstant(TimeZone.currentSystemDefault()).epochSeconds / 1000
-                    val sapisidCookie = cookieMap["SAPISID"] ?: cookieMap["__Secure-3PAPISID"]
+                    val activeMap = if (customCookie != null) parseCookieString(customCookie) else cookieMap
+                    val sapisidCookie = activeMap["SAPISID"]
+                        ?: activeMap["__Secure-3PAPISID"]
+                        ?: activeMap["__Secure-1PAPISID"]
+                        ?: cookieMap["SAPISID"]
+                        ?: cookieMap["__Secure-3PAPISID"]
+                        ?: cookieMap["__Secure-1PAPISID"]
+                        ?: return@let
+                    val currentTime = now().toInstant(TimeZone.currentSystemDefault()).epochSeconds
                     val sapisidHash = sha1("$currentTime $sapisidCookie https://music.youtube.com")
-                    Logger.d(TAG, "SAPI SID Hash: SAPISIDHASH ${currentTime}_$sapisidHash")
                     append("Authorization", "SAPISIDHASH ${currentTime}_$sapisidHash")
                 }
             }
@@ -267,11 +297,12 @@ class Ytmusic {
     @OptIn(ExperimentalTime::class)
     internal fun getAuthorizationHeader(): String? =
         cookie?.let { cookie ->
-            if ("SAPISID" !in cookieMap || "__Secure-3PAPISID" !in cookieMap) null
-            val currentTime = now().toInstant(TimeZone.currentSystemDefault()).epochSeconds / 1000
-            val sapisidCookie = cookieMap["SAPISID"] ?: cookieMap["__Secure-3PAPISID"]
+            val sapisidCookie = cookieMap["SAPISID"]
+                ?: cookieMap["__Secure-3PAPISID"]
+                ?: cookieMap["__Secure-1PAPISID"]
+                ?: return@let null
+            val currentTime = now().toInstant(TimeZone.currentSystemDefault()).epochSeconds
             val sapisidHash = sha1("$currentTime $sapisidCookie https://music.youtube.com")
-            Logger.d(TAG, "SAPI SID Hash: SAPISIDHASH ${currentTime}_$sapisidHash")
             "SAPISIDHASH ${currentTime}_$sapisidHash"
         }
 
@@ -751,8 +782,9 @@ class Ytmusic {
         continuation: String? = null,
         countryCode: String? = null,
         setLogin: Boolean = false,
+        customCookie: String? = null,
     ) = httpClient.post("browse") {
-        ytClient(client, if (setLogin) true else cookie != "" && cookie != null, isUsingReferer = false)
+        ytClient(client, if (setLogin) true else cookie != "" && cookie != null, isUsingReferer = false, customCookie)
 
         if (continuation != null && browseId != null) {
             setBody(

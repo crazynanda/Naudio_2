@@ -7,16 +7,18 @@ import com.maxrave.domain.data.model.loginsync.LoginSyncService
 import com.maxrave.domain.manager.DataStoreManager
 import com.maxrave.domain.manager.DataStoreManager.Values.TRUE
 import com.maxrave.domain.repository.CommonRepository
+import com.maxrave.domain.repository.SongRepository
 import com.maxrave.logger.Logger
 import kotlinx.coroutines.flow.first
 
 /** Reads this device's sign-ins, and writes a received bundle in the same shape the login screens do. */
-internal class LoginSyncStore(
+internal open class LoginSyncStore(
     private val dataStore: DataStoreManager,
     private val localDataSource: LocalDataSource,
     private val commonRepository: CommonRepository,
+    private val songRepository: SongRepository? = null,
 ) {
-    suspend fun signedIn(): List<LoginSyncService> =
+    open suspend fun signedIn(): List<LoginSyncService> =
         buildList {
             if (dataStore.loggedIn.first() == TRUE && dataStore.cookie.first().isNotEmpty()) add(LoginSyncService.YOUTUBE)
             if (dataStore.spdc.first().isNotEmpty()) add(LoginSyncService.SPOTIFY)
@@ -24,7 +26,7 @@ internal class LoginSyncStore(
             if (dataStore.lastfmSessionKey.first().isNotEmpty()) add(LoginSyncService.LASTFM)
         }
 
-    suspend fun bundle(services: Set<LoginSyncService>): LoginBundle =
+    open suspend fun bundle(services: Set<LoginSyncService>): LoginBundle =
         LoginBundle(
             youtube =
                 if (LoginSyncService.YOUTUBE in services) {
@@ -49,7 +51,7 @@ internal class LoginSyncStore(
         )
 
     /** Writes [bundle] over this device's sign-ins and returns the services it carried. */
-    suspend fun restore(bundle: LoginBundle): List<LoginSyncService> =
+    open suspend fun restore(bundle: LoginBundle): List<LoginSyncService> =
         buildList {
             bundle.youtube?.let {
                 restoreYouTube(it)
@@ -88,7 +90,15 @@ internal class LoginSyncStore(
         if (login.dataSyncId.isNotEmpty()) dataStore.setDataSyncId(login.dataSyncId)
         dataStore.setCookie(login.cookie, login.pageId, login.authUser)
         dataStore.setLoggedIn(true)
+        if (dataStore.getString(DataStoreManager.KEY_COMBINE_LOCAL_AND_YOUTUBE_LIKED).first().isNullOrEmpty()) {
+            dataStore.setCombineLocalAndYouTubeLiked(true)
+        }
         Logger.i("Auth", "YouTube: signed in through Login Sync, ${login.accounts.size} account(s)")
+        try {
+            songRepository?.syncAccountFavorites()
+        } catch (e: Exception) {
+            Logger.w("Auth", "syncAccountFavorites after LoginSync failed: ${e.message}")
+        }
     }
 }
 

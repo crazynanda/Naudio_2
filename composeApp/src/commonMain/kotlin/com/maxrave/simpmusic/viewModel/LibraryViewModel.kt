@@ -29,9 +29,12 @@ import com.maxrave.domain.utils.Resource
 import com.maxrave.domain.utils.isRadioPlaylistId
 import com.maxrave.simpmusic.ui.screen.home.analytics.monthFullNameResource
 import com.maxrave.simpmusic.ui.screen.library.LibraryDynamicPlaylistType
+import com.maxrave.logger.Logger
 import com.maxrave.simpmusic.viewModel.base.BaseViewModel
 import kotlinx.collections.immutable.toImmutableList
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.IO
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -172,6 +175,15 @@ class LibraryViewModel(
         viewModelScope.launch {
             commonRepository.getLibraryOverview().collect { _libraryOverview.value = it }
         }
+        viewModelScope.launch(Dispatchers.IO) {
+            if (dataStoreManager.loggedIn.first() == DataStoreManager.TRUE) {
+                try {
+                    songRepository.syncAccountFavorites()
+                } catch (e: Exception) {
+                    com.maxrave.logger.Logger.w("LibraryViewModel", "Library favorites sync failed: ${e.message}")
+                }
+            }
+        }
     }
 
     fun refreshCachedPreview() {
@@ -239,6 +251,23 @@ class LibraryViewModel(
     }
 
     fun getYouTubeLoggedIn(): Boolean = runBlocking { dataStoreManager.loggedIn.first() } == DataStoreManager.TRUE
+
+    /**
+     * Reads the liked songs of the account again.
+     *
+     * The sync runs when the app starts and when the account is switched, but a like made in
+     * YouTube Music afterwards only shows up with the next start of the app. The Favorites list
+     * asks for the library of the account while it is opened, so a like shows up there.
+     */
+    fun refreshFavorites() {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                songRepository.syncAccountFavorites(force = true)
+            } catch (e: Exception) {
+                Logger.w("LibraryViewModel", "The favorites could not be refreshed: ${e.message}")
+            }
+        }
+    }
 
     fun getPlaylistFavorite() {
         viewModelScope.launch {

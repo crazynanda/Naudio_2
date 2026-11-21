@@ -288,6 +288,15 @@ class SharedViewModel(
                 )
             }
             dataStoreManager.openApp()
+            launch(Dispatchers.IO) {
+                if (dataStoreManager.loggedIn.first() == DataStoreManager.TRUE) {
+                    try {
+                        songRepository.syncAccountFavorites()
+                    } catch (e: Exception) {
+                        Logger.w(tag, "Startup favorites sync failed: ${e.message}")
+                    }
+                }
+            }
             val timeLineJob =
                 launch {
                     nowPlayingState
@@ -1984,7 +1993,10 @@ class SharedViewModel(
                         .addToYouTubeLiked(
                             mediaPlayerHandler.nowPlaying.first()?.mediaId,
                         ).collect { response ->
-                            if (response == 200) {
+                            // Any status in the two hundreds means the change was confirmed: the
+                            // repository only reports one when YouTube said the song has the
+                            // state it was asked for.
+                            if (response in 200..299) {
                                 makeToast(getString(Res.string.added_to_youtube_liked))
                                 getLikeStatus(videoId)
                             } else {
@@ -1995,8 +2007,8 @@ class SharedViewModel(
                     songRepository
                         .removeFromYouTubeLiked(
                             mediaPlayerHandler.nowPlaying.first()?.mediaId,
-                        ).collect {
-                            if (it == 200) {
+                        ).collect { response ->
+                            if (response in 200..299) {
                                 makeToast(getString(Res.string.removed_from_youtube_liked))
                                 getLikeStatus(videoId)
                             } else {
@@ -2018,7 +2030,7 @@ class SharedViewModel(
         viewModelScope.launch {
             try {
                 songRepository.addToYouTubeDisliked(videoId).collect { response ->
-                    if (response == 200) {
+                    if (response in 200..299) {
                         // The reply can arrive after the player moved on; it belongs to the
                         // track it was sent for, so it only shows if that track is still playing.
                         if (mediaPlayerHandler.nowPlaying.value?.mediaId == videoId) {

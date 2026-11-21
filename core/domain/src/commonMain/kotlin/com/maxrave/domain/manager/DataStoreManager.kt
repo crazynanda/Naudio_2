@@ -645,6 +645,8 @@ interface DataStoreManager {
         const val TRUE = "TRUE"
         const val FALSE = "FALSE"
 
+        const val KEY_COMBINE_LOCAL_AND_YOUTUBE_LIKED = "combine_local_and_youtube_liked"
+
         const val THEME_MODE_SYSTEM = "SYSTEM"
         const val THEME_MODE_DARK = "DARK"
         const val THEME_MODE_LIGHT = "LIGHT"

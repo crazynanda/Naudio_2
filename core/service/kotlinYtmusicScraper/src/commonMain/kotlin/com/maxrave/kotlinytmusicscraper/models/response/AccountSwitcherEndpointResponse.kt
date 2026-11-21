@@ -4,6 +4,11 @@ import com.maxrave.kotlinytmusicscraper.models.AccountInfo
 import com.maxrave.kotlinytmusicscraper.models.Run
 import com.maxrave.kotlinytmusicscraper.models.Thumbnail
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.decodeFromJsonElement
 
 @Serializable
 data class AccountSwitcherEndpointResponse(
@@ -189,7 +194,7 @@ data class AccountItem(
     fun toAccountInfo(email: String): AccountInfo? {
         val tokens = serviceEndpoint?.selectActiveIdentityEndpoint?.supportedTokens
         return AccountInfo(
-            name = accountName?.simpleText ?: return null,
+            name = accountName?.text ?: return null,
             email = email,
             pageId =
                 onBehalfOfParameter
@@ -214,13 +219,26 @@ data class AccountItem(
 
 @Serializable
 data class AccountByline(
-    val simpleText: String,
+    val simpleText: String? = null,
 )
 
 @Serializable
 data class AccountName(
-    val simpleText: String,
-)
+    val simpleText: String? = null,
+    val runs: List<Run?>? = null,
+) {
+    /**
+     * The display name of the account.
+     *
+     * The renderer used to carry it as a plain `simpleText` and now sends it as a run list.
+     * Both are read, because dropping the account because one of them is missing is what turns a
+     * successful sign-in into "no account".
+     */
+    val text: String?
+        get() =
+            simpleText?.takeIf { it.isNotBlank() }
+                ?: runs?.mapNotNull { it?.text }?.joinToString("")?.takeIf { it.isNotBlank() }
+}
 
 @Serializable
 data class AccountPhoto(
@@ -229,7 +247,7 @@ data class AccountPhoto(
 
 @Serializable
 data class ChannelHandle(
-    val simpleText: String,
+    val simpleText: String? = null,
 )
 
 @Serializable
@@ -357,30 +375,122 @@ data class PageIdToken(
     val pageId: String?,
 )
 
+/**
+ * The outcome of asking YouTube which account a cookie belongs to.
+ *
+ * The three cases are kept apart on purpose: the sign-in screen used to learn about all three as
+ * "no account", so a dropped request and a rejected cookie looked the same to the user and to the
+ * log.
+ */
+sealed interface AccountSwitcherResult {
+    /** YouTube answered with the accounts of the session. */
+    data class Found(
+        val accounts: List<AccountInfo>,
+    ) : AccountSwitcherResult
+
+    /** YouTube answered, but named no account: the cookie is not a signed-in session. */
+    data class NoAccount(
+        val httpStatus: Int,
+        val code: String?,
+    ) : AccountSwitcherResult
+
+    /** The request did not get an answer. */
+    data class Failed(
+        val httpStatus: Int?,
+        val reason: String,
+    ) : AccountSwitcherResult
+}
+
+/**
+ * The accounts of the signed-in session, read from the account-switcher response.
+ *
+ * The response nests the accounts four levels deep
+ * (`data.contents[].accountSectionListRenderer.contents[].accountItemSectionRenderer.contents[]`).
+ */
 fun AccountSwitcherEndpointResponse.toListAccountInfo(): List<AccountInfo> {
-    if (this.code == "SUCCESS" && this.data != null) {
-        val list = mutableListOf<AccountInfo>()
-        this.data.contents
-            ?.firstOrNull()
-            ?.accountSectionListRenderer
-            ?.contents
-            ?.firstOrNull()
-            ?.accountItemSectionRenderer
-            ?.contents
-            ?.forEach { content ->
-                content?.accountItem?.let { accountItem ->
-                    accountItem
-                        .toAccountInfo(
-                            email =
-                                accountItem.channelHandle
-                                    ?.simpleText ?: "",
-                        )?.let {
-                            list.add(it)
-                        }
+    if (this.code != "SUCCESS" || this.data == null) return emptyList()
+
+    return this.data.contents
+        ?.firstOrNull()
+        ?.accountSectionListRenderer
+        ?.contents
+        ?.firstOrNull()
+        ?.accountItemSectionRenderer
+        ?.contents
+        ?.mapNotNull { content -> content?.accountItem }
+        ?.mapNotNull { accountItem -> accountItem.toAccountInfo() }
+        .orEmpty()
+}
+
+private fun AccountItem.toAccountInfo(): AccountInfo? =
+    this.toAccountInfo(
+        email =
+            this.channelHandle
+                ?.simpleText ?: "",
+    )
+
+/**
+ * The skeleton of a JSON tree: the keys and the array indexes, never a value.
+ *
+ * The body of the account switcher holds the account of the user, so it cannot be logged. Its
+ * shape can: when the answer names no account while the session is a session, the shape says
+ * where the accounts went.
+ */
+fun jsonShape(
+    element: JsonElement,
+    maxDepth: Int = 12,
+): String {
+    fun render(
+        current: JsonElement,
+        depth: Int,
+    ): String =
+        when {
+            depth > maxDepth -> "…"
+            current is JsonObject ->
+                current.entries.joinToString(",") { (key, value) ->
+                    // A key that looks like an address is a value that landed in a key.
+                    val name = if (key.contains('@')) "…" else key
+                    "$name{${render(value, depth + 1)}}"
                 }
+
+            current is JsonArray ->
+                current.firstOrNull()?.let { "[${render(it, depth + 1)}]" } ?: "[]"
+
+            else -> "…"
+        }
+
+    return render(element, 0).take(600)
+}
+
+/**
+ * Every account item in the response, wherever it sits.
+ *
+ * The account-switcher response nests the accounts four levels deep, and the path is not a
+ * contract: a section added in front of the account section, or a wrapper added around it, leaves
+ * the direct path empty and the sign-in is reported as "no account" although YouTube answered with
+ * the account. The tree is searched for the account items themselves instead.
+ */
+fun extractAccountItems(
+    root: JsonElement,
+    json: Json,
+): List<AccountInfo> {
+    val items = mutableListOf<JsonObject>()
+
+    fun walk(element: JsonElement) {
+        when (element) {
+            is JsonObject -> {
+                (element["accountItem"] as? JsonObject)?.let { items.add(it) }
+                element.forEach { (_, value) -> walk(value) }
             }
-        return list
-    } else {
-        return emptyList()
+
+            is JsonArray -> element.forEach { walk(it) }
+            else -> Unit
+        }
     }
+    walk(root)
+
+    return items
+        .mapNotNull { element -> runCatching { json.decodeFromJsonElement<AccountItem>(element) }.getOrNull() }
+        .mapNotNull { it.toAccountInfo() }
+        .distinctBy { it.name to it.email }
 }

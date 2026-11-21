@@ -39,14 +39,25 @@ import com.maxrave.kotlinytmusicscraper.models.getContinuation
 import com.maxrave.kotlinytmusicscraper.models.oddElements
 import com.maxrave.kotlinytmusicscraper.models.response.AccountMenuResponse
 import com.maxrave.kotlinytmusicscraper.models.response.AccountSwitcherEndpointResponse
+import com.maxrave.kotlinytmusicscraper.models.response.AccountSwitcherResult
+import com.maxrave.kotlinytmusicscraper.models.response.extractAccountItems
+import com.maxrave.kotlinytmusicscraper.models.response.jsonShape
 import com.maxrave.kotlinytmusicscraper.models.response.AddItemYouTubePlaylistResponse
 import com.maxrave.kotlinytmusicscraper.models.response.BrowseResponse
+import com.maxrave.kotlinytmusicscraper.models.response.LibraryPage
+import com.maxrave.kotlinytmusicscraper.models.response.PlaylistBrowsePage
+import com.maxrave.kotlinytmusicscraper.models.response.playlistHeader
+
+import com.maxrave.kotlinytmusicscraper.models.response.libraryRows
+import com.maxrave.kotlinytmusicscraper.models.response.librarySignInRequired
 import com.maxrave.kotlinytmusicscraper.models.response.CommentsResponse
 import com.maxrave.kotlinytmusicscraper.models.response.CreatePlaylistResponse
 import com.maxrave.kotlinytmusicscraper.models.response.ImageUploadResponse
 import com.maxrave.kotlinytmusicscraper.models.response.DownloadProgress
 import com.maxrave.kotlinytmusicscraper.models.response.GetQueueResponse
 import com.maxrave.kotlinytmusicscraper.models.response.GetSearchSuggestionsResponse
+import com.maxrave.kotlinytmusicscraper.models.response.LikeChange
+import com.maxrave.kotlinytmusicscraper.models.response.LikeChangeAnswer
 import com.maxrave.kotlinytmusicscraper.models.response.LikeStatus
 import com.maxrave.kotlinytmusicscraper.models.response.NextAndroidMusicResponse
 import com.maxrave.kotlinytmusicscraper.models.response.NextResponse
@@ -97,6 +108,7 @@ import com.mohamedrejeb.ksoup.html.parser.KsoupHtmlParser
 import io.ktor.client.call.body
 import io.ktor.client.engine.ProxyBuilder
 import io.ktor.client.engine.http
+import io.ktor.client.plugins.ResponseException
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.URLBuilder
 import io.ktor.http.parseQueryString
@@ -115,10 +127,12 @@ import kotlinx.datetime.TimeZone
 import kotlinx.datetime.daysUntil
 import kotlinx.datetime.toLocalDateTime
 import kotlinx.datetime.todayIn
+import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.decodeFromJsonElement
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -873,7 +887,7 @@ open class YouTube {
      * @param setLogin if true, the function will set the cookie and authentication header
      * @return a [Result]<[BrowseResponse]> object
      */
-    suspend fun customQuery(
+    open suspend fun customQuery(
         browseId: String?,
         params: String? = null,
         continuation: String? = null,
@@ -1353,7 +1367,6 @@ open class YouTube {
                         ?.ytConfigData
                         ?.visitorData
             Logger.d(TAG, "Visitor Data $visitorData")
-            Logger.d(TAG, "New Cookie $cookie")
             Logger.d(TAG, "Playback Tracking $playbackTracking")
             return Triple(cookie, visitorData ?: this@YouTube.visitorData ?: "", playbackTracking)
         } catch (e: Exception) {
@@ -2032,6 +2045,51 @@ open class YouTube {
             accountSwitcherEndpointResponse.toListAccountInfo()
         }
 
+    /**
+     * Asks YouTube which account a cookie belongs to, and reports what actually happened.
+     *
+     * This is the authoritative answer to "is this sign-in finished": YouTube itself names the
+     * account of the session. Every proxy for it (the page the WebView shows, the names of the
+     * cookies in the jar) can be right while the session is still being handed over, and wrong
+     * while it is complete.
+     *
+     * The body is never logged: it carries the account of the user.
+     */
+    suspend fun fetchAccountSwitcher(customCookie: String): AccountSwitcherResult =
+        try {
+            val response = ytMusic.getAccountSwitcherEndpoint(customCookie)
+            val status = response.status.value
+            val body = response.bodyAsText().removePrefix(")]}'\n")
+            val root = ytMusic.normalJson.parseToJsonElement(body)
+            val parsed =
+                runCatching {
+                    ytMusic.normalJson.decodeFromJsonElement<AccountSwitcherEndpointResponse>(root)
+                }.getOrNull()
+
+            val accounts =
+                parsed?.toListAccountInfo().orEmpty().ifEmpty {
+                    extractAccountItems(root, ytMusic.normalJson)
+                }
+
+            Logger.i(
+                TAG,
+                "Account switcher answered $status with ${accounts.size} account(s); shape: ${jsonShape(root)}",
+            )
+            if (accounts.isEmpty()) {
+                AccountSwitcherResult.NoAccount(status, parsed?.code)
+            } else {
+                AccountSwitcherResult.Found(accounts)
+            }
+        } catch (e: ResponseException) {
+            Logger.w(TAG, "Account switcher rejected the cookie: HTTP ${e.response.status.value}")
+            AccountSwitcherResult.Failed(e.response.status.value, "HTTP ${e.response.status.value}")
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Logger.w(TAG, "Account switcher request failed: ${e::class.simpleName}")
+            AccountSwitcherResult.Failed(null, e::class.simpleName ?: "Exception")
+        }
+
     suspend fun pipeStream(
         videoId: String,
         pipedInstance: String,
@@ -2042,6 +2100,108 @@ open class YouTube {
     suspend fun getLibraryPlaylists() =
         runCatching {
             ytMusic.browse(WEB_REMIX, "FEmusic_liked_playlists", setLogin = true).body<BrowseResponse>()
+        }
+
+    /**
+     * Reads one page of a library answer.
+     *
+     * The status, the rows, the continuations and whether the page asked for a sign-in are kept
+     * apart: a page that was refused is not a library without songs, and reading it as one is what
+     * empties a Favorites list that is not empty.
+     *
+     * The body is never logged. Its shape is, which says where the songs went when there are none.
+     */
+    open suspend fun fetchLibraryPage(
+        browseId: String?,
+        continuation: String? = null,
+        customCookie: String? = null,
+    ): Result<LibraryPage> =
+        try {
+            val response =
+                ytMusic.browse(
+                    WEB_REMIX,
+                    browseId = browseId,
+                    continuation = continuation,
+                    setLogin = true,
+                    customCookie = customCookie,
+                )
+            val status = response.status.value
+            val body = response.bodyAsText().removePrefix(")]}'\n")
+            val root = ytMusic.normalJson.parseToJsonElement(body).jsonObject
+
+            // The answer is read as the JSON it is, not as the model of it: the model declares
+            // fields as required, and one missing field (the `itemSize` of the recommendation
+            // shelf every library page carries) failed the whole answer and threw the liked songs
+            // away with it.
+            val rows = root.libraryRows()
+            val page =
+                LibraryPage(
+                    httpStatus = status,
+                    rows = rows.rows,
+                    continuations = rows.continuations,
+                    shelfCount = rows.shelfCount,
+                    signInRequired = root.librarySignInRequired(),
+                    shape = jsonShape(root),
+                )
+            Logger.i(
+                TAG,
+                "Library page ${browseId ?: "continuation"}: HTTP $status, ${page.rows.size} row(s), " +
+                    "${page.shelfCount} shelf(s), ${page.continuations.size} continuation(s)" +
+                    if (page.signInRequired) ", sign-in required" else "",
+            )
+            Result.success(page)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Logger.w(TAG, "Library page ${browseId ?: "continuation"} failed: ${e::class.simpleName}")
+            Result.failure(e)
+        }
+
+    /**
+     * One page of a playlist browse answer, read as the JSON it is.
+     *
+     * The typed read of the answer fails the whole page on one missing field of one header; the
+     * page is read here the way the library pages are read - the rows and the tokens from the
+     * walk, the header decoded on its own - so a page the model does not fit is still read.
+     */
+    open suspend fun fetchPlaylistPage(
+        browseId: String?,
+        customCookie: String? = null,
+    ): Result<PlaylistBrowsePage> =
+        try {
+            val response =
+                ytMusic.browse(
+                    WEB_REMIX,
+                    browseId = browseId,
+                    setLogin = true,
+                    customCookie = customCookie,
+                )
+            val status = response.status.value
+            val body = response.bodyAsText().removePrefix(")]}'\n")
+            val root = ytMusic.normalJson.parseToJsonElement(body).jsonObject
+
+            val rows = root.libraryRows()
+            val page =
+                PlaylistBrowsePage(
+                    httpStatus = status,
+                    header = root.playlistHeader(),
+                    rows = rows.rows,
+                    continuations = rows.continuations,
+                    signInRequired = root.librarySignInRequired(),
+                    shape = jsonShape(root),
+                )
+            Logger.i(
+                TAG,
+                "Playlist page ${browseId ?: "continuation"}: HTTP $status, ${page.rows.size} row(s), " +
+                    (if (page.header != null) "header read" else "no header") +
+                    if (page.signInRequired) ", sign-in required" else "",
+            )
+            Result.success(page)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Logger.w(TAG, "Playlist page ${browseId ?: "continuation"} failed: ${e::class.simpleName}")
+            Result.failure(e)
         }
 
     suspend fun getMixedForYou() =
@@ -2222,20 +2382,90 @@ open class YouTube {
             ytMusic.unsubscribeChannel(channelId).status.value
         }
 
-    open suspend fun addToLiked(mediaId: String): Result<Int> =
+    /**
+     * Likes a song in the account of the user.
+     *
+     * The change is only reported as done when YouTube says the song is liked now: the status
+     * code of the request says that YouTube answered, not that the song was liked. An answer
+     * that says something else is a failed change, and the change stays in the queue of the
+     * pending changes instead of being dropped.
+     */
+    open suspend fun addToLiked(mediaId: String): Result<Int> = setLiked(mediaId, LikeState.LIKE)
+
+    /** Dislikes a song in the account of the user. */
+    open suspend fun addToDisliked(mediaId: String): Result<Int> = setLiked(mediaId, LikeState.DISLIKE)
+
+    /** Takes the like of a song away in the account of the user. */
+    open suspend fun removeFromLiked(mediaId: String): Result<Int> = setLiked(mediaId, LikeState.INDIFFERENT)
+
+    /**
+     * The state a song is meant to have, as YouTube names it.
+     */
+    private enum class LikeState(
+        val wireName: String,
+    ) {
+        LIKE("LIKE"),
+        DISLIKE("DISLIKE"),
+        INDIFFERENT("INDIFFERENT"),
+    }
+
+    /**
+     * Changes the like state of a song and checks that the change happened.
+     */
+    private suspend fun setLiked(
+        mediaId: String,
+        wanted: LikeState,
+    ): Result<Int> =
         runCatching {
-            ytMusic.addToLiked(mediaId).status.value
+            val response =
+                when (wanted) {
+                    LikeState.LIKE -> ytMusic.addToLiked(mediaId)
+                    LikeState.DISLIKE -> ytMusic.addToDisliked(mediaId)
+                    LikeState.INDIFFERENT -> ytMusic.removeFromLiked(mediaId)
+                }
+            val code = response.status.value
+            if (code !in 200..299) {
+                throw IllegalStateException("YouTube refused the change of $mediaId (HTTP $code)")
+            }
+            val body = response.bodyAsText()
+            when (val answer = LikeChange.read(body)) {
+                is LikeChangeAnswer.Changed -> {
+                    if (answer.status != wanted.wireName) {
+                        throw IllegalStateException(
+                            "YouTube did not change $mediaId (the answer says ${answer.status}, not ${wanted.wireName})",
+                        )
+                    }
+                }
+                // The answer does not say what happened. What the account holds is read back, so
+                // the change is not reported as done because nobody looked.
+                LikeChangeAnswer.Unsaid -> {
+                    val readBack = readLikedState(mediaId)
+                    if (readBack != wanted.wireName) {
+                        throw IllegalStateException(
+                            "YouTube did not confirm the change of $mediaId (the account holds $readBack)",
+                        )
+                    }
+                }
+                is LikeChangeAnswer.Refused -> {
+                    throw IllegalStateException("YouTube refused the change of $mediaId: ${answer.message}")
+                }
+                is LikeChangeAnswer.Unreadable -> {
+                    throw IllegalStateException(
+                        "The answer of YouTube to the change of $mediaId could not be read: ${answer.reason}",
+                    )
+                }
+            }
+            code
         }.onFailure { if (it is CancellationException) throw it }
 
-    open suspend fun addToDisliked(mediaId: String): Result<Int> =
-        runCatching {
-            ytMusic.addToDisliked(mediaId).status.value
-        }.onFailure { if (it is CancellationException) throw it }
-
-    open suspend fun removeFromLiked(mediaId: String): Result<Int> =
-        runCatching {
-            ytMusic.removeFromLiked(mediaId).status.value
-        }.onFailure { if (it is CancellationException) throw it }
+    /**
+     * The like state the account holds for a song, read back from YouTube.
+     */
+    private suspend fun readLikedState(mediaId: String): String =
+        getLikedInfo(mediaId)
+            .getOrNull()
+            ?.name
+            ?: "UNKNOWN"
 
     suspend fun getSimpMusicChart() =
         runCatching {

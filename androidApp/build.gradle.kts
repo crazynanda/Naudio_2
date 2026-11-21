@@ -88,6 +88,27 @@ android {
         }
     }
 
+    // The debug builds of every machine and every runner are signed with one key, the one in
+    // `keystore/naudio-debug.keystore`.
+    //
+    // Without it, the Android SDK makes a throwaway debug key wherever the build runs: two debug
+    // builds never share a signer, and Android refuses to put one over the other
+    // (INSTALL_FAILED_UPDATE_INCOMPATIBLE) - which is what forced an uninstall, and with it the
+    // loss of everything the app had stored.
+    //
+    // The key is a debug key and nothing else: the password is in the repository on purpose, it
+    // signs no release, and the release builds keep the production key in the secrets. The
+    // official-build check does not run on a debug build, so this key never stands in for the
+    // real one.
+    signingConfigs {
+        create("sharedDebug") {
+            storeFile = rootProject.file("keystore/naudio-debug.keystore")
+            storePassword = "naudio-debug"
+            keyAlias = "naudio-debug"
+            keyPassword = "naudio-debug"
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = true
@@ -110,6 +131,7 @@ android {
             isMinifyEnabled = false
             applicationIdSuffix = ".dev"
             versionNameSuffix = "-dev"
+            signingConfig = signingConfigs.getByName("sharedDebug")
         }
     }
     compileOptions {

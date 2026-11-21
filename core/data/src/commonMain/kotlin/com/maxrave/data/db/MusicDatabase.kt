@@ -14,6 +14,7 @@ import com.maxrave.domain.data.entities.AutoEqCurveEntity
 import com.maxrave.domain.data.entities.AutoEqEntryEntity
 import com.maxrave.domain.data.entities.AutoEqIndexMetaEntity
 import com.maxrave.domain.data.entities.EpisodeEntity
+import com.maxrave.domain.data.entities.FavoriteSyncTombstoneEntity
 import com.maxrave.domain.data.entities.FollowedArtistSingleAndAlbum
 import com.maxrave.domain.data.entities.GoogleAccountEntity
 import com.maxrave.domain.data.entities.LocalPlaylistEntity
@@ -31,6 +32,7 @@ import com.maxrave.domain.data.entities.SongEntity
 import com.maxrave.domain.data.entities.SongInfoEntity
 import com.maxrave.domain.data.entities.TranslatedLyricsEntity
 import com.maxrave.domain.data.entities.YourYouTubePlaylistList
+import com.maxrave.domain.data.entities.YouTubeFavoritePendingEntity
 import com.maxrave.domain.data.entities.analytics.EventArtistEntity
 import com.maxrave.domain.data.entities.analytics.PlaybackEventEntity
 
@@ -42,9 +44,10 @@ import com.maxrave.domain.data.entities.analytics.PlaybackEventEntity
         NotificationEntity::class, TranslatedLyricsEntity::class, PodcastsEntity::class, EpisodeEntity::class,
         YourYouTubePlaylistList::class, PlaybackEventEntity::class, EventArtistEntity::class,
         AutoEqEntryEntity::class, AutoEqIndexMetaEntity::class, AutoEqCurveEntity::class,
-        ArtistMotionEntity::class, RecentSongEntity::class
+        ArtistMotionEntity::class, RecentSongEntity::class, FavoriteSyncTombstoneEntity::class,
+        YouTubeFavoritePendingEntity::class
     ],
-    version = 28,
+    version = 30,
     exportSchema = true,
     autoMigrations = [
         AutoMigration(from = 2, to = 3), AutoMigration(
@@ -101,6 +104,10 @@ import com.maxrave.domain.data.entities.analytics.PlaybackEventEntity
         AutoMigration(24, 27),
         // 28 adds recent_song. One new table and nothing else.
         AutoMigration(27, 28),
+        // 29 adds favorite_sync_tombstone. One new table and nothing else.
+        AutoMigration(28, 29),
+        // 30 adds youtube_favorite_pending. One new table and nothing else.
+        AutoMigration(29, 30),
     ],
 )
 @TypeConverters(Converters::class)

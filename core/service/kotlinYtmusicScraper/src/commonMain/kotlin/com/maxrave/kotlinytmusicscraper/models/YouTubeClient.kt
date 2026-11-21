@@ -90,6 +90,7 @@ data class YouTubeClient(
                 api_key = "AIzaSyC9XL3ZjWddXya6X74dJoCTL-WEYFDNX30",
                 userAgent = USER_AGENT_WEB,
                 referer = REFERER_YOUTUBE_MUSIC,
+                xClientName = 67,
             )
 
         val WEB_EMBEDDED =

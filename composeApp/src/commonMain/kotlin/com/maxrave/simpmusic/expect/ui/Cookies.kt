@@ -45,3 +45,28 @@ expect fun DiscordWebView(
     aboveContent: @Composable (BoxScope.() -> Unit) = {},
     onLoginDone: (token: String) -> Unit
 )
+
+fun mergeCookieStrings(first: String, second: String): String {
+    if (first.isBlank()) return second
+    if (second.isBlank()) return first
+    val map = linkedMapOf<String, String>()
+    first.split(";").forEach { item ->
+        val trimmed = item.trim()
+        if (trimmed.isNotEmpty() && trimmed.contains("=")) {
+            val key = trimmed.substringBefore("=").trim()
+            val value = trimmed.substringAfter("=").trim()
+            if (key.isNotEmpty()) map[key] = value
+        }
+    }
+    second.split(";").forEach { item ->
+        val trimmed = item.trim()
+        if (trimmed.isNotEmpty() && trimmed.contains("=")) {
+            val key = trimmed.substringBefore("=").trim()
+            val value = trimmed.substringAfter("=").trim()
+            if (key.isNotEmpty() && !map.containsKey(key)) {
+                map[key] = value
+            }
+        }
+    }
+    return map.entries.joinToString("; ") { "${it.key}=${it.value}" }
+}

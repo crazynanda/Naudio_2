@@ -1,5 +1,6 @@
 package com.maxrave.domain.repository
 
+import com.maxrave.domain.data.model.favoritesync.FavoritesSyncResult
 import com.maxrave.domain.data.model.loginsync.DesktopInfo
 import com.maxrave.domain.data.model.loginsync.LoginSyncService
 
@@ -15,6 +16,9 @@ interface LoginSyncSenderRepository {
 
     /** Sends [services] to the connected computer; returns what it took. Throws LoginSyncException. */
     suspend fun send(services: Set<LoginSyncService>): List<LoginSyncService>
+
+    /** Exchanges favorites bidirectionally with the connected computer. Throws LoginSyncException. */
+    suspend fun syncFavorites(): FavoritesSyncResult
 
     /**
      * Ends the session and, if the computer is still waiting on this phone, puts it back on its QR.

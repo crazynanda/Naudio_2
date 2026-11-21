@@ -938,6 +938,11 @@
     <string name="login_sync_unreachable">Couldn't reach the computer. Make sure your phone is on the same network or tailnet, then try again.</string>
     <string name="login_sync_code_expired">The code on your computer has expired. Show a new one and scan again.</string>
     <string name="login_sync_failed">Something went wrong. Please try again.</string>
+    <string name="login_sync_favorites">Favorites</string>
+    <string name="login_sync_favorites_description">Sync liked songs, albums, playlists, podcasts, and followed artists</string>
+    <string name="login_sync_favorites_synced">Favorites synchronized (%1$d added/updated, %2$d removed)</string>
+    <string name="login_sync_sync_again">Sync again</string>
+    <string name="login_sync_syncing_favorites">Synchronizing favorites…</string>
     <string name="modified_build_title">Unofficial app</string>
     <string name="modified_build_message">You are using an unofficial copy of Naudio that was modified or repackaged by someone else. It cannot be used. Download the official version from github.com/crazynanda/Naudio_2/releases.</string>
     <string name="taste_title">What's your music taste?</string>
