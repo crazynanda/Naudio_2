@@ -291,7 +291,7 @@ class SharedViewModel(
             launch(Dispatchers.IO) {
                 if (dataStoreManager.loggedIn.first() == DataStoreManager.TRUE) {
                     try {
-                        songRepository.syncAccountFavorites()
+                        songRepository.syncAccountFavorites(source = "startup")
                     } catch (e: Exception) {
                         Logger.w(tag, "Startup favorites sync failed: ${e.message}")
                     }

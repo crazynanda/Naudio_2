@@ -95,7 +95,7 @@ internal open class LoginSyncStore(
         }
         Logger.i("Auth", "YouTube: signed in through Login Sync, ${login.accounts.size} account(s)")
         try {
-            songRepository?.syncAccountFavorites()
+            songRepository?.syncAccountFavorites(source = "login-sync")
         } catch (e: Exception) {
             Logger.w("Auth", "syncAccountFavorites after LoginSync failed: ${e.message}")
         }

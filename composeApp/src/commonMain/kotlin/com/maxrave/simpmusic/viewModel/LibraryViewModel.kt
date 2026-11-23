@@ -178,7 +178,7 @@ class LibraryViewModel(
         viewModelScope.launch(Dispatchers.IO) {
             if (dataStoreManager.loggedIn.first() == DataStoreManager.TRUE) {
                 try {
-                    songRepository.syncAccountFavorites()
+                    songRepository.syncAccountFavorites(source = "library")
                 } catch (e: Exception) {
                     com.maxrave.logger.Logger.w("LibraryViewModel", "Library favorites sync failed: ${e.message}")
                 }
@@ -262,7 +262,7 @@ class LibraryViewModel(
     fun refreshFavorites() {
         viewModelScope.launch(Dispatchers.IO) {
             try {
-                songRepository.syncAccountFavorites(force = true)
+                songRepository.syncAccountFavorites(force = true, source = "library-refresh")
             } catch (e: Exception) {
                 Logger.w("LibraryViewModel", "The favorites could not be refreshed: ${e.message}")
             }

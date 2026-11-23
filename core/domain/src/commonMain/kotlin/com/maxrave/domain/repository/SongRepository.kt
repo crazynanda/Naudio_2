@@ -191,9 +191,11 @@ interface SongRepository {
      * Safely reconciles with local database without clobbering local offline likes or remote items.
      * Imported tracks do not trigger outgoing like calls.
      *
+     * @param source identifies what started the sync, for the log ("library", "startup",
+     *   "login-sync", ...). Never a user identifier.
      * @return [Result] wrapping [FavoritesSyncResult] with count of added/updated and removed favorites.
      */
-    suspend fun syncAccountFavorites(force: Boolean = false): Result<FavoritesSyncResult>
+    suspend fun syncAccountFavorites(force: Boolean = false, source: String = ""): Result<FavoritesSyncResult>
 
     val youTubeSyncStatus: StateFlow<YouTubeSyncStatus>
 

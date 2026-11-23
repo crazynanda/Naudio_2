@@ -428,7 +428,7 @@ class SettingsViewModel(
             getCombineLocalAndYouTubeLiked()
             if (combine) {
                 launch(Dispatchers.IO) {
-                    songRepository.syncAccountFavorites()
+                    songRepository.syncAccountFavorites(source = "combine-setting")
                 }
             }
         }
@@ -1635,7 +1635,7 @@ class SettingsViewModel(
             getAllGoogleAccount()
             getLoggedIn()
             viewModelScope.launch(Dispatchers.IO) {
-                songRepository.syncAccountFavorites()
+                songRepository.syncAccountFavorites(source = "sign-in")
             }
             return YouTubeLoginOutcome.Success
         } catch (e: CancellationException) {
@@ -1703,7 +1703,7 @@ class SettingsViewModel(
                 getAllGoogleAccount()
                 getLoggedIn()
                 viewModelScope.launch(Dispatchers.IO) {
-                    songRepository.syncAccountFavorites()
+                    songRepository.syncAccountFavorites(source = "account-switch")
                 }
             } else {
                 googleAccounts.value.data?.forEach {

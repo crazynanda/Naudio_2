@@ -97,15 +97,32 @@ private const val TAG = "SongRepositoryImpl"
 private const val MAX_LIKED_SONGS_PAGES = 50
 
 /**
+ * The size of a full page of the liked playlists.
+ *
+ * YouTube answers a playlist browse with at most about 100 rows per page and hands out a
+ * continuation token whenever more rows exist, so a first page that is full while the read
+ * claims to be complete is the signature of a truncated read. The incident of 2026-11-21 read
+ * exactly one such page - 100 of 620 rows - and the reconciliation unliked the other 520.
+ */
+private const val LIKED_SONGS_TRUNCATION_PAGE = 100
+
+/**
  * The liked songs of the account, and whether the library was read at all.
  *
  * The two answers are kept apart: a library that answered and holds no songs is an account
  * without likes, while a library that did not answer is a session that could not be read. Only
  * the first may take the local favorites away.
+ *
+ * [complete] says whether the read of the chosen source reached the end of its pagination. A
+ * page that answered HTTP 200 but whose rows or tokens could not be read is not the end of a
+ * playlist, and a read that stopped short of the end must not decide that a local favorite was
+ * removed remotely: the truncated canonical liked playlist is what made the reconciliation
+ * unlike 524 favorites the account still holds (measured on a device, 2026-11-21).
  */
 internal data class RemoteLikedSongs(
     val tracks: List<Track>,
     val libraryRead: Boolean,
+    val complete: Boolean = true,
 )
 
 /**
@@ -121,6 +138,17 @@ internal class LikedSongsUnreadableException(
 private const val COMMENTS_TAG = "Comments"
 internal const val KEY_LAST_FAVORITES_SYNC_TIME = "last_favorites_sync_time"
 internal const val KEY_LAST_SYNCED_ACCOUNT = "last_synced_account_id"
+
+/**
+ * How many liked songs the remote held at the last complete read.
+ *
+ * The reconciliation compares each complete read against it: a remote list that collapsed to a
+ * fraction of the previous one in a single cycle is the signature of a truncated or stale read,
+ * not of a mass unlike, and its trims are deferred one cycle (a genuine mass unlike is applied
+ * by the next cycle, when the baseline has caught up). Authoritative deletions - tombstones and
+ * pending unlikes - never go through this path and are never deferred by it.
+ */
+internal const val KEY_LAST_REMOTE_LIKED_COUNT = "last_remote_liked_count"
 private const val KEY_LEGACY_LAST_SYNCED_ACCOUNT = "last_synced_account_email"
 private const val KEY_ACCOUNT_FAV_BACKUP_PREFIX = "account_fav_cache_"
 
@@ -1268,6 +1296,7 @@ internal class SongRepositoryImpl(
         // sessions whose canonical playlist page cannot be read, nothing more.
         var canonicalRead: LikedSongsSource.Read? = null
         var canonicalTracks: MutableList<Track>? = null
+        var fallbackRead: LikedSongsSource.Read? = null
         var fallbackTracks: MutableList<Track>? = null
         var fallbackBrowseId: String = LikedSongsBrowseIds.LIKED_SONGS
         for (browseId in LikedSongsBrowseIds.ALL) {
@@ -1305,6 +1334,7 @@ internal class SongRepositoryImpl(
                     canonicalTracks = sourceTracks
                 }
             } else if (fallbackTracks == null && source is LikedSongsSource.Read) {
+                fallbackRead = source
                 fallbackTracks = sourceTracks
                 fallbackBrowseId = browseId
             }
@@ -1365,6 +1395,29 @@ internal class SongRepositoryImpl(
             )
         }
 
+        // The canonical playlist is the one that counts, but its own answer is not enough on
+        // its own: the recently-saved shelf reads the same likes plus the recently unliked, so
+        // a canonical read that stopped after one full page while the shelf paginated a full
+        // page further is the signature of a truncated read. A genuinely short playlist ends
+        // its first page before the page cap, and a recently-saved shelf only outgrows the
+        // canonical playlist by the songs unliked since, so the margin keeps this quiet for
+        // ordinary accounts.
+        val canonicalTruncatedAgainstFallback =
+            canonicalRead != null &&
+                canonicalRead.pages == 1 &&
+                canonicalRead.tracks >= LIKED_SONGS_TRUNCATION_PAGE &&
+                fallbackRead != null &&
+                fallbackRead.complete &&
+                fallbackRead.tracks >= canonicalRead.tracks + LIKED_SONGS_TRUNCATION_PAGE
+        if (canonicalTruncatedAgainstFallback) {
+            Logger.w(
+                TAG,
+                "fetchRemoteLikedSongs: the canonical playlist answered one full page of " +
+                    "${canonicalRead.tracks} row(s) with no continuation while the recently-saved " +
+                    "shelf read ${fallbackRead.tracks} - treating the canonical read as incomplete",
+            )
+        }
+
         Result.success(
             RemoteLikedSongs(
                 tracks = uniqueTracks,
@@ -1373,16 +1426,28 @@ internal class SongRepositoryImpl(
                 // The two are told apart here, because only the second may not take the local
                 // favorites away.
                 libraryRead = libraryRead,
+                complete =
+                    (canonicalRead?.complete ?: fallbackRead?.complete ?: true) &&
+                        !canonicalTruncatedAgainstFallback,
             ),
         )
     }
 
     /** What one place of the library answered. */
     private sealed interface LikedSongsSource {
-        /** The place answered with songs. */
+        /**
+         * The place answered with songs.
+         *
+         * [complete] is false when the walk of the pages stopped before a page ended the list
+         * itself: a page that could not be fetched, was refused, or answered with no row and no
+         * token while a token was outstanding. An incomplete read still holds the rows it did
+         * read - they are imported - but it must never decide that a local favorite was removed
+         * remotely.
+         */
         data class Read(
             val tracks: Int,
             val pages: Int,
+            val complete: Boolean = true,
         ) : LikedSongsSource
 
         /** The place answered, but asked for a sign-in. */
@@ -1417,6 +1482,7 @@ internal class SongRepositoryImpl(
 
         var tracks = 0
         var pages = 1
+        var complete = true
         page.rows.forEach { renderer ->
             val track = parseRemoteTrackOrDrop(renderer, onUnparseable)
             if (track != null) {
@@ -1432,11 +1498,16 @@ internal class SongRepositoryImpl(
             val next = youTube.fetchLibraryPage(browseId = null, continuation = continuation, customCookie = cookie)
             val nextPage =
                 next.getOrElse { error ->
-                    Logger.w(TAG, "fetchRemoteLikedSongs: page $pages of $browseId failed: ${error.message}")
+                    Logger.w(TAG, "fetchRemoteLikedSongs: page ${pages + 1} of $browseId failed: ${error.message}")
+                    // A page that could not be fetched is not the end of the list: the read
+                    // stops here and says so, instead of presenting the rows it gathered as
+                    // the whole library.
+                    complete = false
                     break
                 }
             if (!nextPage.usable) {
-                Logger.w(TAG, "fetchRemoteLikedSongs: page $pages of $browseId was refused")
+                Logger.w(TAG, "fetchRemoteLikedSongs: page ${pages + 1} of $browseId was refused")
+                complete = false
                 break
             }
             pages++
@@ -1447,10 +1518,36 @@ internal class SongRepositoryImpl(
                     tracks++
                 }
             }
-            continuation = nextPage.continuations.firstOrNull()
+            val nextToken = nextPage.continuations.firstOrNull()
+            if (nextPage.rows.isEmpty() && nextToken == null) {
+                // The previous page handed out a continuation token, and this page answered
+                // with neither a row nor a token of its own. That is not a list that ended: a
+                // list ends with its rows, not with an empty page. Reading it as the end is
+                // what truncated the canonical liked playlist at 100 of 620 rows and made the
+                // reconciliation unlike 524 favorites the account still holds (measured on a
+                // device, 2026-11-21).
+                Logger.w(
+                    TAG,
+                    "fetchRemoteLikedSongs: page $pages of $browseId answered empty after a " +
+                        "continuation token - the read is incomplete, not ended",
+                )
+                complete = false
+                break
+            }
+            continuation = nextToken
+        }
+        if (continuation != null) {
+            // The loop left a token behind: the safety limit stopped the walk, or the token
+            // could not be visited again. Either way the list went on past the last page read.
+            Logger.w(
+                TAG,
+                "fetchRemoteLikedSongs: $browseId stopped with a continuation token outstanding " +
+                    "after $pages page(s) - the read is incomplete",
+            )
+            complete = false
         }
 
-        return LikedSongsSource.Read(tracks = tracks, pages = pages)
+        return LikedSongsSource.Read(tracks = tracks, pages = pages, complete = complete)
     }
 
     /**
@@ -1559,14 +1656,15 @@ internal class SongRepositoryImpl(
         }
     }
 
-    override suspend fun syncAccountFavorites(force: Boolean): Result<FavoritesSyncResult> = withContext(Dispatchers.IO) {
+    override suspend fun syncAccountFavorites(force: Boolean, source: String): Result<FavoritesSyncResult> = withContext(Dispatchers.IO) {
+        val trigger = source.ifBlank { "unspecified" }
         if (dataStoreManager.loggedIn.first() != TRUE) {
-            Logger.d(TAG, "syncAccountFavorites skipped: not logged in")
+            Logger.d(TAG, "syncAccountFavorites skipped ($trigger): not logged in")
             return@withContext Result.success(FavoritesSyncResult())
         }
         val cookie = dataStoreManager.cookie.first()
         if (cookie.isBlank()) {
-            Logger.d(TAG, "syncAccountFavorites skipped: cookie is blank")
+            Logger.d(TAG, "syncAccountFavorites skipped ($trigger): cookie is blank")
             return@withContext Result.success(FavoritesSyncResult())
         }
 
@@ -1598,6 +1696,9 @@ internal class SongRepositoryImpl(
                 localDataSource.clearAllLikedSongs()
                 dataStoreManager.putString(KEY_LAST_FAVORITES_SYNC_TIME, "0")
                 dataStoreManager.putString(KEY_LAST_SYNCED_ACCOUNT, activeAccountId)
+                // The baseline belongs to the old account: a fresh one starts without one, so
+                // the first sync of the new account cannot be mistaken for a shrink.
+                dataStoreManager.putString(KEY_LAST_REMOTE_LIKED_COUNT, "")
 
                 restoreAccountFavorites(activeAccountId)
             }
@@ -1617,7 +1718,7 @@ internal class SongRepositoryImpl(
             val remoteResult = fetchRemoteLikedSongs()
             if (remoteResult.isFailure) {
                 val err = remoteResult.exceptionOrNull() ?: Exception("Remote fetch failed")
-                Logger.w(TAG, "syncAccountFavorites aborted: ${err.message}")
+                Logger.w(TAG, "syncAccountFavorites aborted ($trigger): ${err.message}")
                 val refused = (err as? LikedSongsUnreadableException)?.refused == true
                 if (refused) {
                     Logger.w(TAG, "The session was refused by the library: the account has to sign in again")
@@ -1647,14 +1748,55 @@ internal class SongRepositoryImpl(
             var songsAddedOrUpdated = 0
             var songsRemoved = 0
             var importFailures = 0
+            var pushesAttempted = 0
+            var pushesConfirmed = 0
+            var pushesFailed = 0
+            var tombstonesConsumed = 0
+            var pendingsPreserved = 0
 
             val localLikedSongs = localDataSource.getAllLikedSongs()
             val localTombstones = localDataSource.getAllFavoriteTombstones().associateBy { "${it.type}:${it.id}" }
             val syncCycleEpoch = Clock.System.now().toEpochMilliseconds()
 
+            /**
+             * One tombstone lifecycle completion: the song's state is now known to the remote
+             * (it was imported, pushed, or its tombstone said what the remote already holds),
+             * so the marker and any pending op riding on it can go.
+             */
+            suspend fun consumeTombstone(videoId: String) {
+                if (localTombstones.containsKey("${FavoriteSyncType.SONG}:$videoId")) {
+                    tombstonesConsumed++
+                }
+                localDataSource.deleteFavoriteTombstone(FavoriteSyncType.SONG, videoId)
+                localDataSource.deleteYouTubeFavoritePending(activeAccountId, videoId)
+            }
+
+            // The remote snapshot must be trustworthy before it is allowed to take anything
+            // away. Three independent suspicions defer the removals (and the pushes they ride
+            // with) without touching the imports: the pagination did not reach the end of the
+            // list, the read looks like the truncation of 2026-11-21, or the remote list
+            // collapsed against the previous complete read.
+            val previousRemoteCount = dataStoreManager.getString(KEY_LAST_REMOTE_LIKED_COUNT).first()?.toLongOrNull() ?: 0L
+            val shrinkSuspicious = previousRemoteCount >= 50 && remoteTracks.size * 2 < previousRemoteCount
+            val snapshotUsableForRemovals = remoteLibraryReadable && remoteLikedSongs.complete && !shrinkSuspicious
+            if (shrinkSuspicious) {
+                Logger.w(
+                    TAG,
+                    "syncAccountFavorites: the remote liked list collapsed to ${remoteTracks.size} " +
+                        "song(s) from $previousRemoteCount in one cycle - removals deferred this cycle",
+                )
+            } else if (remoteLikedSongs.complete.not() && remoteLibraryReadable) {
+                Logger.w(
+                    TAG,
+                    "syncAccountFavorites: the remote liked list was read incompletely " +
+                        "(${remoteTracks.size} row(s)) - removals deferred this cycle",
+                )
+            }
+
             Logger.i(
                 TAG,
-                "syncAccountFavorites starting: ${remoteTracks.size} remote tracks (${remoteVideoIds.size} unique IDs), " +
+                "syncAccountFavorites starting ($trigger): ${remoteTracks.size} remote tracks " +
+                    "(${remoteVideoIds.size} unique IDs, complete: ${remoteLikedSongs.complete}), " +
                     "${localLikedSongs.size} local favorites, ${localTombstones.size} tombstones",
             )
 
@@ -1663,6 +1805,7 @@ internal class SongRepositoryImpl(
                 val pending = localDataSource.getYouTubeFavoritePending(activeAccountId, track.videoId)
                 if (pending != null && pending.targetState == 0) {
                     // Local user unliked, pending push to remote: do not re-add or re-like locally
+                    pendingsPreserved++
                     continue
                 }
 
@@ -1671,12 +1814,14 @@ internal class SongRepositoryImpl(
                 if (tomb != null && !tomb.isFavorite) {
                     // Local user explicitly unliked while offline or since last sync
                     if (dataStoreManager.combineLocalAndYouTubeLiked.first() == TRUE) {
+                        pushesAttempted++
                         try {
                             val res = youTube.removeFromLiked(track.videoId)
                             if (res.isSuccess && (res.getOrNull() ?: 0) in 200..299) {
-                                localDataSource.deleteFavoriteTombstone(FavoriteSyncType.SONG, track.videoId)
-                                localDataSource.deleteYouTubeFavoritePending(activeAccountId, track.videoId)
+                                pushesConfirmed++
+                                consumeTombstone(track.videoId)
                             } else {
+                                pushesFailed++
                                 localDataSource.insertFavoriteTombstone(
                                     FavoriteSyncTombstoneEntity(
                                         type = FavoriteSyncType.SONG,
@@ -1696,7 +1841,13 @@ internal class SongRepositoryImpl(
                                     )
                                 )
                             }
+                        } catch (e: CancellationException) {
+                            // A cancelled sync must stop, not record its own cancellation as a
+                            // failed push: the tombstone and the pending op stay as they were,
+                            // and the next sync retries.
+                            throw e
                         } catch (e: Exception) {
+                            pushesFailed++
                             Logger.w(TAG, "Failed to propagate local unlike to YouTube for ${track.videoId}: ${e.message}")
                             localDataSource.insertFavoriteTombstone(
                                 FavoriteSyncTombstoneEntity(
@@ -1718,8 +1869,7 @@ internal class SongRepositoryImpl(
                             )
                         }
                     } else {
-                        localDataSource.deleteFavoriteTombstone(FavoriteSyncType.SONG, track.videoId)
-                        localDataSource.deleteYouTubeFavoritePending(activeAccountId, track.videoId)
+                        consumeTombstone(track.videoId)
                     }
                     continue
                 }
@@ -1729,17 +1879,17 @@ internal class SongRepositoryImpl(
                     if (existing == null) {
                         localDataSource.insertSong(track.toSongEntity().copy(liked = true, favoriteAt = now()))
                         localDataSource.updateLikedWithoutTombstone(liked = 1, videoId = track.videoId)
-                        localDataSource.deleteFavoriteTombstone(FavoriteSyncType.SONG, track.videoId)
-                        localDataSource.deleteYouTubeFavoritePending(activeAccountId, track.videoId)
+                        consumeTombstone(track.videoId)
                         songsAddedOrUpdated++
                     } else {
                         if (!existing.liked) {
                             localDataSource.updateLikedWithoutTombstone(liked = 1, videoId = track.videoId)
                             songsAddedOrUpdated++
                         }
-                        localDataSource.deleteFavoriteTombstone(FavoriteSyncType.SONG, track.videoId)
-                        localDataSource.deleteYouTubeFavoritePending(activeAccountId, track.videoId)
+                        consumeTombstone(track.videoId)
                     }
+                } catch (e: CancellationException) {
+                    throw e
                 } catch (e: Exception) {
                     importFailures++
                     Logger.e(TAG, "Failed to import remote track ${track.videoId} (${track.title}): ${e.message}", e)
@@ -1753,20 +1903,35 @@ internal class SongRepositoryImpl(
             // local likes away on that basis loses the favorites of the user. The local likes are
             // therefore only taken away when the remote library was actually read - and it was
             // read when it answered with a shelf, however empty that shelf is.
-            val remoteLibraryWasRead = remoteLibraryReadable
-            if (!remoteLibraryWasRead) {
+            //
+            // A read that answered is still not enough on its own: the read must also have
+            // reached the end of its pagination, look nothing like the truncation of
+            // 2026-11-21, and not have collapsed against the previous complete read. An
+            // incomplete snapshot removes nothing and pushes nothing - the rows it did read are
+            // imported above, the local favorites and their tombstones stay, and the next
+            // complete read reconciles what this one could not.
+            val reconciliationAllowed = snapshotUsableForRemovals
+            if (!remoteLibraryReadable) {
                 Logger.w(
                     TAG,
                     "The remote library was not read: keeping ${localLikedSongs.size} local favorite(s) untouched",
                 )
+            } else if (!reconciliationAllowed) {
+                Logger.w(
+                    TAG,
+                    "The remote snapshot is not trustworthy for removals: keeping " +
+                        "${localLikedSongs.size} local favorite(s) untouched this cycle",
+                )
             }
             for (localSong in localLikedSongs) {
-                // An unreadable library says nothing about the local likes: they stay.
-                if (!remoteLibraryWasRead) continue
+                // A library that was not read, or whose read is not trusted, says nothing about
+                // the local likes: they stay.
+                if (!reconciliationAllowed) continue
                 if (localSong.videoId !in remoteVideoIds) {
                     val pending = localDataSource.getYouTubeFavoritePending(activeAccountId, localSong.videoId)
                     if (pending != null && pending.targetState == 1) {
                         // Local user liked, pending push to remote: protect from local deletion!
+                        pendingsPreserved++
                         continue
                     }
 
@@ -1777,12 +1942,14 @@ internal class SongRepositoryImpl(
                         if ((tomb != null && tomb.isFavorite) || localFavEpoch > lastSyncTimestamp) {
                             // Added locally while offline or since last sync -> push to YouTube
                             if (dataStoreManager.combineLocalAndYouTubeLiked.first() == TRUE) {
+                                pushesAttempted++
                                 try {
                                     val addResult = youTube.addToLiked(localSong.videoId)
                                     if (addResult.isSuccess && (addResult.getOrNull() ?: 0) in 200..299) {
-                                        localDataSource.deleteFavoriteTombstone(FavoriteSyncType.SONG, localSong.videoId)
-                                        localDataSource.deleteYouTubeFavoritePending(activeAccountId, localSong.videoId)
+                                        pushesConfirmed++
+                                        consumeTombstone(localSong.videoId)
                                     } else {
+                                        pushesFailed++
                                         localDataSource.insertFavoriteTombstone(
                                             FavoriteSyncTombstoneEntity(
                                                 type = FavoriteSyncType.SONG,
@@ -1802,7 +1969,13 @@ internal class SongRepositoryImpl(
                                             )
                                         )
                                     }
+                                } catch (e: CancellationException) {
+                                    // A cancelled sync must stop, not record its own
+                                    // cancellation as a failed push: the tombstone and the
+                                    // pending op stay as they were, and the next sync retries.
+                                    throw e
                                 } catch (e: Exception) {
+                                    pushesFailed++
                                     Logger.w(TAG, "Failed to propagate local like to YouTube for ${localSong.videoId}: ${e.message}")
                                     localDataSource.insertFavoriteTombstone(
                                         FavoriteSyncTombstoneEntity(
@@ -1827,19 +2000,20 @@ internal class SongRepositoryImpl(
                         } else {
                             // Was present in previous sync, now removed remotely -> unlike locally
                             localDataSource.updateLikedWithoutTombstone(liked = 0, videoId = localSong.videoId, favoriteAt = null)
-                            localDataSource.deleteFavoriteTombstone(FavoriteSyncType.SONG, localSong.videoId)
-                            localDataSource.deleteYouTubeFavoritePending(activeAccountId, localSong.videoId)
+                            consumeTombstone(localSong.videoId)
                             songsRemoved++
                         }
                     } else {
                         // First sync with pre-existing local favorites: push to remote if combine is active
                         if (dataStoreManager.combineLocalAndYouTubeLiked.first() == TRUE) {
+                            pushesAttempted++
                             try {
                                 val addResult = youTube.addToLiked(localSong.videoId)
                                 if (addResult.isSuccess && (addResult.getOrNull() ?: 0) in 200..299) {
-                                    localDataSource.deleteFavoriteTombstone(FavoriteSyncType.SONG, localSong.videoId)
-                                    localDataSource.deleteYouTubeFavoritePending(activeAccountId, localSong.videoId)
+                                    pushesConfirmed++
+                                    consumeTombstone(localSong.videoId)
                                 } else {
+                                    pushesFailed++
                                     localDataSource.insertFavoriteTombstone(
                                         FavoriteSyncTombstoneEntity(
                                             type = FavoriteSyncType.SONG,
@@ -1859,7 +2033,10 @@ internal class SongRepositoryImpl(
                                         )
                                     )
                                 }
+                            } catch (e: CancellationException) {
+                                throw e
                             } catch (e: Exception) {
+                                pushesFailed++
                                 Logger.w(TAG, "Failed to upload pre-existing local like for ${localSong.videoId}: ${e.message}")
                                 localDataSource.insertFavoriteTombstone(
                                     FavoriteSyncTombstoneEntity(
@@ -1888,6 +2065,13 @@ internal class SongRepositoryImpl(
             val finishMs = Clock.System.now().toEpochMilliseconds()
             dataStoreManager.putString(KEY_LAST_FAVORITES_SYNC_TIME, finishMs.toString())
             dataStoreManager.putString(KEY_LAST_SYNCED_ACCOUNT, activeAccountId)
+            // The baseline of the shrink guard moves with every complete read, even when this
+            // cycle deferred its removals - a genuine mass unlike must be applied by the next
+            // cycle, not deferred forever. An incomplete read never moves it, so it cannot
+            // poison the comparison.
+            if (remoteLibraryReadable && remoteLikedSongs.complete) {
+                dataStoreManager.putString(KEY_LAST_REMOTE_LIKED_COUNT, remoteTracks.size.toString())
+            }
 
             val remainingPending = localDataSource.getYouTubeFavoritePendingForAccount(activeAccountId).size
             if (remainingPending == 0) {
@@ -1895,12 +2079,27 @@ internal class SongRepositoryImpl(
             }
 
             val finalLocalLiked = localDataSource.getAllLikedSongs()
+            val removalsDeferred = !reconciliationAllowed && remoteLibraryReadable
             Logger.i(
                 TAG,
-                "syncAccountFavorites complete: +$songsAddedOrUpdated, -$songsRemoved, $importFailures import failures. " +
-                    "Final local favorites: ${finalLocalLiked.size} (remote: ${remoteTracks.size}, library read: $remoteLibraryReadable)",
+                "syncAccountFavorites complete ($trigger): +$songsAddedOrUpdated, -$songsRemoved, " +
+                    "$importFailures import failures, pushes $pushesConfirmed confirmed / " +
+                    "$pushesFailed failed of $pushesAttempted attempted, " +
+                    "$tombstonesConsumed tombstone(s) consumed, $pendingsPreserved pending op(s) preserved, " +
+                    "removals ${if (removalsDeferred) "DEFERRED" else "applied"}. " +
+                    "Final local favorites: ${finalLocalLiked.size} (remote: ${remoteTracks.size}, " +
+                    "library read: $remoteLibraryReadable, complete: ${remoteLikedSongs.complete})",
             )
-            Result.success(FavoritesSyncResult(songsAddedOrUpdated = songsAddedOrUpdated, songsRemoved = songsRemoved))
+            Result.success(
+                FavoritesSyncResult(
+                    songsAddedOrUpdated = songsAddedOrUpdated,
+                    songsRemoved = songsRemoved,
+                    pushesConfirmed = pushesConfirmed,
+                    pushesFailed = pushesFailed,
+                    snapshotComplete = remoteLikedSongs.complete,
+                    removalsDeferred = removalsDeferred,
+                ),
+            )
         }
     }
 }
