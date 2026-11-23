@@ -342,4 +342,195 @@ class LibraryRowsTest {
 
         assertEquals(listOf("kept"), rows.map { it.playlistItemData?.videoId })
     }
+
+    // ---------------------------------------------------------------------------
+    // The playlist continuation envelopes.
+    //
+    // Every page of a playlist browse answers with one of these after its first one, and the
+    // walker used to read none of them: the canonical liked playlist was truncated at its
+    // first 100 rows, and the reconciliation unliked 524 favorites the account still holds
+    // (measured on a live account, 2026-11-21). These fixtures pin the shapes that probe
+    // captured from the live response - never the account itself.
+    // ---------------------------------------------------------------------------
+
+    /** One continuation page of a playlist browse, exactly as YouTube serves it. */
+    private fun appendContinuationPage(
+        videoIds: List<String>,
+        nextToken: String?,
+    ): String {
+        val items = videoIds.map { row(it) } +
+            (nextToken?.let {
+                listOf("""{"continuationItemRenderer": {"continuationEndpoint": {
+                    "continuationCommand": {"request": "CONTINUATION_REQUEST_TYPE_BROWSE", "token": "$it"}}}}""")
+            } ?: emptyList())
+        return """
+        {
+          "responseContext": {},
+          "onResponseReceivedActions": [
+            {"appendContinuationItemsAction": {"continuationItems": [${items.joinToString(",").replace("\n", "")}]}}
+          ]
+        }
+        """.trimIndent()
+    }
+
+    @Test
+    fun readsTheSongsOfAnAppendContinuationPage() {
+        // The shape every VLLM continuation page answered with during the incident: 100 rows and
+        // the token of the page after them, inside onResponseReceivedActions.
+        val body = appendContinuationPage(listOf("p2_a", "p2_b"), "page-3")
+
+        val page = parse(body).libraryRows()
+
+        assertEquals(listOf("p2_a", "p2_b"), page.rows.map { it.playlistItemData?.videoId })
+        assertEquals(listOf("page-3"), page.continuations)
+    }
+
+    @Test
+    fun readsTheSongsOfAReloadContinuationPage() {
+        val body =
+            """
+            {
+              "responseContext": {},
+              "onResponseReceivedActions": [
+                {"reloadContinuationItemsAction": {"continuationItems": [${row("reloaded")}]}}
+              ]
+            }
+            """.trimIndent()
+
+        val page = parse(body).libraryRows()
+
+        assertEquals(listOf("reloaded"), page.rows.map { it.playlistItemData?.videoId })
+        assertTrue(page.continuations.isEmpty())
+    }
+
+    @Test
+    fun readsTheSongsOfTheClassicPlaylistContinuation() {
+        val body =
+            """
+            {
+              "responseContext": {},
+              "continuationContents": {"playlistVideoListContinuation": {
+                "contents": [${row("classic")}],
+                "continuations": [{"nextContinuationData": {"continuation": "classic-next"}}]
+              }}
+            }
+            """.trimIndent()
+
+        val page = parse(body).libraryRows()
+
+        assertEquals(listOf("classic"), page.rows.map { it.playlistItemData?.videoId })
+        assertEquals(listOf("classic-next"), page.continuations)
+    }
+
+    @Test
+    fun readsRowsAndTokensFromTheSameEnvelope() {
+        // The token that leads to the next page rides the LAST row of the continuationItems
+        // array as a continuationItemRenderer; the rows before it are the songs.
+        val body = appendContinuationPage(listOf("with_token_1", "with_token_2"), "same-envelope-next")
+
+        val page = parse(body).libraryRows()
+
+        assertEquals(2, page.rows.size)
+        assertEquals(listOf("same-envelope-next"), page.continuations)
+    }
+
+    @Test
+    fun anEmptyAppendContinuationPageYieldsNoRowsAndNoTokens() {
+        // A genuine reload-with-nothing: no rows, no token. The caller decides what that means;
+        // the walker must not invent rows or tokens for it.
+        val body = appendContinuationPage(emptyList(), null)
+
+        val page = parse(body).libraryRows()
+
+        assertTrue(page.rows.isEmpty())
+        assertTrue(page.continuations.isEmpty())
+    }
+
+    @Test
+    fun aMalformedRowInsideAnAppendContinuationPageIsSkipped() {
+        val items =
+            """{"musicResponsiveListItemRenderer": {"flexColumns": "not-a-list"}}, ${row("survivor")}"""
+        val body =
+            """
+            {
+              "responseContext": {},
+              "onResponseReceivedActions": [
+                {"appendContinuationItemsAction": {"continuationItems": [$items]}}
+              ]
+            }
+            """.trimIndent()
+
+        val page = parse(body).libraryRows()
+
+        assertEquals(listOf("survivor"), page.rows.map { it.playlistItemData?.videoId })
+    }
+
+    @Test
+    fun duplicateContinuationTokensCollapseToOne() {
+        val body =
+            """
+            {
+              "responseContext": {},
+              "onResponseReceivedActions": [
+                {"appendContinuationItemsAction": {"continuationItems": [
+                  ${row("dup")},
+                  {"continuationItemRenderer": {"continuationEndpoint": {
+                    "continuationCommand": {"token": "same-token"}}}},
+                  {"continuationItemRenderer": {"continuationEndpoint": {
+                    "continuationCommand": {"token": "same-token"}}}}
+                ]}}
+              ]
+            }
+            """.trimIndent()
+
+        val page = parse(body).libraryRows()
+
+        assertEquals(1, page.rows.size)
+        assertEquals(listOf("same-token"), page.continuations)
+    }
+
+    @Test
+    fun aSevenPagePlaylistOf620SongsIsReadWhole() {
+        // The measured shape of the incident's account: the canonical liked playlist held 620
+        // songs over seven pages - 100 rows per full page plus a 20-row tail, every page after
+        // the first in the appendContinuationItemsAction envelope, each full page handing the
+        // token of the next. The truncation read only the first page; the walker must read the
+        // whole chain, so the reconciliation never sees 100 rows as the whole playlist.
+        val pageSizes = listOf(100, 100, 100, 100, 100, 100, 20)
+        var nextToken: String? = "chain-1"
+        var index = 0
+        var totalRows = 0
+        while (nextToken != null && index < pageSizes.size) {
+            val ids = (1..pageSizes[index]).map { "chain_${index}_$it" }
+            val body =
+                if (index == 0) {
+                    // The first page of a playlist browse: a musicPlaylistShelfRenderer.
+                    """
+                    {
+                      "responseContext": {},
+                      "contents": {"singleColumnBrowseResultsRenderer": {"tabs": [{"tabRenderer": {
+                        "content": {"sectionListRenderer": {"contents": [
+                          {"musicPlaylistShelfRenderer": {
+                            "playlistId": "VLLM",
+                            "contents": [${ids.joinToString(",") { row(it) }}],
+                            "continuations": [{"nextContinuationData": {"continuation": "chain-1"}}]
+                          }}
+                        ]}}}
+                      }]}}
+                    }
+                    """.trimIndent()
+                } else {
+                    appendContinuationPage(ids, if (index < pageSizes.size - 1) "chain-${index + 1}" else null)
+                }
+            val page = parse(body).libraryRows()
+            totalRows += page.rows.size
+            // Every row unique, as the account holds them.
+            assertEquals(ids.size, page.rows.map { it.playlistItemData?.videoId }.toSet().size)
+            nextToken = page.continuations.firstOrNull()
+            index++
+        }
+
+        assertEquals(pageSizes.size, index, "every page of the chain must be visited")
+        assertEquals(620, totalRows, "the whole playlist must be read, not only its first page")
+    }
 }

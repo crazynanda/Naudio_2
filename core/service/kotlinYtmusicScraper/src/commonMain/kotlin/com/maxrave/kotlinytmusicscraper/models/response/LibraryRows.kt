@@ -147,6 +147,34 @@ fun JsonElement.libraryRows(): LibraryRows {
                         readRows(continuation["contents"])
                         readTokens(continuation)
                     }
+                    // A playlist continuation page (the shape every page of a playlist browse
+                    // answers with after its first one, measured on a live account on
+                    // 2026-11-21): onResponseReceivedActions[].appendContinuationItemsAction
+                    // .continuationItems - or the reload variant. The rows are read out of the
+                    // continuationItems array, and the token that leads to the next page rides
+                    // the last item of that same array as a continuationItemRenderer. Missing
+                    // this envelope is what truncated the canonical liked playlist at its first
+                    // 100 rows and made the reconciliation unlike 524 favorites it believed
+                    // remotely deleted.
+                    element.objectAt("appendContinuationItemsAction")?.let { action ->
+                        val items = action["continuationItems"]
+                        readRows(items)
+                        (items as? JsonArray)?.forEach { item ->
+                            item.jsonObjectOrNull()?.let(::readTokens)
+                        }
+                    }
+                    element.objectAt("reloadContinuationItemsAction")?.let { action ->
+                        val items = action["continuationItems"]
+                        readRows(items)
+                        (items as? JsonArray)?.forEach { item ->
+                            item.jsonObjectOrNull()?.let(::readTokens)
+                        }
+                    }
+                    // The classic playlist continuation shape, still served by some clients.
+                    element.objectAt("playlistVideoListContinuation")?.let { continuation ->
+                        readRows(continuation["contents"])
+                        readTokens(continuation)
+                    }
                     element.values.forEach { walk(it) }
                 }
             }
