@@ -96,6 +96,31 @@ private fun renderer(videoId: String): MusicResponsiveListItemRenderer =
     )
 
 
+/**
+ * A row that looks like a song but cannot be parsed: no videoId in the playlist item data, the
+ * navigation endpoint or the overlay - every fallback of `parseRemoteTrack` comes up empty and
+ * the row is dropped. This is the shape a future YouTube response change would serve.
+ */
+private fun malformedRenderer(): MusicResponsiveListItemRenderer =
+    MusicResponsiveListItemRenderer(
+        badges = null,
+        fixedColumns = null,
+        flexColumns =
+            listOf(
+                MusicResponsiveListItemRenderer.FlexColumn(
+                    MusicResponsiveListItemRenderer.FlexColumn.MusicResponsiveListItemFlexColumnRenderer(
+                        Runs(listOf(Run("Song with no identifiers", null))),
+                    ),
+                ),
+            ),
+        thumbnail = null,
+        menu = null,
+        playlistItemData = null,
+        overlay = null,
+        navigationEndpoint = null,
+    )
+
+
 class ReconciliationSafetyTest {
     private lateinit var tempDir: File
     private lateinit var database: MusicDatabase
@@ -527,6 +552,87 @@ class ReconciliationSafetyTest {
         assertFalse(result.getOrThrow().removalsDeferred, "an authoritative empty library removes")
         assertEquals(0, localDataSource.getAllLikedSongs().size, "the account unliked them; the local follows")
         assertEquals(3, result.getOrThrow().songsRemoved)
+    }
+
+    /**
+     * K. One song row the parser cannot read, in an otherwise complete 620-row playlist over
+     * 624 local favorites. The unreadable row may be a like the account still holds, so the
+     * snapshot must say incomplete: the removals are deferred, every favorite survives, the
+     * readable rows are still imported, and the unreadable row's tombstone stays for the
+     * cycle that can read it.
+     */
+    @Test
+    fun unparseableRow_marksSnapshotIncomplete_andProtectsFavorites() = runBlocking {
+        setGoogleAccount()
+        val youTube = FakeReconciliationYouTube()
+        val repo = repository(youTube)
+
+        repeat(624) { index -> insertLocalFavorite("liked_${index + 1}") }
+        repeat(620) { index -> insertTombstone("liked_${index + 1}", isFavorite = true, updatedAt = oldEpochMs) }
+        dataStoreSeed(KEY_LAST_FAVORITES_SYNC_TIME, recentLastSync())
+        dataStoreSeed(KEY_LAST_SYNCED_ACCOUNT, "listener@gmail.com#")
+
+        // The whole playlist, but page 1's row 7 (liked_7) is served without a single
+        // identifier the parser can read.
+        youTube.pagesByBrowseId["VLLM"] =
+            completeCanonical620().mapIndexed { pageIndex, spec ->
+                if (pageIndex == 0) {
+                    FakeReconciliationYouTube.PageSpec(
+                        spec.rows.mapIndexed { index, row -> if (index == 6) malformedRenderer() else row },
+                        spec.nextToken,
+                    )
+                } else {
+                    spec
+                }
+            }
+
+        val result = repo.syncAccountFavorites(force = true, source = "test")
+
+        assertTrue(result.isSuccess)
+        assertFalse(result.getOrThrow().snapshotComplete, "a read that dropped a song row is not complete")
+        assertTrue(result.getOrThrow().removalsDeferred, "the removals must wait for a readable read")
+        assertEquals(624, localDataSource.getAllLikedSongs().size, "no favorite may be lost to an unreadable row")
+        // The 619 readable rows were still processed: their tombstones reached the end of
+        // their lifecycle, and the unreadable row's tombstone is the one left standing.
+        val remainingTombstones = localDataSource.getAllFavoriteTombstones()
+        assertEquals(1, remainingTombstones.size)
+        assertEquals("liked_7", remainingTombstones.single().id, "the unreadable row's tombstone must survive")
+        Unit
+    }
+
+    /**
+     * L. A canonical playlist that answers empty and complete while the recently-saved shelf
+     * read 300 rows: the shelf's rows prove the account still holds likes the canonical
+     * answer said nothing about, so the snapshot is untrusted and the removals are deferred.
+     * The baseline is seeded below the shrink-guard threshold so only the cross-source guard
+     * can defer, and a genuinely empty account (both sources empty - test E) stays exempt.
+     */
+    @Test
+    fun emptyCanonicalAgainstNonEmptyFallback_defersRemovals() = runBlocking {
+        setGoogleAccount()
+        val youTube = FakeReconciliationYouTube()
+        val repo = repository(youTube)
+
+        repeat(300) { index -> insertLocalFavorite("fav_$index") }
+        dataStoreSeed(KEY_LAST_FAVORITES_SYNC_TIME, recentLastSync())
+        dataStoreSeed(KEY_LAST_SYNCED_ACCOUNT, "listener@gmail.com#")
+        dataStoreSeed(KEY_LAST_REMOTE_LIKED_COUNT, "2")
+
+        youTube.pagesByBrowseId["VLLM"] = listOf(FakeReconciliationYouTube.PageSpec(emptyList(), null))
+        youTube.pagesByBrowseId["FEmusic_liked_videos"] = fallbackOf(300)
+
+        val result = repo.syncAccountFavorites(force = true, source = "test")
+
+        assertTrue(result.isSuccess)
+        assertFalse(result.getOrThrow().snapshotComplete, "an empty answer beside a non-empty shelf is not a complete read")
+        assertTrue(result.getOrThrow().removalsDeferred, "the removals must wait for an agreed read")
+        assertEquals(300, localDataSource.getAllLikedSongs().size, "the favorites must survive the empty canonical answer")
+        assertEquals(
+            "2",
+            store[KEY_LAST_REMOTE_LIKED_COUNT],
+            "an incomplete read must not move the shrink baseline",
+        )
+        Unit
     }
 
     /** F. A push that does not verify keeps its tombstone and its pending op for the next sync. */

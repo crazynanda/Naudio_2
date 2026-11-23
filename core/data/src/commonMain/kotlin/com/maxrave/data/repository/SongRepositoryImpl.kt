@@ -1418,6 +1418,28 @@ internal class SongRepositoryImpl(
             )
         }
 
+        // The degenerate end of the same failure class: a canonical read that answers empty
+        // and complete while the recently-saved shelf read anything at all. A playlist that
+        // ends lists its rows, and an empty playlist's shelf is empty too - the shelf only
+        // ever outgrows the canonical playlist by the songs whose like was removed moments
+        // ago. An unreadable shape reads as zero rows just as it read as one full page in
+        // the incident, so the guard does not require the shelf's own read to have completed:
+        // rows the shelf did read are proof enough that the canonical answer said nothing.
+        // A genuine unlike-everything defers one cycle, while the lagging shelf catches up.
+        val canonicalEmptyAgainstFallback =
+            canonicalRead != null &&
+                canonicalRead.tracks == 0 &&
+                fallbackRead != null &&
+                fallbackRead.tracks > 0
+        if (canonicalEmptyAgainstFallback) {
+            Logger.w(
+                TAG,
+                "fetchRemoteLikedSongs: the canonical playlist answered empty while the " +
+                    "recently-saved shelf read ${fallbackRead.tracks} row(s) - treating the " +
+                    "canonical read as incomplete",
+            )
+        }
+
         Result.success(
             RemoteLikedSongs(
                 tracks = uniqueTracks,
@@ -1428,7 +1450,8 @@ internal class SongRepositoryImpl(
                 libraryRead = libraryRead,
                 complete =
                     (canonicalRead?.complete ?: fallbackRead?.complete ?: true) &&
-                        !canonicalTruncatedAgainstFallback,
+                        !canonicalTruncatedAgainstFallback &&
+                        !canonicalEmptyAgainstFallback,
             ),
         )
     }
@@ -1440,9 +1463,9 @@ internal class SongRepositoryImpl(
          *
          * [complete] is false when the walk of the pages stopped before a page ended the list
          * itself: a page that could not be fetched, was refused, or answered with no row and no
-         * token while a token was outstanding. An incomplete read still holds the rows it did
-         * read - they are imported - but it must never decide that a local favorite was removed
-         * remotely.
+         * token while a token was outstanding, or held a song row the parser could not read.
+         * An incomplete read still holds the rows it did read - they are imported - but it must
+         * never decide that a local favorite was removed remotely.
          */
         data class Read(
             val tracks: Int,
@@ -1483,8 +1506,29 @@ internal class SongRepositoryImpl(
         var tracks = 0
         var pages = 1
         var complete = true
+        // A row that cannot be read is not a song the account does not have: it may be a like
+        // the account still holds, served in a shape the parser does not know - the same
+        // "successful answer, unreadable content" class that truncated the canonical liked
+        // playlist at its first 100 rows. The read counts the drops and, when there was one,
+        // reports itself incomplete, so the reconciliation defers its removals instead of
+        // unliking a favorite the remote still holds. The rows that did parse are kept and
+        // imported as usual. Only rows that ARE song rows reach the parser - the walker reads
+        // musicResponsiveListItemRenderer items alone - so structural elements, shelf headers
+        // and unrelated renderers are never counted as dropped songs. The first drop is
+        // logged with its videoId; the rest are counted only, so a page of unreadable rows
+        // costs one log line, not one per row.
+        var droppedRows = 0
+        var loggedFirstDrop = false
+        fun countDrop(videoId: String?) {
+            droppedRows++
+            onUnparseable()
+            if (!loggedFirstDrop) {
+                loggedFirstDrop = true
+                Logger.w(TAG, "fetchRemoteLikedSongs: $browseId dropped an unreadable row (videoId=$videoId)")
+            }
+        }
         page.rows.forEach { renderer ->
-            val track = parseRemoteTrackOrDrop(renderer, onUnparseable)
+            val track = parseRemoteTrackOrDrop(renderer, ::countDrop)
             if (track != null) {
                 rawTracks.add(track)
                 tracks++
@@ -1512,7 +1556,7 @@ internal class SongRepositoryImpl(
             }
             pages++
             nextPage.rows.forEach { renderer ->
-                val track = parseRemoteTrackOrDrop(renderer, onUnparseable)
+                val track = parseRemoteTrackOrDrop(renderer, ::countDrop)
                 if (track != null) {
                     rawTracks.add(track)
                     tracks++
@@ -1546,29 +1590,40 @@ internal class SongRepositoryImpl(
             )
             complete = false
         }
+        if (droppedRows > 0) {
+            // A page whose rows could not all be read did not end the list: the unreadable
+            // rows may be likes the account still holds. Saying the read is complete would
+            // let the reconciliation unlike exactly those favorites.
+            Logger.w(
+                TAG,
+                "fetchRemoteLikedSongs: $browseId dropped $droppedRows unreadable row(s) - the read is incomplete",
+            )
+            complete = false
+        }
 
         return LikedSongsSource.Read(tracks = tracks, pages = pages, complete = complete)
     }
 
     /**
      * Turns a row into a track. A row that cannot be read is dropped, never the whole page.
+     *
+     * The caller counts the drop and decides what to log: a page that cannot be read one row
+     * at a time must not log one line per row.
      */
     private fun parseRemoteTrackOrDrop(
         renderer: MusicResponsiveListItemRenderer,
-        onUnparseable: () -> Unit,
+        onUnparseable: (String?) -> Unit,
     ): Track? =
         try {
             parseRemoteTrack(renderer).also {
                 if (it == null) {
-                    onUnparseable()
-                    Logger.w(TAG, "fetchRemoteLikedSongs: dropped an unreadable row (videoId=${renderer.videoId})")
+                    onUnparseable(renderer.videoId)
                 }
             }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            onUnparseable()
-            Logger.w(TAG, "fetchRemoteLikedSongs: dropped a row that could not be parsed: ${e::class.simpleName}")
+            onUnparseable(renderer.videoId)
             null
         }
     private suspend fun backupAccountFavorites(
