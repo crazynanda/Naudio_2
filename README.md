@@ -6,7 +6,7 @@
     <a href="https://github.com/crazynanda/Naudio_2/releases"><img src="https://img.shields.io/github/downloads/crazynanda/Naudio_2/total" alt="Total downloads"></a>
     <a href="LICENSE"><img src="https://img.shields.io/github/license/crazynanda/Naudio_2" alt="License: GPL-3.0"></a>
   </p>
-  <p><strong><a href="https://github.com/crazynanda/Naudio_2/releases/latest">Download the latest Naudio release (2.3.3)</a></strong></p>
+  <p><strong><a href="https://github.com/crazynanda/Naudio_2/releases/latest">Download the latest Naudio release (2.3.6)</a></strong></p>
 </div>
 
 Naudio is an independently developed music streaming application based on [SimpMusic](https://github.com/maxrave-dev/SimpMusic), featuring its own branding, continuous architectural improvements, enhanced playback reliability, and unique user experience features.
@@ -15,6 +15,10 @@ Naudio is an independently developed music streaming application based on [SimpM
 
 ## Highlights & Recent Enhancements
 
+- **Bidirectional Favorites Synchronization (Android ↔ Windows ↔ YouTube Music)**: Your liked songs stay in step across your Android phone, Windows desktop, and your signed-in YouTube Music account. Local changes queue as durable pending operations and tombstones while you are offline and push automatically when a session is available, with strict per-account isolation.
+- **Synchronization Safeguards**: Reconciliation against YouTube Music only removes tracks after a *complete* canonical liked-playlist read (`complete: true`); truncated pages, unreadable rows, and empty-vs-fallback reads are marked incomplete and block destructive removals, so a network hiccup can never silently wipe your library.
+- **Reliable Android Sign-In**: The embedded YouTube Music login was rebuilt around YouTube's own completion signal — flexible URL matching, authentication-cookie detection and polling, SPA navigation handling, and no more premature "Login failed" while the Google sign-in is still in progress.
+- **Windows Installer Hardening**: The MSIX installer gained a pre-flight version check (refuses equal-or-lower versions before touching the system), targeted UAC elevation for certificate import, and verified in-place upgrades that preserve all user data.
 - **Swipe-to-Play-Next Everywhere**: Seamless gesture support across Search results (Songs and Videos), Playlists, Albums, Recent Songs, and queue views to instantly queue any track to play next.
 - **Intelligent Recent Songs Engine**: Local, privacy-first playback history backed by AndroidX Room (Schema v28) with automatic deduplication, timestamp tracking, and instant playlist queueing.
 - **Bulletproof Background Playback**: Engineered on AndroidX Media3 `MediaSessionService` and ExoPlayer with multi-tier power management (`WAKE_MODE_LOCAL`, gapless track-transition partial wake locks, and Wi-Fi streaming locks) to prevent playback cutoffs during extended screen-off listening.
@@ -43,7 +47,7 @@ Naudio is an independently developed music streaming application based on [SimpM
 
 ### Discovery & Organization
 - **Unified Search**: Search across songs, videos, albums, artists, community playlists, and featured content with quick filter chips.
-- **Personal Library & YouTube Sync**: Create and organize local playlists with bi-directional YouTube Music library synchronization.
+- **Personal Library & Favorites Sync**: Create and organize local playlists. Liked songs synchronize bidirectionally with YouTube Music (import from the canonical liked playlist with safe reconciliation) and between Android and Windows devices, with offline pending operations, tombstone-based un-like propagation, and per-account isolation.
 - **AI Listening Insights & Recap**: Naudio Wrapped listening recaps, monthly summaries, shareable listening receipts, and AI music taste analysis (\*).
 - **Listen Together**: Synchronized multi-user listening rooms (compatible with Metrolist).
 - **Discord Rich Presence & Last.fm**: Real-time listening status on Discord and automatic Last.fm scrobbling.
@@ -57,13 +61,13 @@ Naudio is an independently developed music streaming application based on [SimpM
 
 | Component | Technology / Specification |
 | :--- | :--- |
-| **Product Version** | Version 2.3.3 (Version Code: 63) |
+| **Product Version** | Version 2.3.6 (Version Code: 66) |
 | **Application ID** | `com.maxrave.simpmusic` |
 | **Official Distribution** | GitHub Releases (Direct APK) |
 | **Language & Runtime** | Kotlin Multiplatform (KMP 2.4.20) / JVM 21 |
 | **UI Framework** | Jetpack Compose Multiplatform (1.12.0) |
 | **Audio Architecture** | AndroidX Media3 / ExoPlayer (1.11.1), `MediaSessionService` |
-| **Database & Persistence** | AndroidX Room (2.8.5) with SQLite (Schema v28) |
+| **Database & Persistence** | AndroidX Room (2.8.5) with SQLite (Schema v30) |
 | **Networking & Scraping** | Ktor Client, OkHttp, KotlinX Serialization |
 | **Dependency Injection** | Koin |
 | **Image Loading** | Coil 3 |
@@ -98,18 +102,18 @@ GitHub Releases is the official and primary distribution channel for Naudio Andr
 
 Navigate to the **[Latest Naudio Release](https://github.com/crazynanda/Naudio_2/releases/latest)** and download the APK suitable for your device:
 
-- **Universal APK (`Naudio-2.3.3.apk` / `Naudio-2.3.3-universal.apk`)** [~54 MB]:
+- **Universal APK (`Naudio-2.3.6.apk` / `Naudio-2.3.6-universal.apk`)** [~58 MB]:
   *Recommended for most users.* Includes native audio binaries for all supported device architectures (`arm64-v8a`, `armeabi-v7a`, `x86_64`) and will run on any device running Android 8.0 or newer.
-- **ARM64 APK (`Naudio-2.3.3-arm64-v8a.apk`)** [~28 MB]:
+- **ARM64 APK (`Naudio-2.3.6-arm64-v8a.apk`)** [~30 MB]:
   Optimized lightweight package designed for all modern 64-bit Android smartphones and tablets.
-- **ARMv7 APK (`Naudio-2.3.3-armeabi-v7a.apk`)** [~28 MB]:
+- **ARMv7 APK (`Naudio-2.3.6-armeabi-v7a.apk`)** [~30 MB]:
   Designed for older 32-bit Android phones and legacy hardware.
-- **x86_64 APK (`Naudio-2.3.3-x86_64.apk`)** [~29 MB]:
+- **x86_64 APK (`Naudio-2.3.6-x86_64.apk`)** [~31 MB]:
   Designed for Android emulators, ChromeOS devices, and Intel/AMD-based Android hardware.
 
 ### 2. Install on Android
 
-1. Open your browser's **Downloads** or your device's **Files** app and tap the downloaded `Naudio-2.3.3.apk` file.
+1. Open your browser's **Downloads** or your device's **Files** app and tap the downloaded `Naudio-2.3.6.apk` file.
 2. If Android prompts **"For your security, your phone is not allowed to install unknown apps from this source"**:
    - Tap **Settings** in the prompt dialog.
    - Toggle on **Allow from this source** (or **Install unknown apps**) for your browser or file manager.
@@ -122,7 +126,7 @@ Navigate to the **[Latest Naudio Release](https://github.com/crazynanda/Naudio_2
 Connect your Android device with USB debugging enabled, then run:
 
 ```bash
-adb install -r Naudio-2.3.3.apk
+adb install -r Naudio-2.3.6.apk
 ```
 
 ---
@@ -131,18 +135,13 @@ adb install -r Naudio-2.3.3.apk
 
 Naudio for Windows is distributed as a modern 64-bit application package (MSIX) with offline installation tooling:
 
-### Option A: Standalone Setup (Recommended)
-Download **`Naudio-Setup-x64.exe`** from the [Latest Release](https://github.com/crazynanda/Naudio_2/releases/latest):
-1. Run `Naudio-Setup-x64.exe`.
-2. If Windows SmartScreen displays *"Windows protected your PC"* (common for newly released or signed applications until Microsoft Defender establishes download reputation over time), click **More info** &rarr; **Run anyway**.
-3. Accept the Administrator prompt so the installer can import the application signing certificate into `LocalMachine\TrustedPeople`.
-4. The wizard will automatically install or update Naudio in place (preserving all your existing favorites, database, and settings) and launch the app.
-
-### Option B: Offline Installer ZIP (Fallback)
 Download **`Naudio-Windows-Installer.zip`** from the [Latest Release](https://github.com/crazynanda/Naudio_2/releases/latest):
 1. Extract the ZIP archive to a folder.
 2. Double-click `install.bat`. UAC will request elevation to import the bundled certificate into `LocalMachine\TrustedPeople` and run `Add-AppxPackage`.
-3. To uninstall: Go to **Windows Settings &rarr; Apps &rarr; Installed apps &rarr; Naudio &rarr; Uninstall**.
+3. The installer includes a pre-flight version check: it refuses (before touching anything) if the bundled package is not newer than the installed one, and it updates Naudio in place with `-ForceUpdateFromAnyVersion`, preserving all your existing favorites, database, and settings.
+4. To uninstall: Go to **Windows Settings &rarr; Apps &rarr; Installed apps &rarr; Naudio &rarr; Uninstall**.
+
+Naudio for Windows is a 64-bit MSIX package (x64; ARM64 Windows runs the x64 build under Prism emulation). Desktop builds for Linux (AppImage) and macOS (ZIP / DMG) are also attached to releases when their packaging jobs succeed.
 
 ---
 
