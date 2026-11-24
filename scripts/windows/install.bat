@@ -33,7 +33,7 @@ if not exist "%~dp0simpmusic.crt" (
     exit /b 1
 )
 
-echo [1/3] Verifying Naudio security certificate in LocalMachine\TrustedPeople ...
+echo [1/4] Verifying Naudio security certificate in LocalMachine\TrustedPeople ...
 powershell -NoProfile -ExecutionPolicy Bypass -Command ^
     "$ErrorActionPreference = 'Stop'; " ^
     "try { " ^
@@ -106,7 +106,45 @@ if not defined MSIX (
 )
 
 echo.
-echo [2/3] Installing/updating MSIX for current user: "%MSIX%"
+echo [2/4] Version pre-flight check ...
+REM Windows refuses to install a package whose identity equals the installed
+REM one while its version is not strictly higher (error 0x80073CFB), and an
+REM equal-or-lower version would silently downgrade. Read the version out of
+REM the bundled MSIX's manifest, compare it with the installed Naudio, and
+REM refuse BEFORE anything is touched. A failed or refused pre-check never
+REM installs, removes or modifies anything.
+powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+    "$ErrorActionPreference = 'Stop'; " ^
+    "try { " ^
+    "  Add-Type -AssemblyName System.IO.Compression.FileSystem; " ^
+    "  $zip = [System.IO.Compression.ZipFile]::OpenRead('%MSIX%'); " ^
+    "  $reader = New-Object System.IO.StreamReader($zip.GetEntry('AppxManifest.xml').Open()); " ^
+    "  $manifest = $reader.ReadToEnd(); $reader.Close(); $zip.Dispose(); " ^
+    "  $match = [regex]::Match($manifest, 'Version=.([0-9.]+).'); " ^
+    "  if (-not $match.Success) { Write-Host '[ERROR] The bundled package manifest carries no Version. Nothing was changed.'; exit 3 } " ^
+    "  $incoming = [version]$match.Groups[1].Value; " ^
+    "  $installed = Get-AppxPackage -Name 'Simpmusic' | Sort-Object -Property { [version]$_.Version } -Descending | Select-Object -First 1; " ^
+    "  Write-Host ('Incoming package version : ' + $incoming); " ^
+    "  if ($installed) { " ^
+    "    Write-Host ('Currently installed      : ' + $installed.Version); " ^
+    "    if ($incoming -le [version]$installed.Version) { " ^
+    "      Write-Host '[ERROR] The bundled package is not newer than the installed Naudio. Nothing was installed or removed; download a newer build.'; exit 3 } " ^
+    "  } else { Write-Host 'No existing Naudio installation found.' } " ^
+    "} catch { " ^
+    "  Write-Host ('[ERROR] The version pre-check could not run: ' + $_.Exception.Message); exit 4 }"
+set "PRECHECK_STATUS=%errorlevel%"
+if "%PRECHECK_STATUS%"=="3" (
+    echo Installation refused by the version pre-check. Nothing was changed.
+    pause
+    exit /b 3
+)
+if "%PRECHECK_STATUS%"=="4" (
+    echo The version pre-check failed to run, so the installation was refused. Nothing was changed.
+    pause
+    exit /b 4
+)
+
+echo [3/4] Installing/updating MSIX for current user: "%MSIX%"
 REM Add-AppxPackage runs in the caller's user context to register Naudio for this user.
 REM -ForceUpdateFromAnyVersion ensures in-place upgrade preserving user data.
 REM Legacy migration allowlist: only approved legacy package family (Simpmusic_ejp2bhxmz1qq6) is retired.
@@ -152,7 +190,7 @@ if %errorlevel% neq 0 (
 
 REM --- 3. Launch app in current user session ---------------------------------
 echo.
-echo [3/3] Launching Naudio ...
+echo [4/4] Launching Naudio ...
 for /f "usebackq tokens=*" %%i in (`powershell -NoProfile -Command "$pkg = Get-AppxPackage -Name 'Simpmusic' | Where-Object { $_.Publisher -eq 'CN=Naudio' -and $_.PackageFamilyName -eq 'Simpmusic_yhxqqzq5790tp' } | Sort-Object -Property { [version]$_.Version } -Descending | Select-Object -First 1; if ($pkg) { $appId = (Get-AppxPackageManifest $pkg).Package.Applications.Application.Id; if (-not $appId) { $appId = 'Simpmusic' }; Write-Output ($pkg.PackageFamilyName + '!' + $appId) }"`) do set "AUMID=%%i"
 if not defined AUMID set "AUMID=Simpmusic_yhxqqzq5790tp!Simpmusic"
 
