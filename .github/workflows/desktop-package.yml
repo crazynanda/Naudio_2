@@ -337,12 +337,27 @@ jobs:
           shopt -s nullglob
           zips=(mac-zips/*-mac-*.zip)
           [[ ${#zips[@]} -gt 0 ]] || { echo "::error::No macOS ZIP artifacts found in mac-zips/"; exit 1; }
-          declare -A ARCH_MAP=( [aarch64]=arm64 [amd64]=x64 [arm64]=arm64 [x64]=x64 )
+          # macOS ships bash 3.2: no associative arrays and 'set -u' turns
+          # ${ARCH_MAP[$arch]} into an 'unbound variable' error — use case.
+          canon_arch() {
+            case "$1" in
+              aarch64|arm64) echo arm64 ;;
+              amd64|x64)     echo x64 ;;
+              *)             echo "$1" ;;
+            esac
+          }
           wrapped=0
           for zip in "${zips[@]}"; do
             arch="$(basename "$zip" | sed -nE 's/.*-mac-([a-z0-9]+)\.zip/\1/p')"
             [[ -n "$arch" ]] || { echo "::error::Cannot infer arch from $(basename "$zip")" >&2; exit 1; }
-            arch="${ARCH_MAP[$arch]:-$arch}"
+            arch="$(canon_arch "$arch")"
+            # Belt and braces on the mac side too: exactly one .app, no sidecars.
+            listing="$(unzip -Z1 "$zip")"
+            [[ "$(echo "$listing" | grep -c '\.app/$')" -ge 1 ]] || { echo "::error::No .app bundle inside $(basename "$zip")" >&2; exit 1; }
+            if echo "$listing" | grep -qE '(^|/)\._'; then
+              echo "::error::AppleDouble sidecar inside $(basename "$zip") — packaging must strip them" >&2
+              exit 1
+            fi
             workdir="$(mktemp -d)"
             unzip -q "$zip" -d "$workdir"
             app="$(find "$workdir" -maxdepth 2 -type d -name '*.app' | head -1)"
