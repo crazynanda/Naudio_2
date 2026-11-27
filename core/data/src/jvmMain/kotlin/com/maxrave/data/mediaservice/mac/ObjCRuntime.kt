@@ -1,9 +1,9 @@
 package com.maxrave.data.mediaservice.mac
 
-import com.sun.jna.Callback
 import com.sun.jna.Library
 import com.sun.jna.Native
 import com.sun.jna.Pointer
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * JNA interface for Objective-C Runtime on macOS
@@ -82,33 +82,6 @@ interface ObjCRuntime : Library {
         arg1: Int,
     ): Pointer?
 
-    /**
-     * Send a message with one boolean argument
-     */
-    fun objc_msgSend(
-        receiver: Pointer?,
-        selector: Pointer?,
-        arg1: Boolean,
-    ): Pointer?
-
-    /**
-     * Send a message with one byte argument (for Objective-C BOOL which is signed char)
-     */
-    fun objc_msgSend(
-        receiver: Pointer?,
-        selector: Pointer?,
-        arg1: Byte,
-    ): Pointer?
-
-    /**
-     * Send a message with C string argument (for initWithUTF8String:)
-     * JNA will automatically convert String to const char*
-     */
-    fun objc_msgSend(
-        receiver: Pointer?,
-        selector: Pointer?,
-        cString: String,
-    ): Pointer?
 
     /**
      * Send a message with Pointer and Long arguments (for initWithBytes:length:)
@@ -121,19 +94,16 @@ interface ObjCRuntime : Library {
     ): Pointer?
 
     /**
-     * Send a message that returns a double
-     * Note: objc_msgSend_fpret only exists on x86_64, not on ARM64
-     * On ARM64, use ObjCRuntimeDouble.INSTANCE.objc_msgSend instead
+     * Objective-C autorelease pool management (libobjc, macOS 10.7+).
+     *
+     * The JVM worker threads this integration runs on have NO autorelease pool, so every
+     * autoreleased object a framework method hands back — most notably the object returned
+     * by the `nowPlayingInfo` getter — would never be drained and would leak for the life
+     * of the process. Wrap each update method in [ObjC.autoreleasePool].
      */
-    fun objc_msgSend_fpret(
-        receiver: Pointer?,
-        selector: Pointer?,
-    ): Double
+    fun objc_autoreleasePoolPush(): Pointer?
 
-    /**
-     * Allocate a block for callback
-     */
-    fun class_getName(cls: Pointer?): String?
+    fun objc_autoreleasePoolPop(pool: Pointer?)
 }
 
 /**
@@ -160,19 +130,6 @@ interface ObjCRuntimeDouble : Library {
 }
 
 /**
- * JNA interface for Foundation framework
- */
-interface Foundation : Library {
-    companion object {
-        val INSTANCE: Foundation by lazy {
-            Native.load("Foundation", Foundation::class.java)
-        }
-    }
-
-    fun NSClassFromString(className: String): Pointer?
-}
-
-/**
  * JNA interface for CoreFoundation framework
  */
 interface CoreFoundation : Library {
@@ -184,18 +141,6 @@ interface CoreFoundation : Library {
         // CFStringEncoding values
         const val kCFStringEncodingUTF8 = 0x08000100
     }
-
-    fun CFRunLoopGetMain(): Pointer?
-
-    fun CFRunLoopGetCurrent(): Pointer?
-
-    fun CFRunLoopRun()
-
-    fun CFRunLoopRunInMode(
-        mode: Pointer?,
-        seconds: Double,
-        returnAfterSourceHandled: Boolean,
-    ): Int
 
     /**
      * Create a CFString from a C string
@@ -210,25 +155,6 @@ interface CoreFoundation : Library {
         encoding: Int,
     ): Pointer?
 
-    /**
-     * Create a CFNumber from a double
-     * CFNumber is toll-free bridged with NSNumber
-     */
-    fun CFNumberCreate(
-        allocator: Pointer?,
-        theType: Int,
-        valuePtr: Pointer?,
-    ): Pointer?
-}
-
-/**
- * Block callback interface for Objective-C blocks
- */
-interface ObjCBlock : Callback {
-    fun invoke(
-        block: Pointer?,
-        event: Pointer?,
-    ): Int
 }
 
 /**
@@ -237,11 +163,12 @@ interface ObjCBlock : Callback {
 object ObjC {
     private val runtime = ObjCRuntime.INSTANCE
 
-    // Cache for frequently used selectors
-    private val selectorCache = mutableMapOf<String, Pointer?>()
+    // Selectors and classes are process-wide singletons; the caches are filled from the main
+    // thread (initialization) and JVM worker threads (every Now Playing update), so they must
+    // be thread-safe.
+    private val selectorCache = ConcurrentHashMap<String, Pointer?>()
 
-    // Cache for frequently used classes
-    private val classCache = mutableMapOf<String, Pointer?>()
+    private val classCache = ConcurrentHashMap<String, Pointer?>()
 
     /**
      * Get a cached selector
@@ -313,28 +240,58 @@ object ObjC {
         arg1: Int,
     ): Pointer? = runtime.objc_msgSend(receiver, sel(selector), arg1)
 
-    /**
-     * Send a message with one boolean argument
-     */
-    fun msg(
-        receiver: Pointer?,
-        selector: String,
-        arg1: Boolean,
-    ): Pointer? = runtime.objc_msgSend(receiver, sel(selector), arg1)
 
     /**
-     * Send a message with C string argument
+     * Release a Kotlin-owned (+1) Objective-C/CF object.
+     *
+     * Every factory below creates OWNED objects (`alloc`/`init…` or a CF `Create` function),
+     * so after the framework has retained what it needs (e.g. `setObject:forKey:`), the caller
+     * must drop its +1 exactly once or it leaks. Never call this on an object whose ownership
+     * rule is autoreleased.
      */
-    fun msgWithCString(
-        receiver: Pointer?,
-        selector: String,
-        cString: String,
-    ): Pointer? = runtime.objc_msgSend(receiver, sel(selector), cString)
+    fun releaseOwned(obj: Pointer?) {
+        if (obj != null) {
+            runtime.objc_msgSend(obj, sel("release"))
+        }
+    }
+
+    /**
+     * Run [block] inside an autorelease pool.
+     *
+     * JVM worker threads have no autorelease pool: anything autoreleased on them — most
+     * notably the object returned by the `nowPlayingInfo` getter — is never drained and leaks
+     * for the life of the process. If the pool symbols are unavailable, the block still runs;
+     * only the cleanup guarantee is lost.
+     */
+    fun autoreleasePool(block: () -> Unit) {
+        val pool =
+            try {
+                runtime.objc_autoreleasePoolPush()
+            } catch (e: Exception) {
+                null
+            }
+        if (pool == null) {
+            block()
+            return
+        }
+        try {
+            block()
+        } finally {
+            try {
+                runtime.objc_autoreleasePoolPop(pool)
+            } catch (_: Exception) {
+                // A failed pop must not mask the block's own outcome.
+            }
+        }
+    }
 
     /**
      * Create an NSString from a Kotlin String
      * Uses CFStringCreateWithCString which is more reliable with JNA
      * CFString is toll-free bridged with NSString
+     *
+     * OWNERSHIP: +1 — CF `Create` rule; the caller must [releaseOwned] after the last
+     * consumer retains it.
      */
     fun nsString(str: String): Pointer? {
         // Use CoreFoundation - CFString is toll-free bridged with NSString
@@ -347,39 +304,42 @@ object ObjC {
 
     /**
      * Create an NSNumber from a Double
+     *
+     * OWNERSHIP: +1 — `alloc`/`initWithDouble:` instead of the autoreleased `numberWithDouble:`
+     * convenience constructor, so the caller can [releaseOwned] deterministically.
      */
     fun nsNumber(value: Double): Pointer? {
         val nsNumberClass = cls("NSNumber") ?: return null
-        return runtime.objc_msgSend(nsNumberClass, sel("numberWithDouble:"), value)
+        val allocated = msg(nsNumberClass, "alloc") ?: return null
+        return msg(allocated, "initWithDouble:", value)
     }
 
     /**
      * Create an NSNumber from a Long
+     *
+     * OWNERSHIP: +1 — see [nsNumber] (Double).
      */
     fun nsNumber(value: Long): Pointer? {
         val nsNumberClass = cls("NSNumber") ?: return null
-        return runtime.objc_msgSend(nsNumberClass, sel("numberWithLongLong:"), value)
+        val allocated = msg(nsNumberClass, "alloc") ?: return null
+        return msg(allocated, "initWithLongLong:", value)
     }
 
     /**
      * Create an NSNumber from an Int
+     *
+     * OWNERSHIP: +1 — see [nsNumber] (Double).
      */
     fun nsNumber(value: Int): Pointer? {
         val nsNumberClass = cls("NSNumber") ?: return null
-        return runtime.objc_msgSend(nsNumberClass, sel("numberWithInt:"), value)
-    }
-
-    /**
-     * Create an NSURL from a String
-     */
-    fun nsUrl(urlString: String): Pointer? {
-        val nsUrlClass = cls("NSURL") ?: return null
-        val nsStr = nsString(urlString) ?: return null
-        return msg(nsUrlClass, "URLWithString:", nsStr)
+        val allocated = msg(nsNumberClass, "alloc") ?: return null
+        return msg(allocated, "initWithInt:", value)
     }
 
     /**
      * Create an NSMutableDictionary
+     *
+     * OWNERSHIP: +1 — the caller must [releaseOwned] after the framework retains it.
      */
     fun nsMutableDictionary(): Pointer? {
         val dictClass = cls("NSMutableDictionary") ?: return null

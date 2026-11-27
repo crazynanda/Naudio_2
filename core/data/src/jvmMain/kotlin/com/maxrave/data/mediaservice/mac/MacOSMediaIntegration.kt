@@ -14,6 +14,7 @@ import kotlinx.coroutines.withContext
 import java.net.URL
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 
 private const val TAG = "MacOSMediaIntegration"
 
@@ -40,29 +41,6 @@ object MPRemoteCommandHandlerStatus {
 }
 
 /**
- * Now Playing info keys - These are the actual string values of the constants
- * Found by inspecting the MediaPlayer framework symbols
- */
-object MPMediaItemProperty {
-    // These are the actual runtime values of the NSString constants
-    const val Title = "title"
-    const val Artist = "artist"
-    const val Album = "albumTitle"
-    const val PlaybackDuration = "playbackDuration"
-    const val Artwork = "artwork"
-}
-
-object MPNowPlayingInfoProperty {
-    // These constants use their full names as values
-    const val ElapsedPlaybackTime = "MPNowPlayingInfoPropertyElapsedPlaybackTime"
-    const val PlaybackRate = "MPNowPlayingInfoPropertyPlaybackRate"
-    const val DefaultPlaybackRate = "MPNowPlayingInfoPropertyDefaultPlaybackRate"
-    const val PlaybackQueueIndex = "MPNowPlayingInfoPropertyPlaybackQueueIndex"
-    const val PlaybackQueueCount = "MPNowPlayingInfoPropertyPlaybackQueueCount"
-    const val MediaType = "MPNowPlayingInfoPropertyMediaType"
-}
-
-/**
  * Helper object to get MediaPlayer framework constants
  * The constants are NSString* symbols exported from the framework
  */
@@ -70,6 +48,7 @@ object MPConstants {
     private var loaded = false
     private val constants = mutableMapOf<String, Pointer?>()
 
+    @Synchronized
     private fun ensureLoaded() {
         if (loaded) return
         try {
@@ -131,6 +110,66 @@ object MPConstants {
 }
 
 /**
+ * Pure decision logic shared by the macOS integration and the JVM media handler — no native
+ * dependencies, so it is unit-testable on any OS. Everything the ObjC side decides at runtime
+ * that can be decided in advance lives here.
+ */
+object MacNowPlayingPolicy {
+    /**
+     * macOS delivers Play and Pause as DISTINCT commands that each name the state they want.
+     * Routing both through the toggle must be guarded, or a Play command arriving while the
+     * player is already playing would pause it — and a duplicate delivery would toggle twice.
+     */
+    fun shouldActOnPlay(isPlaying: Boolean): Boolean = !isPlaying
+
+    fun shouldActOnPause(isPlaying: Boolean): Boolean = isPlaying
+
+    /** The minimum gap between two elapsed-time pushes to the Now Playing dictionary. */
+    const val ELAPSED_PUSH_INTERVAL_MS = 1_000L
+
+    /**
+     * macOS advances the elapsed display itself from the pushed rate, so 1 Hz keeps the clock
+     * accurate while costing 1/20th of the 50 ms progress tick's native work (a dictionary
+     * copy plus a dictionary swap each push).
+     */
+    fun isElapsedPushDue(
+        lastPushMs: Long,
+        nowMs: Long,
+        force: Boolean,
+        minIntervalMs: Long = ELAPSED_PUSH_INTERVAL_MS,
+    ): Boolean = force || lastPushMs <= 0 || nowMs - lastPushMs >= minIntervalMs
+
+    /**
+     * Clamp a remote seek (scrub) into the track's real bounds. NaN and negative positions
+     * collapse to 0; past-the-end collapses to the end.
+     */
+    fun clampSeekSeconds(
+        positionSeconds: Double,
+        durationMs: Long,
+    ): Double =
+        when {
+            positionSeconds.isNaN() || positionSeconds < 0.0 -> 0.0
+            durationMs > 0 -> positionSeconds.coerceAtMost(durationMs / 1000.0)
+            else -> positionSeconds
+        }
+
+    /**
+     * Duration for the Now Playing dictionary. At a track transition the player's duration is
+     * still the PREVIOUS track's (or 0 before the demuxer answers), so the song row's stored
+     * length fills the gap; a live stream (duration 0 everywhere) gets 0 rather than garbage.
+     */
+    fun durationSecondsForNowPlaying(
+        playerDurationMs: Long,
+        songDurationSeconds: Int,
+    ): Double =
+        when {
+            playerDurationMs > 0 -> playerDurationMs / 1000.0
+            songDurationSeconds > 0 -> songDurationSeconds.toDouble()
+            else -> 0.0
+        }
+}
+
+/**
  * Listener interface for remote commands from macOS
  */
 interface MacOSRemoteCommandListener {
@@ -169,27 +208,6 @@ data class NowPlayingInfo(
 )
 
 /**
- * Block descriptor structure for Objective-C blocks
- */
-@Structure.FieldOrder("reserved", "size", "copy_helper", "dispose_helper", "signature")
-class BlockDescriptor : Structure() {
-    @JvmField
-    var reserved: Long = 0
-
-    @JvmField
-    var size: Long = 0
-
-    @JvmField
-    var copy_helper: Pointer? = null
-
-    @JvmField
-    var dispose_helper: Pointer? = null
-
-    @JvmField
-    var signature: Pointer? = null
-}
-
-/**
  * Block literal structure for Objective-C blocks
  * This is a simplified version - in production you might need more fields
  */
@@ -217,20 +235,6 @@ class BlockLiteral : Structure() {
         const val BLOCK_IS_GLOBAL = (1 shl 28)
         const val BLOCK_HAS_STRET = (1 shl 29)
         const val BLOCK_HAS_SIGNATURE = (1 shl 30)
-    }
-}
-
-/**
- * JNA interface for loading dynamic libraries
- */
-private interface DynamicLibrary : Library {
-    companion object {
-        fun load(name: String): DynamicLibrary? =
-            try {
-                Native.load(name, DynamicLibrary::class.java)
-            } catch (e: Exception) {
-                null
-            }
     }
 }
 
@@ -316,17 +320,53 @@ private object MainQueue {
  */
 class MacOSMediaIntegration private constructor() {
     private val initialized = AtomicBoolean(false)
+
+    @Volatile
     private var remoteCommandListener: MacOSRemoteCommandListener? = null
 
-    // Keep references to prevent garbage collection
+    /**
+     * Guards every list and cache below: `initialize()` (and so `createCommandHandler`) runs
+     * on the main queue, while `release()` and artwork eviction run on JVM worker threads.
+     */
+    private val nativeStateLock = Any()
+
+    // Keep references to prevent garbage collection of the JNA trampolines and the native
+    // block literals the command center holds. Cleared only after the targets are removed.
     private val blockCallbacks = mutableListOf<Callback>()
     private val blockMemories = mutableListOf<Memory>()
 
-    // Cache for artwork images to avoid re-downloading
-    private val artworkCache = ConcurrentHashMap<String, Pointer>()
+    /**
+     * One Kotlin-owned native object triple per artwork URL ever applied. Bounded: evicting
+     * the least-recently-used entry releases its objects. Unbounded, a listening session
+     * would retain an NSImage + NSData + MPMediaItemArtwork per track for the whole process.
+     */
+    private val artworkCache = LinkedHashMap<String, ArtworkEntry>(16, 0.75f, true)
+
+    /** The artwork URL whose metadata is currently applied to Now Playing. */
     private var currentArtworkUrl: String? = null
 
+    /**
+     * The artwork URL currently being fetched. A newer request supersedes an older one, so
+     * a slow download for the PREVIOUS track must not paint its artwork onto the new track's
+     * metadata once the download lands.
+     */
+    @Volatile
+    private var requestedArtworkUrl: String? = null
+
+    /** Last wall-clock time an elapsed-time push went to the dictionary (see [MacNowPlayingPolicy]). */
+    private val lastElapsedPushMs = AtomicLong(0L)
+
+    /** Kotlin-owned native artwork objects, kept alive exactly as long as the cache entry. */
+    private class ArtworkEntry(
+        val artwork: Pointer,
+        val nsImage: Pointer,
+        val nsData: Pointer,
+    )
+
     companion object {
+        /** Artwork entries retained for reuse; 8 covers any realistic back-and-forth listening. */
+        private const val ARTWORK_CACHE_LIMIT = 8
+
         @Volatile
         private var instance: MacOSMediaIntegration? = null
 
@@ -389,8 +429,10 @@ class MacOSMediaIntegration private constructor() {
             return false
         }
 
-        if (initialized.get()) {
-            Logger.d(TAG, "Already initialized")
+        // compareAndSet, not get: two concurrent calls (a handler rebuild racing a lazy
+        // accessor) must not both pass the guard and register the native command targets twice.
+        if (!initialized.compareAndSet(false, true)) {
+            Logger.d(TAG, "Already initialized or initializing")
             return true
         }
 
@@ -403,8 +445,13 @@ class MacOSMediaIntegration private constructor() {
                 .getOrDefault(false)
 
         if (!reachedMainQueue) {
+            initialized.set(false)
             Logger.e(TAG, "Could not reach the main queue; media integration stays disabled")
             return false
+        }
+        if (!result) {
+            // Allow a retry after a failed main-thread setup.
+            initialized.set(false)
         }
         return result
     }
@@ -446,6 +493,10 @@ class MacOSMediaIntegration private constructor() {
 
     /**
      * Update Now Playing info
+     *
+     * Runs inside an autorelease pool, and every owned temporary (strings, numbers, the
+     * dictionary) is released right after the framework retains it — without this, each
+     * track change leaked a dozen native objects on a JVM thread that has no pool.
      */
     fun updateNowPlayingInfo(info: NowPlayingInfo) {
         if (!isSupported() || !initialized.get()) {
@@ -454,114 +505,53 @@ class MacOSMediaIntegration private constructor() {
         }
 
         try {
-            val infoCenter = getNowPlayingInfoCenter()
-            if (infoCenter == null) {
-                Logger.e(TAG, "Failed to get NowPlayingInfoCenter")
-                return
-            }
-
-            val dict = ObjC.nsMutableDictionary()
-            if (dict == null) {
-                Logger.e(TAG, "Failed to create NSMutableDictionary")
-                return
-            }
-
-            Logger.d(TAG, "Creating now playing info for: ${info.title} - ${info.artist}")
-
-            // Use the actual framework constants for keys
-            // Set title
-            val titleKey = MPConstants.title
-            val titleValue = ObjC.nsString(info.title)
-            if (titleKey != null && titleValue != null) {
-                ObjC.dictionarySetObject(dict, titleValue, titleKey)
-                Logger.d(TAG, "Set title: ${info.title} (key: $titleKey)")
-            } else {
-                Logger.e(TAG, "Failed to set title - key: $titleKey, value: $titleValue")
-            }
-
-            // Set artist
-            val artistKey = MPConstants.artist
-            val artistValue = ObjC.nsString(info.artist)
-            if (artistKey != null && artistValue != null) {
-                ObjC.dictionarySetObject(dict, artistValue, artistKey)
-                Logger.d(TAG, "Set artist: ${info.artist}")
-            } else {
-                Logger.e(TAG, "Failed to set artist - key: $artistKey")
-            }
-
-            // Set album
-            if (info.album.isNotEmpty()) {
-                val albumKey = MPConstants.album
-                val albumValue = ObjC.nsString(info.album)
-                if (albumKey != null && albumValue != null) {
-                    ObjC.dictionarySetObject(dict, albumValue, albumKey)
+            ObjC.autoreleasePool {
+                val infoCenter = getNowPlayingInfoCenter()
+                if (infoCenter == null) {
+                    Logger.e(TAG, "Failed to get NowPlayingInfoCenter")
+                    return@autoreleasePool
                 }
+
+                val dict = ObjC.nsMutableDictionary()
+                if (dict == null) {
+                    Logger.e(TAG, "Failed to create NSMutableDictionary")
+                    return@autoreleasePool
+                }
+
+                // set object retains what it stores, so the only durable reference the
+                // framework keeps is its own: drop our +1 on every temporary as we go.
+                fun put(
+                    key: Pointer?,
+                    value: Pointer?,
+                ) {
+                    if (key != null && value != null) {
+                        ObjC.dictionarySetObject(dict, value, key)
+                        ObjC.releaseOwned(value)
+                    } else if (value != null) {
+                        ObjC.releaseOwned(value)
+                    }
+                }
+
+                put(MPConstants.title, ObjC.nsString(info.title))
+                put(MPConstants.artist, ObjC.nsString(info.artist))
+                if (info.album.isNotEmpty()) {
+                    put(MPConstants.album, ObjC.nsString(info.album))
+                }
+                put(MPConstants.playbackDuration, ObjC.nsNumber(info.durationSeconds))
+                put(MPConstants.elapsedPlaybackTime, ObjC.nsNumber(info.elapsedTimeSeconds))
+                put(MPConstants.playbackRate, ObjC.nsNumber(info.playbackRate))
+                put(MPConstants.defaultPlaybackRate, ObjC.nsNumber(1.0))
+                put(MPConstants.playbackQueueIndex, ObjC.nsNumber(info.queueIndex))
+                put(MPConstants.playbackQueueCount, ObjC.nsNumber(info.queueCount))
+                // MPNowPlayingMediaTypeAudio
+                put(MPConstants.mediaType, ObjC.nsNumber(1))
+
+                ObjC.msg(infoCenter, "setNowPlayingInfo:", dict)
+                // The center retains (or copies) the dictionary; drop ours.
+                ObjC.releaseOwned(dict)
+
+                Logger.d(TAG, "Updated now playing info: ${info.title} - ${info.artist}")
             }
-
-            // Set duration
-            val durationKey = MPConstants.playbackDuration
-            val durationValue = ObjC.nsNumber(info.durationSeconds)
-            if (durationKey != null && durationValue != null) {
-                ObjC.dictionarySetObject(dict, durationValue, durationKey)
-                Logger.d(TAG, "Set duration: ${info.durationSeconds}")
-            } else {
-                Logger.e(TAG, "Failed to set duration - key: $durationKey, value: $durationValue")
-            }
-
-            // Set elapsed time
-            val elapsedKey = MPConstants.elapsedPlaybackTime
-            val elapsedValue = ObjC.nsNumber(info.elapsedTimeSeconds)
-            if (elapsedKey != null && elapsedValue != null) {
-                ObjC.dictionarySetObject(dict, elapsedValue, elapsedKey)
-            } else {
-                Logger.w(TAG, "Failed to set elapsed time - key: $elapsedKey")
-            }
-
-            // Set playback rate
-            val rateKey = MPConstants.playbackRate
-            val rateValue = ObjC.nsNumber(info.playbackRate)
-            if (rateKey != null && rateValue != null) {
-                ObjC.dictionarySetObject(dict, rateValue, rateKey)
-            }
-
-            // Set default playback rate
-            val defaultRateKey = MPConstants.defaultPlaybackRate
-            val defaultRateValue = ObjC.nsNumber(1.0)
-            if (defaultRateKey != null && defaultRateValue != null) {
-                ObjC.dictionarySetObject(dict, defaultRateValue, defaultRateKey)
-            }
-
-            // Set queue info
-            val queueIndexKey = MPConstants.playbackQueueIndex
-            val queueIndexValue = ObjC.nsNumber(info.queueIndex)
-            if (queueIndexKey != null && queueIndexValue != null) {
-                ObjC.dictionarySetObject(dict, queueIndexValue, queueIndexKey)
-            }
-
-            val queueCountKey = MPConstants.playbackQueueCount
-            val queueCountValue = ObjC.nsNumber(info.queueCount)
-            if (queueCountKey != null && queueCountValue != null) {
-                ObjC.dictionarySetObject(dict, queueCountValue, queueCountKey)
-            }
-
-            // Set media type (1 = Music)
-            val mediaTypeKey = MPConstants.mediaType
-            val mediaTypeValue = ObjC.nsNumber(1)
-            if (mediaTypeKey != null && mediaTypeValue != null) {
-                ObjC.dictionarySetObject(dict, mediaTypeValue, mediaTypeKey)
-            }
-
-            // Log dictionary count for verification
-            val countSel = ObjC.sel("count")
-            if (countSel != null) {
-                val count = ObjCRuntime.INSTANCE.objc_msgSend(dict, countSel)
-                Logger.d(TAG, "Dictionary has entries (pointer: $count)")
-            }
-
-            // Set the now playing info
-            ObjC.msg(infoCenter, "setNowPlayingInfo:", dict)
-
-            Logger.d(TAG, "Updated now playing info: ${info.title} - ${info.artist}")
         } catch (e: Exception) {
             Logger.e(TAG, "Failed to update now playing info: ${e.message}", e)
         }
@@ -574,10 +564,12 @@ class MacOSMediaIntegration private constructor() {
         if (!isSupported() || !initialized.get()) return
 
         try {
-            val infoCenter = getNowPlayingInfoCenter() ?: return
-            val state = if (isPlaying) MPNowPlayingPlaybackState.Playing else MPNowPlayingPlaybackState.Paused
-            ObjC.msg(infoCenter, "setPlaybackState:", state)
-            Logger.d(TAG, "Updated playback state: ${if (isPlaying) "Playing" else "Paused"}")
+            ObjC.autoreleasePool {
+                val infoCenter = getNowPlayingInfoCenter() ?: return@autoreleasePool
+                val state = if (isPlaying) MPNowPlayingPlaybackState.Playing else MPNowPlayingPlaybackState.Paused
+                ObjC.msg(infoCenter, "setPlaybackState:", state)
+                Logger.d(TAG, "Updated playback state: ${if (isPlaying) "Playing" else "Paused"}")
+            }
         } catch (e: Exception) {
             Logger.e(TAG, "Failed to update playback state: ${e.message}", e)
         }
@@ -597,9 +589,10 @@ class MacOSMediaIntegration private constructor() {
         if (!isSupported() || !initialized.get()) return
 
         try {
-            val commandCenter = getRemoteCommandCenter() ?: return
+            ObjC.autoreleasePool {
+                val commandCenter = getRemoteCommandCenter() ?: return@autoreleasePool
 
-            // Note: Objective-C BOOL is actually a signed char (1 byte)
+                // Note: Objective-C BOOL is actually a signed char (1 byte)
             // We use Byte (1 or 0) instead of Boolean for proper JNA mapping
             val nextEnabled: Byte = if (hasNext) 1 else 0
             val prevEnabled: Byte = if (hasPrevious) 1 else 0
@@ -634,6 +627,7 @@ class MacOSMediaIntegration private constructor() {
             if (changePositionCommand != null) {
                 setCommandEnabled(changePositionCommand, seekEnabled)
             }
+            }
         } catch (e: Exception) {
             Logger.e(TAG, "Failed to update commands enabled state: ${e.message}", e)
         }
@@ -654,42 +648,62 @@ class MacOSMediaIntegration private constructor() {
 
     /**
      * Update elapsed time (for seek bar progress)
+     *
+     * Each push is a native dictionary copy plus a dictionary swap, so the 50 ms progress
+     * tick must not land here every round: [MacNowPlayingPolicy.ELAPSED_PUSH_INTERVAL_MS]
+     * throttles to 1 Hz, and `force` bypasses the throttle for state changes (play, pause,
+     * seek, track change) where the displayed clock must resync at once. When the player
+     * pauses, macOS keeps advancing its own elapsed display until a push with rate 0 lands,
+     * so the pause path always forces one.
      */
     fun updateElapsedTime(
         elapsedSeconds: Double,
         playbackRate: Double = 1.0,
+        force: Boolean = false,
     ) {
         if (!isSupported() || !initialized.get()) return
 
+        val now = System.currentTimeMillis()
+        synchronized(lastElapsedPushMs) {
+            if (!MacNowPlayingPolicy.isElapsedPushDue(lastElapsedPushMs.get(), now, force)) return
+            lastElapsedPushMs.set(now)
+        }
+
         try {
-            val infoCenter = getNowPlayingInfoCenter() ?: return
+            ObjC.autoreleasePool {
+                val infoCenter = getNowPlayingInfoCenter() ?: return@autoreleasePool
 
-            // Get current now playing info
-            val currentInfo = ObjC.msg(infoCenter, "nowPlayingInfo")
-            if (currentInfo == null) {
-                Logger.w(TAG, "No current now playing info to update")
-                return
+                // Get current now playing info
+                val currentInfo = ObjC.msg(infoCenter, "nowPlayingInfo")
+                if (currentInfo == null) {
+                    Logger.w(TAG, "No current now playing info to update")
+                    return@autoreleasePool
+                }
+
+                // Create mutable copy
+                val mutableInfo = ObjC.msg(currentInfo, "mutableCopy") ?: return@autoreleasePool
+
+                // Update elapsed time using framework constant
+                val elapsedKey = MPConstants.elapsedPlaybackTime
+                val elapsedValue = ObjC.nsNumber(elapsedSeconds)
+                if (elapsedKey != null && elapsedValue != null) {
+                    ObjC.dictionarySetObject(mutableInfo, elapsedValue, elapsedKey)
+                    ObjC.releaseOwned(elapsedValue)
+                }
+
+                // Update playback rate using framework constant
+                val rateKey = MPConstants.playbackRate
+                val rateValue = ObjC.nsNumber(playbackRate)
+                if (rateKey != null && rateValue != null) {
+                    ObjC.dictionarySetObject(mutableInfo, rateValue, rateKey)
+                    ObjC.releaseOwned(rateValue)
+                }
+
+                // Set updated info
+                ObjC.msg(infoCenter, "setNowPlayingInfo:", mutableInfo)
+                // The center retains (or copies) the dictionary; drop our copy's +1.
+                ObjC.releaseOwned(mutableInfo)
             }
-
-            // Create mutable copy
-            val mutableInfo = ObjC.msg(currentInfo, "mutableCopy") ?: return
-
-            // Update elapsed time using framework constant
-            val elapsedKey = MPConstants.elapsedPlaybackTime
-            val elapsedValue = ObjC.nsNumber(elapsedSeconds)
-            if (elapsedKey != null && elapsedValue != null) {
-                ObjC.dictionarySetObject(mutableInfo, elapsedValue, elapsedKey)
-            }
-
-            // Update playback rate using framework constant
-            val rateKey = MPConstants.playbackRate
-            val rateValue = ObjC.nsNumber(playbackRate)
-            if (rateKey != null && rateValue != null) {
-                ObjC.dictionarySetObject(mutableInfo, rateValue, rateKey)
-            }
-
-            // Set updated info
-            ObjC.msg(infoCenter, "setNowPlayingInfo:", mutableInfo)
         } catch (e: Exception) {
             Logger.e(TAG, "Failed to update elapsed time: ${e.message}", e)
         }
@@ -702,17 +716,22 @@ class MacOSMediaIntegration private constructor() {
         if (!isSupported() || !initialized.get()) return
 
         try {
-            val infoCenter = getNowPlayingInfoCenter() ?: return
-            ObjC.msg(infoCenter, "setNowPlayingInfo:", null as Pointer?)
-            ObjC.msg(infoCenter, "setPlaybackState:", MPNowPlayingPlaybackState.Stopped)
-            Logger.d(TAG, "Cleared now playing info")
+            ObjC.autoreleasePool {
+                val infoCenter = getNowPlayingInfoCenter() ?: return@autoreleasePool
+                ObjC.msg(infoCenter, "setNowPlayingInfo:", null as Pointer?)
+                ObjC.msg(infoCenter, "setPlaybackState:", MPNowPlayingPlaybackState.Stopped)
+                Logger.d(TAG, "Cleared now playing info")
+            }
         } catch (e: Exception) {
             Logger.e(TAG, "Failed to clear now playing info: ${e.message}", e)
         }
     }
 
     /**
-     * Release resources
+     * Release resources. Idempotent, and safe to call from any thread: the native state is
+     * only touched under [nativeStateLock] and always AFTER the native side has let go of it
+     * (targets removed, dictionary cleared) — otherwise a GC'd JNA trampoline could still be
+     * reached from a registered target.
      */
     fun release() {
         if (!isSupported()) return
@@ -721,8 +740,21 @@ class MacOSMediaIntegration private constructor() {
             clearNowPlayingInfo()
             disableRemoteCommands()
             remoteCommandListener = null
-            blockCallbacks.clear()
-            blockMemories.clear()
+
+            synchronized(nativeStateLock) {
+                blockCallbacks.clear()
+                blockMemories.clear()
+            }
+            synchronized(artworkCache) {
+                for (entry in artworkCache.values) {
+                    releaseArtworkEntry(entry)
+                }
+                artworkCache.clear()
+            }
+            requestedArtworkUrl = null
+            currentArtworkUrl = null
+            lastElapsedPushMs.set(0)
+
             initialized.set(false)
             Logger.d(TAG, "Released MacOS media integration")
         } catch (e: Exception) {
@@ -730,22 +762,40 @@ class MacOSMediaIntegration private constructor() {
         }
     }
 
+    /** Release the Kotlin-owned +1 on each of an entry's native objects (innermost first). */
+    private fun releaseArtworkEntry(entry: ArtworkEntry) {
+        ObjC.autoreleasePool {
+            ObjC.releaseOwned(entry.nsData)
+            ObjC.releaseOwned(entry.nsImage)
+            ObjC.releaseOwned(entry.artwork)
+        }
+    }
+
     // ============ Artwork Methods ============
 
     /**
-     * Load artwork from URL and update Now Playing info
-     * This should be called from a coroutine
+     * Load artwork from URL and update Now Playing info.
+     * This should be called from a coroutine.
+     *
+     * A newer request supersedes an older one: the download runs on IO, and if the track
+     * changed while it was in flight, the landing artwork belongs to the previous track and
+     * must not be applied (it would paint stale artwork onto the new track's metadata).
      */
     suspend fun loadAndSetArtwork(artworkUrl: String?) {
         if (artworkUrl.isNullOrEmpty()) {
             Logger.d(TAG, "No artwork URL provided")
             return
         }
+        requestedArtworkUrl = artworkUrl
 
-        // Check if same artwork is already set
-        if (artworkUrl == currentArtworkUrl && artworkCache.containsKey(artworkUrl)) {
-            Logger.d(TAG, "Artwork already cached: $artworkUrl")
-            return
+        synchronized(artworkCache) {
+            val cached = artworkCache[artworkUrl]
+            if (cached != null) {
+                currentArtworkUrl = artworkUrl
+                updateNowPlayingArtwork(cached.artwork)
+                Logger.d(TAG, "Artwork applied from cache: $artworkUrl")
+                return
+            }
         }
 
         try {
@@ -760,18 +810,38 @@ class MacOSMediaIntegration private constructor() {
                 return
             }
 
-            // Create NSImage and MPMediaItemArtwork on main thread
-            val artwork = createArtwork(imageData)
-            if (artwork != null) {
-                artworkCache[artworkUrl] = artwork
-                currentArtworkUrl = artworkUrl
+            // A newer request superseded this one while the download was in flight.
+            if (requestedArtworkUrl != artworkUrl) {
+                Logger.d(TAG, "Artwork for $artworkUrl superseded by a newer request; dropped")
+                return
+            }
 
-                // Update the now playing info with artwork
-                updateNowPlayingArtwork(artwork)
+            val entry = createArtworkEntry(imageData)
+            if (entry != null) {
+                synchronized(artworkCache) {
+                    artworkCache[artworkUrl] = entry
+                    evictOldArtwork()
+                    currentArtworkUrl = artworkUrl
+                }
+                updateNowPlayingArtwork(entry.artwork)
                 Logger.d(TAG, "Successfully set artwork from: $artworkUrl")
             }
         } catch (e: Exception) {
             Logger.e(TAG, "Error loading artwork: ${e.message}", e)
+        }
+    }
+
+    /**
+     * Drop least-recently-used entries beyond [ARTWORK_CACHE_LIMIT], releasing their native
+     * objects. The call site holds the [artworkCache] lock.
+     */
+    private fun evictOldArtwork() {
+        val iterator = artworkCache.entries.iterator()
+        while (artworkCache.size > ARTWORK_CACHE_LIMIT && iterator.hasNext()) {
+            val eldest = iterator.next()
+            iterator.remove()
+            releaseArtworkEntry(eldest.value)
+            Logger.d(TAG, "Evicted artwork from cache: ${eldest.key}")
         }
     }
 
@@ -788,53 +858,53 @@ class MacOSMediaIntegration private constructor() {
         }
 
     /**
-     * Create MPMediaItemArtwork from image data
+     * Create the Kotlin-owned native artwork triple from raw image bytes.
+     *
+     * Every object here is owned (+1): NSData (`alloc`/`initWithBytes:` — which COPIES the
+     * bytes, so the JVM-side `Memory` needs no retention), NSImage, and MPMediaItemArtwork.
+     * The returned entry keeps them alive for the cache; on any failure path the objects
+     * created so far are released before returning null, so nothing leaks on the way out.
      */
-    private fun createArtwork(imageData: ByteArray): Pointer? {
-        try {
-            // Create NSData from bytes
-            val nsData = createNSData(imageData) ?: return null
-
-            // Create NSImage from NSData
-            val nsImage = createNSImage(nsData) ?: return null
-
-            // Create MPMediaItemArtwork
-            // Use initWithBoundsSize:requestHandler: with a block that returns the image
-            val artworkClass = ObjC.cls("MPMediaItemArtwork") ?: return null
-            val allocated = ObjC.msg(artworkClass, "alloc") ?: return null
-
-            // Get image size for bounds
-            val sizeValue = ObjC.msg(nsImage, "size") // Returns NSSize struct
-
-            // Create artwork with the image using a simpler approach
-            // initWithImage: is deprecated but works for our purposes
-            val artwork = ObjC.msg(allocated, "initWithImage:", nsImage)
-
-            if (artwork == null) {
-                Logger.w(TAG, "initWithImage: failed, trying alternative method")
-                // Try alternative: store image and create artwork with bounds
-                return createArtworkWithBounds(nsImage)
-            }
-
-            return artwork
-        } catch (e: Exception) {
-            Logger.e(TAG, "Failed to create artwork: ${e.message}", e)
+    private fun createArtworkEntry(imageData: ByteArray): ArtworkEntry? {
+        val nsData = createNSData(imageData)
+        if (nsData == null) {
+            Logger.w(TAG, "Failed to create NSData for artwork")
             return null
         }
+        val nsImage = createNSImage(nsData)
+        if (nsImage == null) {
+            Logger.w(TAG, "Failed to create NSImage for artwork")
+            ObjC.releaseOwned(nsData)
+            return null
+        }
+
+        val artworkClass = ObjC.cls("MPMediaItemArtwork")
+        val allocated = artworkClass?.let { ObjC.msg(it, "alloc") }
+        val artwork = allocated?.let { ObjC.msg(it, "initWithImage:", nsImage) }
+        if (artwork == null) {
+            Logger.w(TAG, "MPMediaItemArtwork creation failed; no artwork will be shown")
+            // A failed initializer releases self per Cocoa convention; our temporaries are
+            // ours to drop.
+            ObjC.releaseOwned(nsImage)
+            ObjC.releaseOwned(nsData)
+            return null
+        }
+        return ArtworkEntry(artwork, nsImage, nsData)
     }
 
     /**
      * Create NSData from byte array
+     *
+     * `initWithBytes:length:` copies, so the JVM-side Memory needs no retention afterwards —
+     * unlike a `NoCopy` variant. (Adding it to `blockMemories` here used to pin every
+     * artwork's byte buffer for the life of the process.)
      */
     private fun createNSData(bytes: ByteArray): Pointer? {
         val nsDataClass = ObjC.cls("NSData") ?: return null
 
-        // Copy bytes to native memory
+        // Copy bytes to native memory for the call
         val nativeMemory = Memory(bytes.size.toLong())
         nativeMemory.write(0, bytes, 0, bytes.size)
-
-        // Keep reference to prevent GC
-        blockMemories.add(nativeMemory)
 
         // Create NSData with bytes:length:
         val allocated = ObjC.msg(nsDataClass, "alloc") ?: return null
@@ -856,38 +926,31 @@ class MacOSMediaIntegration private constructor() {
     }
 
     /**
-     * Alternative method to create artwork with bounds
-     */
-    private fun createArtworkWithBounds(nsImage: Pointer): Pointer? {
-        // This is more complex as it requires creating a block
-        // For now, return null and log
-        Logger.w(TAG, "createArtworkWithBounds not fully implemented")
-        return null
-    }
-
-    /**
      * Update the current now playing info with artwork
      */
     private fun updateNowPlayingArtwork(artwork: Pointer) {
         try {
-            val infoCenter = getNowPlayingInfoCenter() ?: return
+            ObjC.autoreleasePool {
+                val infoCenter = getNowPlayingInfoCenter() ?: return@autoreleasePool
 
-            // Get current now playing info
-            val currentInfo = ObjC.msg(infoCenter, "nowPlayingInfo") ?: return
+                // Get current now playing info
+                val currentInfo = ObjC.msg(infoCenter, "nowPlayingInfo") ?: return@autoreleasePool
 
-            // Create mutable copy
-            val mutableInfo = ObjC.msg(currentInfo, "mutableCopy") ?: return
+                // Create mutable copy
+                val mutableInfo = ObjC.msg(currentInfo, "mutableCopy") ?: return@autoreleasePool
 
-            // Set artwork
-            val artworkKey = MPConstants.artwork
-            if (artworkKey != null) {
-                ObjC.dictionarySetObject(mutableInfo, artwork, artworkKey)
+                // Set artwork
+                val artworkKey = MPConstants.artwork
+                if (artworkKey != null) {
+                    ObjC.dictionarySetObject(mutableInfo, artwork, artworkKey)
+                }
+
+                // Set updated info
+                ObjC.msg(infoCenter, "setNowPlayingInfo:", mutableInfo)
+                ObjC.releaseOwned(mutableInfo)
+
+                Logger.d(TAG, "Updated now playing artwork")
             }
-
-            // Set updated info
-            ObjC.msg(infoCenter, "setNowPlayingInfo:", mutableInfo)
-
-            Logger.d(TAG, "Updated now playing artwork")
         } catch (e: Exception) {
             Logger.e(TAG, "Failed to update artwork: ${e.message}", e)
         }
@@ -928,27 +991,23 @@ class MacOSMediaIntegration private constructor() {
                 }
             }
 
-        // Keep reference to prevent GC
-        blockCallbacks.add(callback)
-        Logger.d(TAG, "Created callback: $callback")
-
         // Get the callback function pointer using CallbackReference
         val callbackPointer = CallbackReference.getFunctionPointer(callback)
 
         // Create block descriptor
-        val descriptorSize = 40L // Size of BlockDescriptor
+        val descriptorSize = 40L // reserved + size + copy + dispose + signature pointers
         val descriptorMemory = Memory(descriptorSize)
         descriptorMemory.clear()
         descriptorMemory.setLong(0, 0) // reserved
         descriptorMemory.setLong(8, 32) // size of block literal
-        blockMemories.add(descriptorMemory)
 
         // Create block literal
         val blockSize = 32L
         val blockMemory = Memory(blockSize)
         blockMemory.clear()
 
-        // Get NSConcreteStackBlock class (or use global block)
+        // A global block needs no copy/dispose and outlives any stack frame, so the invoke
+        // pointer is safe as long as the JNA callback object stays strongly referenced.
         val nsConcreteGlobalBlock =
             ObjC.cls("__NSGlobalBlock__")
                 ?: ObjC.cls("NSBlock")
@@ -960,7 +1019,13 @@ class MacOSMediaIntegration private constructor() {
         blockMemory.setPointer(16, callbackPointer) // invoke
         blockMemory.setPointer(24, descriptorMemory) // descriptor
 
-        blockMemories.add(blockMemory)
+        // Keep references to prevent GC — under the same lock `release()` clears them with.
+        synchronized(nativeStateLock) {
+            blockCallbacks.add(callback)
+            blockMemories.add(descriptorMemory)
+            blockMemories.add(blockMemory)
+        }
+        Logger.d(TAG, "Created callback: $callback")
 
         return blockMemory
     }
