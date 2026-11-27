@@ -132,6 +132,94 @@ jobs:
           agree_to_license: 1
           signing_key: ${{ secrets.CONVEYOR_SIGNING_KEY }}
 
+      # Mirror of android-release.yml: rename Conveyor's simpmusic-* mac zips
+      # to Naudio-<version>-mac-<arch>.zip release naming, then structurally
+      # verify both bundles. No Conveyor or installer identity is changed.
+      - name: Rename macOS packages to Naudio naming
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          declare -A ARCH_MAP=( [aarch64]=arm64 [amd64]=x64 )
+          for zip in output/simpmusic-*-mac-*.zip; do
+            base="$(basename "$zip")"
+            version="$(echo "$base" | sed -nE 's/simpmusic-([0-9.]+)-mac-.*/\1/p')"
+            arch="$(echo "$base" | sed -nE 's/.*-mac-([a-z0-9]+)\.zip/\1/p')"
+            [[ -n "$version" && -n "$arch" ]] || { echo "::error::Cannot parse version/arch from $base"; exit 1; }
+            canon="${ARCH_MAP[$arch]:-$arch}"
+            mv "$zip" "output/Naudio-${version}-mac-${canon}.zip"
+          done
+          ls output/Naudio-*-mac-arm64.zip output/Naudio-*-mac-x64.zip
+
+      - name: Verify macOS app bundles
+        run: |
+          set -euo pipefail
+          VERSION=$(grep '^version-name' gradle/libs.versions.toml | head -1 | cut -d'"' -f2)
+          for zip_path in output/Naudio-*-mac-*.zip; do
+            python3 - "$zip_path" "$VERSION" <<'PYEOF'
+          import re, struct, sys, zipfile
+          zip_path, expected_version = sys.argv[1], sys.argv[2]
+          is_arm64 = "-mac-arm64.zip" in zip_path
+          z = zipfile.ZipFile(zip_path)
+          names = z.namelist()
+          errors = []
+          apps = sorted(set(n.split("/")[0] for n in names if n.endswith(".app") or n.endswith(".app/")))
+          if len(apps) != 1 or not apps[0].endswith(".app"):
+              errors.append(f"expected exactly one .app at zip root, got {apps}")
+          else:
+              app = apps[0] if apps[0].endswith("/") else apps[0] + "/"
+              sidecars = [n for n in names if n.startswith("._") or "/._" in n]
+              if sidecars:
+                  errors.append(f"AppleDouble sidecars present: {sidecars[:5]}")
+              nested = [n for n in names if n.count("/") > 1 and n.endswith(".app/")]
+              if nested:
+                  errors.append(f"nested .app bundles: {nested[:5]}")
+              plist_name = f"{app}Contents/Info.plist"
+              if plist_name not in names:
+                  errors.append("Info.plist missing")
+              else:
+                  plist = z.read(plist_name).decode("utf-8", "ignore")
+                  def val(key):
+                      m = re.search(r"<key>%s</key>\s*<string>([^<]*)</string>" % key, plist)
+                      return m.group(1) if m else None
+                  for key, want in {
+                      "CFBundleName": "Naudio",
+                      "CFBundleIdentifier": "com.maxrave.simpmusic",
+                      "LSMinimumSystemVersion": "15.0",
+                      "CFBundleShortVersionString": expected_version,
+                  }.items():
+                      got = val(key)
+                      if got != want:
+                          errors.append(f"{key}={got!r}, expected {want!r}")
+                  exe = val("CFBundleExecutable")
+                  if not exe:
+                      errors.append("CFBundleExecutable missing")
+                  else:
+                      exepath = f"{app}Contents/MacOS/{exe}"
+                      if exepath not in names:
+                          errors.append(f"executable missing: {exepath}")
+                      else:
+                          head = z.open(exepath).read(12)
+                          if head[:4].hex() not in ("cffaedfe", "feedfacf", "cafebabf", "cafebabe"):
+                              errors.append(f"executable is not Mach-O (magic {head[:4].hex()})")
+                  libmpv_name = f"{app}Contents/Resources/mpv/libmpv.dylib"
+                  if libmpv_name not in names:
+                      errors.append("bundled libmpv.dylib missing from Resources/mpv")
+                  else:
+                      head = z.open(libmpv_name).read(12)
+                      if head[:4].hex() == "cffaedfe":
+                          cputype = struct.unpack("<I", head[4:8])[0]
+                          want = 0x0100000C if is_arm64 else 0x00000007
+                          if cputype != want:
+                              errors.append(f"libmpv.dylib cputype {cputype:#x} does not match arch (want {want:#x})")
+                      else:
+                          errors.append(f"libmpv.dylib is not Mach-O 64 (magic {head[:4].hex()})")
+          if errors:
+              print(f"::error::{zip_path}: " + "; ".join(errors))
+              sys.exit(1)
+          print(f"::notice::{zip_path}: bundle structure verified ({len(names)} entries)")
+          PYEOF
+          done
+
       - name: Stage AppImage into output/ for upload
         run: cp desktopApp/build/appimage/conveyor/SimpMusic-*.AppImage output/
 
@@ -202,7 +290,11 @@ jobs:
 
   wrap-mac-dmg:
     name: Wrap macOS .zip → .dmg (installer UX)
-    runs-on: macos-14
+    # macos-14 was retired by GitHub on 2026-11-02; macos-15 is the stated
+    # same-architecture (arm64) replacement. See the same job in
+    # android-release.yml for the full annotation evidence.
+    runs-on: macos-15
+    timeout-minutes: 40
     needs: build-desktop-packages
     defaults:
       run:
@@ -211,9 +303,9 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: Install create-dmg + ImageMagick
-        # create-dmg = sindresorhus brew formula. ImageMagick is used to
-        # downscale the 2800x1600 source background to a sharp 1400x800
-        # bitmap using a Lanczos filter (matches the DMG window size).
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+          HOMEBREW_NO_INSTALL_CLEANUP: "1"
         run: brew install create-dmg imagemagick
 
       - name: Read app version
@@ -243,21 +335,30 @@ jobs:
           set -euo pipefail
           mkdir -p dist
           shopt -s nullglob
-          for zip in mac-zips/simpmusic-*-mac-*.zip; do
+          zips=(mac-zips/*-mac-*.zip)
+          [[ ${#zips[@]} -gt 0 ]] || { echo "::error::No macOS ZIP artifacts found in mac-zips/"; exit 1; }
+          declare -A ARCH_MAP=( [aarch64]=arm64 [amd64]=x64 [arm64]=arm64 [x64]=x64 )
+          wrapped=0
+          for zip in "${zips[@]}"; do
             arch="$(basename "$zip" | sed -nE 's/.*-mac-([a-z0-9]+)\.zip/\1/p')"
-            [[ -z "$arch" ]] && { echo "Cannot infer arch from $zip" >&2; exit 1; }
+            [[ -n "$arch" ]] || { echo "::error::Cannot infer arch from $(basename "$zip")" >&2; exit 1; }
+            arch="${ARCH_MAP[$arch]:-$arch}"
             workdir="$(mktemp -d)"
             unzip -q "$zip" -d "$workdir"
             app="$(find "$workdir" -maxdepth 2 -type d -name '*.app' | head -1)"
-            [[ -d "$app" ]] || { echo "No .app inside $zip" >&2; exit 1; }
-            out="dist/SimpMusic-${VERSION}-mac-${arch}.dmg"
+            [[ -d "$app" ]] || { echo "::error::No .app inside $(basename "$zip")" >&2; exit 1; }
+            out="dist/Naudio-${VERSION}-mac-${arch}.dmg"
             scripts/wrap-mac-dmg.sh \
               "$app" \
               build/dmg/dmg-bg-1400x800.png \
               composeApp/icon/circle_app_icon.icns \
               "$out"
             rm -rf "$workdir"
+            wrapped=$((wrapped + 1))
           done
+          produced=$(ls dist/Naudio-*.dmg 2>/dev/null | wc -l)
+          [[ "$produced" -eq "$wrapped" ]] || { echo "::error::Expected $wrapped DMGs, produced $produced" >&2; exit 1; }
+          echo "Wrapped $wrapped DMG(s):"
           ls -lh dist/
 
       - name: Upload Mac .dmg artifacts

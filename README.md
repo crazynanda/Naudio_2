@@ -145,6 +145,59 @@ Naudio for Windows is a 64-bit MSIX package (x64; ARM64 Windows runs the x64 bui
 
 ---
 
+## macOS Installation
+
+Naudio for macOS requires **macOS 15.0 (Sequoia) or newer** and ships for both architectures:
+
+- **Apple Silicon (`arm64`)** — M1, M2, M3, M4 and newer: download **`Naudio-<version>-mac-arm64.dmg`**.
+- **Intel (`x64`)**: download **`Naudio-<version>-mac-x64.dmg`**.
+
+(You can check your Mac's chip under Apple menu → About This Mac. The architecture is also in the file name of every package.)
+
+### 1. Install from the DMG (recommended)
+
+1. Download `Naudio-<version>-mac-<arch>.dmg` from the [Latest Release](https://github.com/crazynanda/Naudio_2/releases/latest) and open it.
+2. In the window that opens, drag the **Naudio** icon onto the **Applications** folder shortcut.
+3. Eject the DMG (Finder → sidebar → Eject) and delete the downloaded file.
+4. Launch Naudio from **Applications**, **Launchpad**, or the Dock.
+
+### 2. First launch (please read)
+
+Naudio's macOS builds are currently **not signed with an Apple Developer ID and not notarized**. Because of that, the first launch will show a macOS security dialog:
+
+> *"Naudio" can't be opened because Apple cannot check it for malicious software.*
+
+This is expected for any distributed-but-unnotarized app. The narrow, official way past it:
+
+1. Cancel the dialog.
+2. Open **System Settings → Privacy & Security**, scroll to the **Security** section.
+3. Find the **"Open Anyway"** button naming Naudio, click it, and confirm **Open**.
+4. This approval is remembered: the app launches normally from then on.
+
+Do **not** disable Gatekeeper system-wide (no `sudo spctl --master-disable`) — the per-app approval above is sufficient. If the dialog keeps reappearing, or the app reports being "damaged", you can strip the download quarantine from just this app:
+
+```bash
+xattr -d com.apple.quarantine /Applications/Naudio.app
+```
+
+This affects only Naudio's own application bundle and nothing else on your system.
+
+### 3. Why a ZIP may appear instead of a DMG
+
+macOS treats files downloaded inside a ZIP with the strictest quarantine flag. On **macOS 15 and newer**, extracting a quarantined ZIP produces an app that Gatekeeper **hard-blocks** — the older "right-click → Open" bypass no longer works, and the dialog may offer no Open button at all. Always prefer the **DMG**, which macOS propagates with a softer flag so the normal "Open Anyway" flow works. If a release only offers ZIPs (its DMG job failed), you can still install: extract the ZIP, move `Naudio.app` to Applications, then use the `xattr` command above before the first launch.
+
+### 4. Updating
+
+Naudio stores your favorites, database, and settings **outside the application bundle** (in the hidden `~/.simpmusic` folder in your home directory), so upgrading never touches your data:
+
+1. Download the new DMG.
+2. Open it and drag Naudio to Applications; when Finder asks, choose **Replace**.
+3. Launch as usual — your library and settings are intact.
+
+Naudio does not auto-update; check the [Releases page](https://github.com/crazynanda/Naudio_2/releases) for new versions.
+
+---
+
 ## Building from Source
 
 ### Prerequisites
