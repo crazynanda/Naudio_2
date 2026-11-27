@@ -71,9 +71,16 @@ SETFILE="$(xcrun -find SetFile 2>/dev/null || echo /usr/bin/SetFile)"
 # Build staging dir so the source .app is not modified in place, keep every
 # intermediate image inside it (never in the output directory), and clean it
 # all up on exit — success or failure.
+# The create-dmg source folder must contain ONLY the app: create-dmg puts its
+# own intermediate rw image next to its output file, and if that directory is
+# also the source folder hdiutil ends up copying its own growing image file
+# into the volume it is building — the volume fills and hdiutil create fails
+# with "No space left on device" (observed on the macos-15 runner).
 STAGING="$(mktemp -d -t naudio-dmg-staging.XXXXXX)"
 trap 'rm -rf "$STAGING"' EXIT
-cp -R "$INPUT_APP" "$STAGING/"
+SRC_DIR="$STAGING/src"
+mkdir -p "$SRC_DIR"
+cp -R "$INPUT_APP" "$SRC_DIR/"
 
 mkdir -p "$(dirname "$OUT_DMG")"
 TMP_DMG="$STAGING/final.dmg"
@@ -89,7 +96,7 @@ create-dmg \
   --icon "$APP_NAME" 350 380 \
   --hide-extension "$APP_NAME" \
   --app-drop-link 1080 360 \
-  "$TMP_DMG" "$STAGING"
+  "$TMP_DMG" "$SRC_DIR"
 
 echo "[wrap-mac-dmg] convert UDZO → UDRW"
 hdiutil convert "$TMP_DMG" -format UDRW -o "$RW_DMG" >/dev/null
