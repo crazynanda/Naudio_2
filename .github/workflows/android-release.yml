@@ -404,7 +404,7 @@ jobs:
                       head = z.open(libmpv_name).read(12)
                       if head[:4].hex() == "cffaedfe":
                           cputype = struct.unpack("<I", head[4:8])[0]
-                          want = 0x0100000C if is_arm64 else 0x00000007
+                          want = 0x0100000C if is_arm64 else 0x01000007  # x86_64 = 7 | ABI64 flag
                           if cputype != want:
                               errors.append(f"libmpv.dylib cputype {cputype:#x} does not match arch (want {want:#x})")
                       else:
