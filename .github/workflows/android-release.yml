@@ -317,6 +317,105 @@ jobs:
           agree_to_license: 1
           signing_key: ${{ secrets.CONVEYOR_SIGNING_KEY }}
 
+      # Conveyor names its outputs after app.fsname (simpmusic) and its
+      # architecture vocabulary (aarch64/amd64). Release assets ship under the
+      # Naudio name with GitHub's arm64/x64 conventions instead; the rename is
+      # cosmetic and applied AFTER packaging so no Conveyor or installer
+      # identity changes (bundle name, rdns-name, url-schemes are untouched).
+      - name: Rename macOS packages to Naudio naming
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          declare -A ARCH_MAP=( [aarch64]=arm64 [amd64]=x64 )
+          for zip in output/simpmusic-*-mac-*.zip; do
+            base="$(basename "$zip")"
+            version="$(echo "$base" | sed -nE 's/simpmusic-([0-9.]+)-mac-.*/\1/p')"
+            arch="$(echo "$base" | sed -nE 's/.*-mac-([a-z0-9]+)\.zip/\1/p')"
+            [[ -n "$version" && -n "$arch" ]] || { echo "::error::Cannot parse version/arch from $base"; exit 1; }
+            canon="${ARCH_MAP[$arch]:-$arch}"
+            mv "$zip" "output/Naudio-${version}-mac-${canon}.zip"
+          done
+          # Both architectures must be present or the release would be incomplete.
+          ls output/Naudio-*-mac-arm64.zip output/Naudio-*-mac-x64.zip
+
+      # Structural verification of the packaged .app — everything here is
+      # checkable without a Mac (ZIP listing, plist text, Mach-O header magic).
+      # It does NOT claim functional verification; first-launch/Signature
+      # behaviour still needs a real macOS device.
+      - name: Verify macOS app bundles
+        run: |
+          set -euo pipefail
+          VERSION=$(grep '^version-name' gradle/libs.versions.toml | head -1 | cut -d'"' -f2)
+          for zip_path in output/Naudio-*-mac-*.zip; do
+            python3 - "$zip_path" "$VERSION" <<'PYEOF'
+          import re, struct, sys, zipfile
+          zip_path, expected_version = sys.argv[1], sys.argv[2]
+          is_arm64 = "-mac-arm64.zip" in zip_path
+          z = zipfile.ZipFile(zip_path)
+          names = z.namelist()
+          errors = []
+          apps = sorted(set(n.split("/")[0] for n in names if n.endswith(".app") or n.endswith(".app/")))
+          if len(apps) != 1 or not apps[0].endswith(".app"):
+              errors.append(f"expected exactly one .app at zip root, got {apps}")
+          else:
+              app = apps[0] if apps[0].endswith("/") else apps[0] + "/"
+              # No AppleDouble sidecars (each one can be sealed into a code signature
+              # and then fold back into xattrs on macOS, producing "damaged" reports).
+              sidecars = [n for n in names if n.startswith("._") or "/._" in n]
+              if sidecars:
+                  errors.append(f"AppleDouble sidecars present: {sidecars[:5]}")
+              # No nested duplicate bundles.
+              nested = [n for n in names if n.count("/") > 1 and n.endswith(".app/")]
+              if nested:
+                  errors.append(f"nested .app bundles: {nested[:5]}")
+              plist_name = f"{app}Contents/Info.plist"
+              if plist_name not in names:
+                  errors.append("Info.plist missing")
+              else:
+                  plist = z.read(plist_name).decode("utf-8", "ignore")
+                  def val(key):
+                      m = re.search(r"<key>%s</key>\s*<string>([^<]*)</string>" % key, plist)
+                      return m.group(1) if m else None
+                  checks = {
+                      "CFBundleName": "Naudio",
+                      "CFBundleIdentifier": "com.maxrave.simpmusic",
+                      "LSMinimumSystemVersion": "15.0",
+                      "CFBundleShortVersionString": expected_version,
+                  }
+                  for key, want in checks.items():
+                      got = val(key)
+                      if got != want:
+                          errors.append(f"{key}={got!r}, expected {want!r}")
+                  exe = val("CFBundleExecutable")
+                  if not exe:
+                      errors.append("CFBundleExecutable missing")
+                  else:
+                      exepath = f"{app}Contents/MacOS/{exe}"
+                      if exepath not in names:
+                          errors.append(f"executable missing: {exepath}")
+                      else:
+                          head = z.open(exepath).read(12)
+                          if head[:4].hex() not in ("cffaedfe", "feedfacf", "cafebabf", "cafebabe"):
+                              errors.append(f"executable is not Mach-O (magic {head[:4].hex()})")
+                  libmpv_name = f"{app}Contents/Resources/mpv/libmpv.dylib"
+                  if libmpv_name not in names:
+                      errors.append("bundled libmpv.dylib missing from Resources/mpv")
+                  else:
+                      head = z.open(libmpv_name).read(12)
+                      if head[:4].hex() == "cffaedfe":
+                          cputype = struct.unpack("<I", head[4:8])[0]
+                          want = 0x0100000C if is_arm64 else 0x01000007  # x86_64 = 7 | ABI64 flag
+                          if cputype != want:
+                              errors.append(f"libmpv.dylib cputype {cputype:#x} does not match arch (want {want:#x})")
+                      else:
+                          errors.append(f"libmpv.dylib is not Mach-O 64 (magic {head[:4].hex()})")
+          if errors:
+              print(f"::error::{zip_path}: " + "; ".join(errors))
+              sys.exit(1)
+          print(f"::notice::{zip_path}: bundle structure verified ({len(names)} entries)")
+          PYEOF
+          done
+
       - name: Stage AppImage into output/ for upload
         run: cp desktopApp/build/appimage/conveyor/SimpMusic-*.AppImage output/
 
@@ -378,7 +477,13 @@ jobs:
 
   wrap-mac-dmg:
     name: Wrap macOS .zip → .dmg (installer UX)
-    runs-on: macos-14
+    # macos-14 was retired by GitHub on 2026-11-02 (labels macos-14/large/xlarge);
+    # afterwards this job never received a runner (check-run annotation:
+    # "The configuration 'macos-14-arm64-us-default' is not supported") and was
+    # cancelled with zero steps in every run. macos-15 is GitHub's stated
+    # same-architecture (arm64) replacement.
+    runs-on: macos-15
+    timeout-minutes: 40
     needs: build-desktop-packages
     defaults:
       run:
@@ -390,6 +495,11 @@ jobs:
         # create-dmg = sindresorhus brew formula. ImageMagick is used to
         # downscale the 2800x1600 source background to a sharp 1400x800
         # bitmap using a Lanczos filter (matches the DMG window size).
+        # Skipping the auto-update keeps the brew step a couple of minutes
+        # instead of much longer on the shared macOS runners.
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+          HOMEBREW_NO_INSTALL_CLEANUP: "1"
         run: brew install create-dmg imagemagick
 
       - name: Read app version
@@ -419,28 +529,56 @@ jobs:
           set -euo pipefail
           mkdir -p dist
           shopt -s nullglob
-          for zip in mac-zips/simpmusic-*-mac-*.zip; do
+          zips=(mac-zips/*-mac-*.zip)
+          [[ ${#zips[@]} -gt 0 ]] || { echo "::error::No macOS ZIP artifacts found in mac-zips/"; exit 1; }
+          # The build job already renamed the zips to Naudio-<v>-mac-<arch>.zip;
+          # accept the older simpmusic-* names too so a manual rerun of an older
+          # artifact set still works.
+          # macOS ships bash 3.2: no associative arrays and 'set -u' turns
+          # ${ARCH_MAP[$arch]} into an 'unbound variable' error — use case.
+          canon_arch() {
+            case "$1" in
+              aarch64|arm64) echo arm64 ;;
+              amd64|x64)     echo x64 ;;
+              *)             echo "$1" ;;
+            esac
+          }
+          wrapped=0
+          for zip in "${zips[@]}"; do
             arch="$(basename "$zip" | sed -nE 's/.*-mac-([a-z0-9]+)\.zip/\1/p')"
-            [[ -z "$arch" ]] && { echo "Cannot infer arch from $zip" >&2; exit 1; }
+            [[ -n "$arch" ]] || { echo "::error::Cannot infer arch from $(basename "$zip")" >&2; exit 1; }
+            arch="$(canon_arch "$arch")"
+            # Belt and braces on the mac side too: exactly one .app, no sidecars.
+            listing="$(unzip -Z1 "$zip")"
+            [[ "$(echo "$listing" | grep -c '\.app/$')" -ge 1 ]] || { echo "::error::No .app bundle inside $(basename "$zip")" >&2; exit 1; }
+            if echo "$listing" | grep -qE '(^|/)\._'; then
+              echo "::error::AppleDouble sidecar inside $(basename "$zip") — packaging must strip them" >&2
+              exit 1
+            fi
             workdir="$(mktemp -d)"
             unzip -q "$zip" -d "$workdir"
             app="$(find "$workdir" -maxdepth 2 -type d -name '*.app' | head -1)"
-            [[ -d "$app" ]] || { echo "No .app inside $zip" >&2; exit 1; }
-            out="dist/SimpMusic-${VERSION}-mac-${arch}.dmg"
+            [[ -d "$app" ]] || { echo "::error::No .app inside $(basename "$zip")" >&2; exit 1; }
+            out="dist/Naudio-${VERSION}-mac-${arch}.dmg"
             scripts/wrap-mac-dmg.sh \
               "$app" \
               build/dmg/dmg-bg-1400x800.png \
               composeApp/icon/circle_app_icon.icns \
               "$out"
             rm -rf "$workdir"
+            wrapped=$((wrapped + 1))
           done
+          produced=$(ls dist/Naudio-*.dmg 2>/dev/null | wc -l)
+          [[ "$produced" -eq "$wrapped" ]] || { echo "::error::Expected $wrapped DMGs, produced $produced — packaging incomplete" >&2; exit 1; }
+          echo "Wrapped $wrapped DMG(s):"
           ls -lh dist/
 
       - name: Upload Mac .dmg artifacts
         uses: actions/upload-artifact@v4
         with:
           name: desktop-mac-dmg
-          path: dist/*.dmg
+          path: dist/Naudio-*-mac-*.dmg
+          if-no-files-found: error
 
   publish-github-release:
     name: Publish GitHub Release (Production APKs)
@@ -585,6 +723,21 @@ jobs:
           name: desktop-mac-dmg
           path: desktop-assets/
 
+      - name: Verify macOS release completeness
+        id: macos_assets
+        run: |
+          dmg_count=$(ls desktop-assets/*-mac-*.dmg 2>/dev/null | wc -l)
+          zip_count=$(ls desktop-assets/*-mac-*.zip 2>/dev/null | wc -l)
+          echo "macOS packages: $zip_count zip(s), $dmg_count dmg(s)"
+          if [ "$zip_count" -eq 0 ] && [ "$dmg_count" -eq 0 ]; then
+            echo "::error::No macOS packages (ZIP or DMG) were staged — the desktop packaging failed"
+            exit 1
+          fi
+          if [ "$dmg_count" -eq 0 ]; then
+            echo "status=dmg-missing" >> "$GITHUB_OUTPUT"
+            echo "::error::macOS ZIPs will be published but no DMG was produced — the 'Wrap macOS .zip → .dmg' job failed. The release is incomplete; re-run that job and upload the DMGs."
+          fi
+
       - name: List staged desktop release assets
         run: |
           echo "Staged desktop release assets:"
@@ -598,3 +751,11 @@ jobs:
           tag_name: ${{ steps.version.outputs.tag }}
           files: |
             desktop-assets/*
+
+      # Reported AFTER the upload so the available assets still publish, but the
+      # run is visibly failed when the DMGs never arrived.
+      - name: Flag missing DMG in run result
+        if: steps.macos_assets.outputs.status == 'dmg-missing'
+        run: |
+          echo "::error::The macOS release published without DMGs. Users on macOS 15+ cannot install from a quarantined ZIP (Gatekeeper hard-block). Re-run 'Wrap macOS .zip → .dmg' and attach: Naudio-<version>-mac-<arch>.dmg"
+          exit 1

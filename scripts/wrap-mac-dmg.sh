@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# wrap-mac-dmg.sh — wrap a Conveyor-built SimpMusic.app into a polished .dmg.
+# wrap-mac-dmg.sh — wrap a Conveyor-built Naudio.app into a polished .dmg.
 #
 # Why this script exists:
 #  • Conveyor 22.0 ships Mac apps as a plain `.zip`. On macOS 15 Sequoia,
@@ -10,7 +10,7 @@
 #    instead of `0181`), so the app opens with the normal first-launch
 #    dialog instead of being blocked outright.
 #  • This script reproduces that user experience by wrapping Conveyor's
-#    extracted `.app` in a DMG with the SimpMusic background, drag-to-
+#    extracted `.app` in a DMG with the Naudio background, drag-to-
 #    Applications symlink, custom volume icon, and 192 px icons positioned
 #    at the arrow endpoints in the background.
 #
@@ -21,13 +21,19 @@
 #     icon outside the visible window via AppleScript so it doesn't appear
 #     as a stray file in Finder when the user has "Show hidden files" on.
 #  4. hdiutil convert UDRW → UDZO (final compressed image)
+#  5. hdiutil verify — fail loudly if the image is corrupt instead of
+#     silently shipping a broken DMG.
+#
+# The script never modifies the input bundle: it copies it into a staging
+# directory first, and every intermediate image lives inside that staging
+# directory so the output directory only ever receives the final DMG.
 #
 # Usage:
 #   scripts/wrap-mac-dmg.sh \
-#       <input-app>         e.g. /tmp/SimpMusic.app
-#       <background-png>    e.g. composeApp/icon/dmg-bg-1400x800.png
+#       <input-app>         e.g. /tmp/Naudio.app
+#       <background-png>    e.g. build/dmg/dmg-bg-1400x800.png
 #       <volume-icns>       e.g. composeApp/icon/circle_app_icon.icns
-#       <output-dmg>        e.g. dist/SimpMusic-1.2.1-mac-aarch64.dmg
+#       <output-dmg>        e.g. dist/Naudio-2.3.6-mac-arm64.dmg
 #
 # Requires (macOS host):  create-dmg, hdiutil, SetFile (xcode-select),
 #                         osascript, chflags.
@@ -44,9 +50,16 @@ BG_PNG="$2"
 VOL_ICNS="$3"
 OUT_DMG="$4"
 
+APP_NAME="$(basename "$INPUT_APP")"
+VOL_NAME="Naudio"
+
 [[ -d "$INPUT_APP" ]]  || { echo "Input .app not found: $INPUT_APP" >&2;  exit 1; }
+[[ -f "$INPUT_APP/Contents/Info.plist" ]] \
+  || { echo "Not an application bundle (no Contents/Info.plist): $INPUT_APP" >&2; exit 1; }
 [[ -f "$BG_PNG" ]]     || { echo "Background not found: $BG_PNG" >&2;     exit 1; }
 [[ -f "$VOL_ICNS" ]]   || { echo "Volume icon not found: $VOL_ICNS" >&2;  exit 1; }
+[[ "$APP_NAME" == *.app ]] \
+  || { echo "Input must be an .app bundle, got: $APP_NAME" >&2; exit 1; }
 
 command -v create-dmg >/dev/null \
   || { echo "create-dmg not installed. brew install create-dmg" >&2; exit 1; }
@@ -55,39 +68,48 @@ SETFILE="$(xcrun -find SetFile 2>/dev/null || echo /usr/bin/SetFile)"
 [[ -x "$SETFILE" ]] \
   || { echo "SetFile not available; install Xcode command-line tools" >&2; exit 1; }
 
-# Build staging dir so the source .app is not modified in place and
-# Finder's icon-extension-hidden flag survives create-dmg's mount cycle.
-STAGING="$(mktemp -d -t simpmusic-dmg-staging)"
+# Build staging dir so the source .app is not modified in place, keep every
+# intermediate image inside it (never in the output directory), and clean it
+# all up on exit — success or failure.
+# The create-dmg source folder must contain ONLY the app: create-dmg puts its
+# own intermediate rw image next to its output file, and if that directory is
+# also the source folder hdiutil ends up copying its own growing image file
+# into the volume it is building — the volume fills and hdiutil create fails
+# with "No space left on device" (observed on the macos-15 runner).
+STAGING="$(mktemp -d -t naudio-dmg-staging.XXXXXX)"
 trap 'rm -rf "$STAGING"' EXIT
-cp -R "$INPUT_APP" "$STAGING/"
+SRC_DIR="$STAGING/src"
+mkdir -p "$SRC_DIR"
+cp -R "$INPUT_APP" "$SRC_DIR/"
 
 mkdir -p "$(dirname "$OUT_DMG")"
-TMP_DMG="$(mktemp -u "$(dirname "$OUT_DMG")/.simpmusic-final-XXXX").dmg"
-RW_DMG="$(mktemp -u "$(dirname "$OUT_DMG")/.simpmusic-rw-XXXX").dmg"
+TMP_DMG="$STAGING/final.dmg"
+RW_DMG="$STAGING/rw.dmg"
 
 echo "[wrap-mac-dmg] create-dmg → $TMP_DMG"
 create-dmg \
-  --volname "SimpMusic" \
+  --volname "$VOL_NAME" \
   --window-pos 200 120 \
   --window-size 1400 800 \
   --icon-size 192 \
   --background "$BG_PNG" \
-  --icon "$(basename "$INPUT_APP")" 350 380 \
-  --hide-extension "$(basename "$INPUT_APP")" \
+  --icon "$APP_NAME" 350 380 \
+  --hide-extension "$APP_NAME" \
   --app-drop-link 1080 360 \
-  "$TMP_DMG" "$STAGING"
+  "$TMP_DMG" "$SRC_DIR"
 
 echo "[wrap-mac-dmg] convert UDZO → UDRW"
 hdiutil convert "$TMP_DMG" -format UDRW -o "$RW_DMG" >/dev/null
 rm -f "$TMP_DMG"
 
 echo "[wrap-mac-dmg] mount + apply volume icon"
-# Every arch mounts a volume named "SimpMusic". The previous arch's volume may not be
-# fully released yet, so a plain `hdiutil attach` on the same name fails with EBUSY (16)
-# or silently remounts as "/Volumes/SimpMusic 1". Detach any stale volume first, attach
-# with a retry, and use the REAL mount point hdiutil reports instead of a hardcoded path.
+# Every arch mounts a volume named "$VOL_NAME". The previous arch's volume may
+# not be fully released yet, so a plain `hdiutil attach` on the same name
+# fails with EBUSY (16) or silently remounts as "/Volumes/$VOL_NAME 1". Detach
+# any stale volume first, attach with a retry, and use the REAL mount point
+# hdiutil reports instead of a hardcoded path.
 detach_stale_volumes() {
-  for v in /Volumes/SimpMusic /Volumes/SimpMusic\ *; do
+  for v in "/Volumes/$VOL_NAME" "/Volumes/$VOL_NAME "*; do
     [[ -e "$v" ]] && hdiutil detach -force "$v" >/dev/null 2>&1 || true
   done
 }
@@ -103,7 +125,12 @@ for attempt in 1 2 3 4 5; do
   sleep 3
 done
 [[ -d "$MOUNT_POINT" ]] || { echo "Could not mount $RW_DMG after retries" >&2; exit 1; }
-VOL_NAME="$(basename "$MOUNT_POINT")"
+VOL_MOUNTED_NAME="$(basename "$MOUNT_POINT")"
+
+# The mounted volume must actually contain the app — create-dmg failing
+# silently has produced empty volumes before; check here, not at download time.
+[[ -d "$MOUNT_POINT/$APP_NAME" ]] \
+  || { echo "Mounted volume $MOUNT_POINT does not contain $APP_NAME" >&2; hdiutil detach -force "$MOUNT_POINT" >/dev/null 2>&1 || true; exit 1; }
 
 cp "$VOL_ICNS" "$MOUNT_POINT/.VolumeIcon.icns"
 # Apple's Finder shows files with `chflags hidden` to users who have
@@ -112,7 +139,7 @@ cp "$VOL_ICNS" "$MOUNT_POINT/.VolumeIcon.icns"
 # viewport so it still doesn't visually clutter the install window.
 "$SETFILE" -a V "$MOUNT_POINT/.VolumeIcon.icns"
 osascript -e \
-  "tell application \"Finder\" to set position of file \".VolumeIcon.icns\" of disk \"$VOL_NAME\" to {2000, 2000}" \
+  "tell application \"Finder\" to set position of file \".VolumeIcon.icns\" of disk \"$VOL_MOUNTED_NAME\" to {2000, 2000}" \
   >/dev/null 2>&1 || true
 chflags hidden "$MOUNT_POINT/.VolumeIcon.icns"
 "$SETFILE" -a C "$MOUNT_POINT"
@@ -127,7 +154,12 @@ done
 echo "[wrap-mac-dmg] convert UDRW → UDZO → $OUT_DMG"
 rm -f "$OUT_DMG"
 hdiutil convert "$RW_DMG" -format UDZO -o "$OUT_DMG" >/dev/null
-rm -f "$RW_DMG"
+
+echo "[wrap-mac-dmg] verifying $OUT_DMG"
+hdiutil verify "$OUT_DMG" >/dev/null \
+  || { echo "hdiutil verify failed for $OUT_DMG — refusing to ship a corrupt image" >&2; rm -f "$OUT_DMG"; exit 1; }
+[[ -s "$OUT_DMG" ]] \
+  || { echo "$OUT_DMG is empty after conversion" >&2; rm -f "$OUT_DMG"; exit 1; }
 
 ls -lh "$OUT_DMG"
 echo "[wrap-mac-dmg] done."
