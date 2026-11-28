@@ -19,6 +19,7 @@ import com.maxrave.common.SponsorBlockType
 import com.maxrave.common.TITLE
 import com.maxrave.data.db.Converters
 import com.maxrave.data.lastfm.LastfmScrobbler
+import com.maxrave.data.mediaservice.mac.MacNowPlayingPolicy
 import com.maxrave.data.mediaservice.mac.MacOSMediaIntegration
 import com.maxrave.data.mediaservice.mac.MacOSRemoteCommandListener
 import com.maxrave.data.mediaservice.mac.NowPlayingInfo
@@ -3143,17 +3144,28 @@ class JvmMediaPlayerHandlerImpl(
             if (integration.initialize()) {
                 integration.setRemoteCommandListener(
                     object : MacOSRemoteCommandListener {
+                        // macOS delivers Play and Pause as distinct commands that each name
+                        // the state they WANT. The domain has only a toggle event, so the
+                        // intent is realized by guarding the toggle against the published
+                        // player state: Play only acts when paused, Pause only when playing.
+                        // Unguarded, a Play command during playback would PAUSE, and a
+                        // duplicate delivery (SystemUIServer re-sends on focus changes) would
+                        // toggle twice.
                         override fun onPlay() {
                             Logger.d(TAG, "macOS Remote: Play")
                             coroutineScope.launch {
-                                onPlayerEvent(PlayerEvent.PlayPause)
+                                if (MacNowPlayingPolicy.shouldActOnPlay(controlState.value.isPlaying)) {
+                                    onPlayerEvent(PlayerEvent.PlayPause)
+                                }
                             }
                         }
 
                         override fun onPause() {
                             Logger.d(TAG, "macOS Remote: Pause")
                             coroutineScope.launch {
-                                onPlayerEvent(PlayerEvent.PlayPause)
+                                if (MacNowPlayingPolicy.shouldActOnPause(controlState.value.isPlaying)) {
+                                    onPlayerEvent(PlayerEvent.PlayPause)
+                                }
                             }
                         }
 
@@ -3200,9 +3212,23 @@ class JvmMediaPlayerHandlerImpl(
                         }
 
                         override fun onChangePlaybackPosition(positionSeconds: Double) {
-                            Logger.d(TAG, "macOS Remote: Seek to ${positionSeconds}s")
+                            // A scrub can land slightly past the track end or carry a NaN
+                            // from the event; clamp it into the real bounds before seeking.
+                            val clampedSeconds =
+                                MacNowPlayingPolicy.clampSeekSeconds(
+                                    positionSeconds,
+                                    getPlayerDuration(),
+                                )
+                            Logger.d(TAG, "macOS Remote: Seek to $clampedSeconds s")
                             coroutineScope.launch {
-                                player.seekTo((positionSeconds * 1000).toLong())
+                                player.seekTo((clampedSeconds * 1000).toLong())
+                                // A seek moves the position the Now Playing clock reports;
+                                // push it at once instead of waiting for the 1 Hz tick.
+                                macOSMediaIntegration?.updateElapsedTime(
+                                    clampedSeconds,
+                                    if (controlState.value.isPlaying) 1.0 else 0.0,
+                                    force = true,
+                                )
                                 // Mirrors the Forward/Backward RPC refresh: a scrub moves the
                                 // position, so Discord's client-side timestamps need refreshing too.
                                 if (controlState.value.isPlaying) {
@@ -3227,9 +3253,17 @@ class JvmMediaPlayerHandlerImpl(
                 title = songEntity.title,
                 artist = songEntity.artistName?.connectArtists() ?: "Unknown Artist",
                 album = songEntity.albumName ?: "",
-                durationSeconds = getPlayerDuration() / 1000.0,
+                // At a transition the player still reports the previous track's duration (or
+                // 0 before the demuxer answers); the song row's stored length fills the gap.
+                durationSeconds =
+                    MacNowPlayingPolicy.durationSecondsForNowPlaying(
+                        getPlayerDuration(),
+                        songEntity.durationSeconds,
+                    ),
                 elapsedTimeSeconds = player.contentPosition / 1000.0,
-                playbackRate = 1.0,
+                // A paused player must not show an advancing elapsed clock: macOS advances
+                // it itself from the pushed rate, so paused metadata carries rate 0.
+                playbackRate = if (controlState.value.isPlaying) 1.0 else 0.0,
                 artworkUrl = songEntity.thumbnails,
                 queueIndex = player.currentMediaItemIndex,
                 queueCount = queueData.value.data.listTracks.size,
@@ -3250,9 +3284,20 @@ class JvmMediaPlayerHandlerImpl(
 
     /**
      * Update macOS Now Playing playback state
+     *
+     * Paused needs a rate-0 elapsed push: macOS advances the elapsed display itself from
+     * [MPNowPlayingInfoPropertyPlaybackRate], so without it the clock keeps ticking while
+     * the audio has stopped. Playing resyncs the clock to the real position at rate 1.
      */
     private fun updateMacOSPlaybackState(isPlaying: Boolean) {
-        macOSMediaIntegration?.updatePlaybackState(isPlaying)
+        macOSMediaIntegration?.let {
+            it.updatePlaybackState(isPlaying)
+            it.updateElapsedTime(
+                player.currentPosition / 1000.0,
+                if (isPlaying) 1.0 else 0.0,
+                force = true,
+            )
+        }
     }
 
     /**
@@ -3271,6 +3316,10 @@ class JvmMediaPlayerHandlerImpl(
 
     /**
      * Update macOS Now Playing elapsed time (called periodically)
+     *
+     * The 50 ms progress tick lands here every round; the integration throttles to 1 Hz
+     * ([MacNowPlayingPolicy.ELAPSED_PUSH_INTERVAL_NANOS]) because each push is a native
+     * dictionary copy plus swap, and macOS advances the displayed clock itself.
      */
     private fun updateMacOSElapsedTime() {
         macOSMediaIntegration?.updateElapsedTime(player.currentPosition / 1000.0, 1.0)
