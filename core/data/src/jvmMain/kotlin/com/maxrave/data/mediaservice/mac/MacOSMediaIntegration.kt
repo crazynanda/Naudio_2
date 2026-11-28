@@ -125,19 +125,34 @@ object MacNowPlayingPolicy {
     fun shouldActOnPause(isPlaying: Boolean): Boolean = isPlaying
 
     /** The minimum gap between two elapsed-time pushes to the Now Playing dictionary. */
-    const val ELAPSED_PUSH_INTERVAL_MS = 1_000L
+    const val ELAPSED_PUSH_INTERVAL_NANOS = 1_000_000_000L
+
+    /**
+     * Sentinel for "no push has ever happened": [System.nanoTime] values can legitimately be
+     * small or negative on some JVMs, so `0` cannot be the sentinel — [Long.MIN_VALUE] is
+     * safely outside the 292-year range of any real nanoTime.
+     */
+    const val NEVER_PUSHED_NANOS = Long.MIN_VALUE
 
     /**
      * macOS advances the elapsed display itself from the pushed rate, so 1 Hz keeps the clock
      * accurate while costing 1/20th of the 50 ms progress tick's native work (a dictionary
      * copy plus a dictionary swap each push).
+     *
+     * The timestamps are [System.nanoTime], not the wall clock: `currentTimeMillis` can step
+     * BACKWARD (NTP correction, manual clock change), which would suppress pushes for the
+     * whole size of the step and freeze macOS's elapsed display mid-playback. nanoTime is
+     * monotonic per process, so the delta can only grow.
      */
     fun isElapsedPushDue(
-        lastPushMs: Long,
-        nowMs: Long,
+        lastPushNanos: Long,
+        nowNanos: Long,
         force: Boolean,
-        minIntervalMs: Long = ELAPSED_PUSH_INTERVAL_MS,
-    ): Boolean = force || lastPushMs <= 0 || nowMs - lastPushMs >= minIntervalMs
+        minIntervalNanos: Long = ELAPSED_PUSH_INTERVAL_NANOS,
+    ): Boolean =
+        force ||
+            lastPushNanos == NEVER_PUSHED_NANOS ||
+            nowNanos - lastPushNanos >= minIntervalNanos
 
     /**
      * Clamp a remote seek (scrub) into the track's real bounds. NaN and negative positions
@@ -353,8 +368,8 @@ class MacOSMediaIntegration private constructor() {
     @Volatile
     private var requestedArtworkUrl: String? = null
 
-    /** Last wall-clock time an elapsed-time push went to the dictionary (see [MacNowPlayingPolicy]). */
-    private val lastElapsedPushMs = AtomicLong(0L)
+    /** Monotonic timestamp of the last elapsed-time push (see [MacNowPlayingPolicy]). */
+    private val lastElapsedPushNanos = AtomicLong(MacNowPlayingPolicy.NEVER_PUSHED_NANOS)
 
     /** Kotlin-owned native artwork objects, kept alive exactly as long as the cache entry. */
     private class ArtworkEntry(
@@ -519,15 +534,18 @@ class MacOSMediaIntegration private constructor() {
                 }
 
                 // set object retains what it stores, so the only durable reference the
-                // framework keeps is its own: drop our +1 on every temporary as we go.
+                // framework keeps is its own: drop our +1 on every temporary EVEN IF the
+                // insert call itself fails — a mid-method JNA failure must not leak the
+                // values created before it.
                 fun put(
                     key: Pointer?,
                     value: Pointer?,
                 ) {
-                    if (key != null && value != null) {
-                        ObjC.dictionarySetObject(dict, value, key)
-                        ObjC.releaseOwned(value)
-                    } else if (value != null) {
+                    try {
+                        if (key != null && value != null) {
+                            ObjC.dictionarySetObject(dict, value, key)
+                        }
+                    } finally {
                         ObjC.releaseOwned(value)
                     }
                 }
@@ -546,9 +564,13 @@ class MacOSMediaIntegration private constructor() {
                 // MPNowPlayingMediaTypeAudio
                 put(MPConstants.mediaType, ObjC.nsNumber(1))
 
-                ObjC.msg(infoCenter, "setNowPlayingInfo:", dict)
-                // The center retains (or copies) the dictionary; drop ours.
-                ObjC.releaseOwned(dict)
+                try {
+                    ObjC.msg(infoCenter, "setNowPlayingInfo:", dict)
+                } finally {
+                    // The center retains (or copies) the dictionary; drop ours even if a
+                    // call threw mid-way — otherwise the owned +1 leaks on the error path.
+                    ObjC.releaseOwned(dict)
+                }
 
                 Logger.d(TAG, "Updated now playing info: ${info.title} - ${info.artist}")
             }
@@ -593,40 +615,40 @@ class MacOSMediaIntegration private constructor() {
                 val commandCenter = getRemoteCommandCenter() ?: return@autoreleasePool
 
                 // Note: Objective-C BOOL is actually a signed char (1 byte)
-            // We use Byte (1 or 0) instead of Boolean for proper JNA mapping
-            val nextEnabled: Byte = if (hasNext) 1 else 0
-            val prevEnabled: Byte = if (hasPrevious) 1 else 0
-            val seekEnabled: Byte = if (canSeek) 1 else 0
+                // We use Byte (1 or 0) instead of Boolean for proper JNA mapping
+                val nextEnabled: Byte = if (hasNext) 1 else 0
+                val prevEnabled: Byte = if (hasPrevious) 1 else 0
+                val seekEnabled: Byte = if (canSeek) 1 else 0
 
-            // Update next track command
-            val nextCommand = ObjC.msg(commandCenter, "nextTrackCommand")
-            if (nextCommand != null) {
-                setCommandEnabled(nextCommand, nextEnabled)
-                Logger.d(TAG, "Next command enabled: $hasNext")
-            }
+                // Update next track command
+                val nextCommand = ObjC.msg(commandCenter, "nextTrackCommand")
+                if (nextCommand != null) {
+                    setCommandEnabled(nextCommand, nextEnabled)
+                    Logger.d(TAG, "Next command enabled: $hasNext")
+                }
 
-            // Update previous track command
-            val prevCommand = ObjC.msg(commandCenter, "previousTrackCommand")
-            if (prevCommand != null) {
-                setCommandEnabled(prevCommand, prevEnabled)
-                Logger.d(TAG, "Previous command enabled: $hasPrevious")
-            }
+                // Update previous track command
+                val prevCommand = ObjC.msg(commandCenter, "previousTrackCommand")
+                if (prevCommand != null) {
+                    setCommandEnabled(prevCommand, prevEnabled)
+                    Logger.d(TAG, "Previous command enabled: $hasPrevious")
+                }
 
-            // Update seek commands
-            val seekForwardCommand = ObjC.msg(commandCenter, "seekForwardCommand")
-            if (seekForwardCommand != null) {
-                setCommandEnabled(seekForwardCommand, seekEnabled)
-            }
+                // Update seek commands
+                val seekForwardCommand = ObjC.msg(commandCenter, "seekForwardCommand")
+                if (seekForwardCommand != null) {
+                    setCommandEnabled(seekForwardCommand, seekEnabled)
+                }
 
-            val seekBackwardCommand = ObjC.msg(commandCenter, "seekBackwardCommand")
-            if (seekBackwardCommand != null) {
-                setCommandEnabled(seekBackwardCommand, seekEnabled)
-            }
+                val seekBackwardCommand = ObjC.msg(commandCenter, "seekBackwardCommand")
+                if (seekBackwardCommand != null) {
+                    setCommandEnabled(seekBackwardCommand, seekEnabled)
+                }
 
-            val changePositionCommand = ObjC.msg(commandCenter, "changePlaybackPositionCommand")
-            if (changePositionCommand != null) {
-                setCommandEnabled(changePositionCommand, seekEnabled)
-            }
+                val changePositionCommand = ObjC.msg(commandCenter, "changePlaybackPositionCommand")
+                if (changePositionCommand != null) {
+                    setCommandEnabled(changePositionCommand, seekEnabled)
+                }
             }
         } catch (e: Exception) {
             Logger.e(TAG, "Failed to update commands enabled state: ${e.message}", e)
@@ -650,7 +672,7 @@ class MacOSMediaIntegration private constructor() {
      * Update elapsed time (for seek bar progress)
      *
      * Each push is a native dictionary copy plus a dictionary swap, so the 50 ms progress
-     * tick must not land here every round: [MacNowPlayingPolicy.ELAPSED_PUSH_INTERVAL_MS]
+     * tick must not land here every round: [MacNowPlayingPolicy.ELAPSED_PUSH_INTERVAL_NANOS]
      * throttles to 1 Hz, and `force` bypasses the throttle for state changes (play, pause,
      * seek, track change) where the displayed clock must resync at once. When the player
      * pauses, macOS keeps advancing its own elapsed display until a push with rate 0 lands,
@@ -663,10 +685,10 @@ class MacOSMediaIntegration private constructor() {
     ) {
         if (!isSupported() || !initialized.get()) return
 
-        val now = System.currentTimeMillis()
-        synchronized(lastElapsedPushMs) {
-            if (!MacNowPlayingPolicy.isElapsedPushDue(lastElapsedPushMs.get(), now, force)) return
-            lastElapsedPushMs.set(now)
+        val now = System.nanoTime()
+        synchronized(lastElapsedPushNanos) {
+            if (!MacNowPlayingPolicy.isElapsedPushDue(lastElapsedPushNanos.get(), now, force)) return
+            lastElapsedPushNanos.set(now)
         }
 
         try {
@@ -686,23 +708,33 @@ class MacOSMediaIntegration private constructor() {
                 // Update elapsed time using framework constant
                 val elapsedKey = MPConstants.elapsedPlaybackTime
                 val elapsedValue = ObjC.nsNumber(elapsedSeconds)
-                if (elapsedKey != null && elapsedValue != null) {
-                    ObjC.dictionarySetObject(mutableInfo, elapsedValue, elapsedKey)
+                try {
+                    if (elapsedKey != null && elapsedValue != null) {
+                        ObjC.dictionarySetObject(mutableInfo, elapsedValue, elapsedKey)
+                    }
+                } finally {
                     ObjC.releaseOwned(elapsedValue)
                 }
 
                 // Update playback rate using framework constant
                 val rateKey = MPConstants.playbackRate
                 val rateValue = ObjC.nsNumber(playbackRate)
-                if (rateKey != null && rateValue != null) {
-                    ObjC.dictionarySetObject(mutableInfo, rateValue, rateKey)
+                try {
+                    if (rateKey != null && rateValue != null) {
+                        ObjC.dictionarySetObject(mutableInfo, rateValue, rateKey)
+                    }
+                } finally {
                     ObjC.releaseOwned(rateValue)
                 }
 
-                // Set updated info
-                ObjC.msg(infoCenter, "setNowPlayingInfo:", mutableInfo)
-                // The center retains (or copies) the dictionary; drop our copy's +1.
-                ObjC.releaseOwned(mutableInfo)
+                try {
+                    // Set updated info
+                    ObjC.msg(infoCenter, "setNowPlayingInfo:", mutableInfo)
+                } finally {
+                    // The center retains (or copies) the dictionary; drop our copy's +1
+                    // even if the publish call itself failed.
+                    ObjC.releaseOwned(mutableInfo)
+                }
             }
         } catch (e: Exception) {
             Logger.e(TAG, "Failed to update elapsed time: ${e.message}", e)
@@ -728,20 +760,54 @@ class MacOSMediaIntegration private constructor() {
     }
 
     /**
-     * Release resources. Idempotent, and safe to call from any thread: the native state is
-     * only touched under [nativeStateLock] and always AFTER the native side has let go of it
-     * (targets removed, dictionary cleared) — otherwise a GC'd JNA trampoline could still be
-     * reached from a registered target.
+     * Callbacks and block literals retired by [release]. Deliberately NEVER freed: main-
+     * thread teardown stops new invocations, but one that started just before it can still
+     * be executing, and freeing the block literal (or letting GC collect the JNA
+     * trampoline) under that invocation is a use-after-free. This is quantified, not an
+     * unexplained leak: the integration is a process-lifetime singleton, so the bound is
+     * 9 blocks — 9 callbacks and 18 JNA `Memory`s — per initialize/release cycle (tens of
+     * KB; in practice one cycle per app run, because [release] is a quit-time path).
+     */
+    private val retiredCallbacks = ArrayList<Callback>()
+    private val retiredMemories = ArrayList<Memory>()
+
+    /**
+     * Release resources. Idempotent, and safe to call from any thread.
+     *
+     * Teardown ordering carries the safety: (1) the NATIVE teardown (clear + target
+     * removal) runs on the MAIN thread through [MainQueue.runSync] — MPRemoteCommandCenter
+     * invokes handlers and mutates its target list on the main thread and its thread
+     * safety is undocumented, so a worker-thread `removeTarget:` racing a main-thread
+     * handler iteration is undefined; running the teardown on that same thread also makes
+     * it atomic against in-flight invocations, because a handler is either already
+     * finished or not yet started — never concurrent with the removal. (2) Only after the
+     * native side has let go are the Kotlin references cleared, and then they are RETIRED,
+     * never freed — see [retiredCallbacks].
      */
     fun release() {
         if (!isSupported()) return
 
         try {
-            clearNowPlayingInfo()
-            disableRemoteCommands()
+            val tornDownOnMain =
+                runCatching {
+                    MainQueue.runSync {
+                        clearNowPlayingInfo()
+                        disableRemoteCommands()
+                    }
+                }.getOrDefault(false)
+            if (!tornDownOnMain) {
+                // Main-queue symbols unavailable: degrade to direct teardown rather than
+                // skipping it — leaving targets registered into the next session is worse
+                // than a possibly off-main removal.
+                clearNowPlayingInfo()
+                disableRemoteCommands()
+            }
             remoteCommandListener = null
 
             synchronized(nativeStateLock) {
+                // Retire, never free — see the doc comment above.
+                retiredCallbacks.addAll(blockCallbacks)
+                retiredMemories.addAll(blockMemories)
                 blockCallbacks.clear()
                 blockMemories.clear()
             }
@@ -753,7 +819,7 @@ class MacOSMediaIntegration private constructor() {
             }
             requestedArtworkUrl = null
             currentArtworkUrl = null
-            lastElapsedPushMs.set(0)
+            lastElapsedPushNanos.set(MacNowPlayingPolicy.NEVER_PUSHED_NANOS)
 
             initialized.set(false)
             Logger.d(TAG, "Released MacOS media integration")
@@ -810,6 +876,15 @@ class MacOSMediaIntegration private constructor() {
                 return
             }
 
+            // The integration may have been released while the download ran (track change on
+            // a released handler, app quit): without this check the artwork would republish
+            // a Now Playing dictionary after the release cleared it, or attach an old
+            // session's in-flight download to a newly initialized session.
+            if (!initialized.get()) {
+                Logger.d(TAG, "Integration released while artwork was loading; dropped")
+                return
+            }
+
             // A newer request superseded this one while the download was in flight.
             if (requestedArtworkUrl != artworkUrl) {
                 Logger.d(TAG, "Artwork for $artworkUrl superseded by a newer request; dropped")
@@ -818,12 +893,29 @@ class MacOSMediaIntegration private constructor() {
 
             val entry = createArtworkEntry(imageData)
             if (entry != null) {
+                // Publication holds the cache lock for its whole body. Without it, a
+                // concurrent release() (which evicts and releases every entry) or another
+                // load's evictOldArtwork() could free the artwork between the lock above and
+                // the pointer use inside publication — a use-after-free on a native object.
+                // With it, eviction cannot run until publication is done; the published
+                // dictionary's own copy also holds a retain of the artwork, so the cache
+                // entry can be evicted safely afterwards. updateNowPlayingArtwork takes no
+                // locks, so this cannot deadlock.
                 synchronized(artworkCache) {
+                    // Two downloads of the same URL can race (a repeat or re-queue of one
+                    // track): both pass the not-cached pre-check. Overwriting without
+                    // releasing the displaced entry would orphan its owned native triple
+                    // (NSData + NSImage + MPMediaItemArtwork), so release it exactly once
+                    // here, while the map still holds it.
+                    artworkCache.remove(artworkUrl)?.let { displaced ->
+                        Logger.d(TAG, "Displacing duplicate artwork entry for $artworkUrl")
+                        releaseArtworkEntry(displaced)
+                    }
                     artworkCache[artworkUrl] = entry
                     evictOldArtwork()
                     currentArtworkUrl = artworkUrl
+                    updateNowPlayingArtwork(entry.artwork)
                 }
-                updateNowPlayingArtwork(entry.artwork)
                 Logger.d(TAG, "Successfully set artwork from: $artworkUrl")
             }
         } catch (e: Exception) {
@@ -929,6 +1021,11 @@ class MacOSMediaIntegration private constructor() {
      * Update the current now playing info with artwork
      */
     private fun updateNowPlayingArtwork(artwork: Pointer) {
+        // Lifecycle guard, like its siblings updateNowPlayingInfo/updateElapsedTime: an
+        // artwork download that landed while release() was clearing the session must not
+        // republish a Now Playing dictionary afterwards (an artwork-only dict would
+        // resurrect cleared metadata).
+        if (!isSupported() || !initialized.get()) return
         try {
             ObjC.autoreleasePool {
                 val infoCenter = getNowPlayingInfoCenter() ?: return@autoreleasePool
@@ -945,9 +1042,13 @@ class MacOSMediaIntegration private constructor() {
                     ObjC.dictionarySetObject(mutableInfo, artwork, artworkKey)
                 }
 
-                // Set updated info
-                ObjC.msg(infoCenter, "setNowPlayingInfo:", mutableInfo)
-                ObjC.releaseOwned(mutableInfo)
+                try {
+                    // Set updated info
+                    ObjC.msg(infoCenter, "setNowPlayingInfo:", mutableInfo)
+                } finally {
+                    // Owned +1 released even if the publish call itself fails.
+                    ObjC.releaseOwned(mutableInfo)
+                }
 
                 Logger.d(TAG, "Updated now playing artwork")
             }
@@ -982,9 +1083,14 @@ class MacOSMediaIntegration private constructor() {
                     event: Pointer?,
                 ): Int {
                     Logger.d(TAG, "Block callback invoked! block=$block, event=$event")
+                    // Catch Throwable, not Exception: an Error escaping `invoke` would
+                    // propagate back into the ObjC block invocation on the main thread —
+                    // undefined behavior, because it crosses the JNA trampoline into
+                    // native code. Every failure is logged at Error level; nothing is
+                    // silently swallowed.
                     return try {
                         handler(event)
-                    } catch (e: Exception) {
+                    } catch (e: Throwable) {
                         Logger.e(TAG, "Command handler error: ${e.message}", e)
                         MPRemoteCommandHandlerStatus.CommandFailed
                     }
@@ -1008,10 +1114,10 @@ class MacOSMediaIntegration private constructor() {
 
         // A global block needs no copy/dispose and outlives any stack frame, so the invoke
         // pointer is safe as long as the JNA callback object stays strongly referenced.
-        val nsConcreteGlobalBlock =
-            ObjC.cls("__NSGlobalBlock__")
-                ?: ObjC.cls("NSBlock")
-                ?: return null
+        // If `__NSGlobalBlock__` is somehow not registered, FAIL rather than fabricate a
+        // block with an uncertain isa identity: the caller leaves the command disabled and
+        // logs it — a recoverable degradation, while a wrong-isa block is not.
+        val nsConcreteGlobalBlock = ObjC.cls("__NSGlobalBlock__") ?: return null
 
         blockMemory.setPointer(0, nsConcreteGlobalBlock) // isa
         blockMemory.setInt(8, BlockLiteral.BLOCK_IS_GLOBAL) // flags
@@ -1091,16 +1197,22 @@ class MacOSMediaIntegration private constructor() {
         handler: (Pointer?) -> Int,
     ) {
         try {
-            val command = ObjC.msg(commandCenter, commandName) ?: return
-
-            // Enable the command using proper BOOL type (Byte)
-            setCommandEnabled(command, 1)
-
-            // Create handler block
-            val handlerBlock = createCommandHandler(handler)
-            if (handlerBlock != null) {
-                ObjC.msg(command, "addTargetWithHandler:", handlerBlock)
+            val command = ObjC.msg(commandCenter, commandName)
+            if (command == null) {
+                Logger.e(TAG, "Failed to get remote command: $commandName")
+                return
             }
+
+            // Register the handler FIRST; enable the command only after it exists. An
+            // enabled command without a target falls through to the system's default
+            // behavior, so a failed block creation must leave the command disabled.
+            val handlerBlock = createCommandHandler(handler)
+            if (handlerBlock == null) {
+                Logger.e(TAG, "Failed to create handler block for $commandName — command left disabled")
+                return
+            }
+            ObjC.msg(command, "addTargetWithHandler:", handlerBlock)
+            setCommandEnabled(command, 1)
             Logger.d(TAG, "Setup command: $commandName")
         } catch (e: Exception) {
             Logger.e(TAG, "Failed to setup command $commandName: ${e.message}", e)
@@ -1109,10 +1221,11 @@ class MacOSMediaIntegration private constructor() {
 
     private fun setupChangePositionCommand(commandCenter: Pointer) {
         try {
-            val command = ObjC.msg(commandCenter, "changePlaybackPositionCommand") ?: return
-
-            // Enable the command using proper BOOL type (Byte)
-            setCommandEnabled(command, 1)
+            val command = ObjC.msg(commandCenter, "changePlaybackPositionCommand")
+            if (command == null) {
+                Logger.e(TAG, "Failed to get remote command: changePlaybackPositionCommand")
+                return
+            }
 
             // Create handler that extracts position from event
             val handlerBlock =
@@ -1138,11 +1251,14 @@ class MacOSMediaIntegration private constructor() {
                     MPRemoteCommandHandlerStatus.Success
                 }
 
+            // Register first, enable only after the handler exists (same reasoning as
+            // [setupCommand]).
             if (handlerBlock != null) {
                 ObjC.msg(command, "addTargetWithHandler:", handlerBlock)
+                setCommandEnabled(command, 1)
                 Logger.d(TAG, "Setup command: changePlaybackPositionCommand with handler block: $handlerBlock")
             } else {
-                Logger.e(TAG, "Failed to create handler block for changePlaybackPositionCommand")
+                Logger.e(TAG, "Failed to create handler block for changePlaybackPositionCommand — command left disabled")
             }
         } catch (e: Exception) {
             Logger.e(TAG, "Failed to setup changePlaybackPositionCommand: ${e.message}", e)

@@ -3318,7 +3318,7 @@ class JvmMediaPlayerHandlerImpl(
      * Update macOS Now Playing elapsed time (called periodically)
      *
      * The 50 ms progress tick lands here every round; the integration throttles to 1 Hz
-     * ([MacNowPlayingPolicy.ELAPSED_PUSH_INTERVAL_MS]) because each push is a native
+     * ([MacNowPlayingPolicy.ELAPSED_PUSH_INTERVAL_NANOS]) because each push is a native
      * dictionary copy plus swap, and macOS advances the displayed clock itself.
      */
     private fun updateMacOSElapsedTime() {

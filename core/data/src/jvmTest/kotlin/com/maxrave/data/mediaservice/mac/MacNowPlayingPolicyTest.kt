@@ -38,35 +38,78 @@ class MacNowPlayingPolicyTest {
 
     @Test
     fun `elapsed push is due after the interval`() {
-        val last = 1_000_000L
-        val now = last + MacNowPlayingPolicy.ELAPSED_PUSH_INTERVAL_MS
+        val last = 1_000_000_000L
+        val now = last + MacNowPlayingPolicy.ELAPSED_PUSH_INTERVAL_NANOS
         assertTrue(MacNowPlayingPolicy.isElapsedPushDue(last, now, force = false))
     }
 
     @Test
     fun `elapsed push is not due inside the interval`() {
-        val last = 1_000_000L
-        val now = last + MacNowPlayingPolicy.ELAPSED_PUSH_INTERVAL_MS - 1
+        val last = 1_000_000_000L
+        val now = last + MacNowPlayingPolicy.ELAPSED_PUSH_INTERVAL_NANOS - 1
         assertFalse(MacNowPlayingPolicy.isElapsedPushDue(last, now, force = false))
     }
 
     @Test
     fun `forced push bypasses the interval`() {
-        val last = 1_000_000L
+        val last = 1_000_000_000L
         val now = last + 1
         assertTrue(MacNowPlayingPolicy.isElapsedPushDue(last, now, force = true))
     }
 
     @Test
-    fun `first ever push is due`() {
-        // lastPushMs = 0 means "never pushed": the clock must fill immediately, not wait
+    fun `never-pushed sentinel is due immediately`() {
+        // The sentinel is Long.MIN_VALUE, not 0: nanoTime values can legitimately be small
+        // or negative on some JVMs, so 0 cannot mean "never". The first push must not wait
         // a full interval after startup.
-        assertTrue(MacNowPlayingPolicy.isElapsedPushDue(lastPushMs = 0, nowMs = 1, force = false))
+        assertTrue(
+            MacNowPlayingPolicy.isElapsedPushDue(
+                lastPushNanos = MacNowPlayingPolicy.NEVER_PUSHED_NANOS,
+                nowNanos = 1,
+                force = false,
+            ),
+        )
     }
 
     @Test
-    fun `never-pushed stays due regardless of the clock`() {
-        assertTrue(MacNowPlayingPolicy.isElapsedPushDue(lastPushMs = 0, nowMs = 0, force = false))
+    fun `never-pushed sentinel is due even with no elapsed time`() {
+        assertTrue(
+            MacNowPlayingPolicy.isElapsedPushDue(
+                lastPushNanos = MacNowPlayingPolicy.NEVER_PUSHED_NANOS,
+                nowNanos = 0,
+                force = false,
+            ),
+        )
+    }
+
+    @Test
+    fun `small real nanoTime values are not mistaken for never-pushed`() {
+        // A genuine nanoTime reading (e.g. early in the JVM's life) must NOT reset the
+        // throttle the way the old `<= 0` wall-clock check would have.
+        assertFalse(
+            MacNowPlayingPolicy.isElapsedPushDue(
+                lastPushNanos = -500,
+                nowNanos = -400,
+                force = false,
+            ),
+        )
+    }
+
+    @Test
+    fun `a backward clock step cannot freeze the throttle the wall clock would have`() {
+        // Regression for the 2.1 finding: currentTimeMillis stepping BACKWARD (NTP
+        // correction, manual clock change) made the delta strongly negative and suppressed
+        // pushes for the whole size of the step, freezing macOS's elapsed display.
+        // nanoTime is monotonic per process, so the policy must treat a still-growing
+        // monotonic source as due at the interval — this pins the delta arithmetic to the
+        // real semantics a monotonic source delivers.
+        val last = 100_000_000_000L
+        val now = last + MacNowPlayingPolicy.ELAPSED_PUSH_INTERVAL_NANOS
+        assertTrue(MacNowPlayingPolicy.isElapsedPushDue(last, now, force = false))
+        // And a delta of zero (or negative, which a monotonic source cannot produce but
+        // must not crash on) stays throttled rather than spamming.
+        assertFalse(MacNowPlayingPolicy.isElapsedPushDue(last, last, force = false))
+        assertFalse(MacNowPlayingPolicy.isElapsedPushDue(last, last - 1, force = false))
     }
 
     // ===== Remote seek clamping =====
